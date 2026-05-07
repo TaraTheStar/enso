@@ -1,0 +1,6 @@
+{
+  "description": "Rename a function in a single Go file. Tests the edit tool's exact-whitespace behavior — the file uses tab indentation with a deliberately unusual blank-line layout that an approximate match would miss.",
+  "prompt": "In foo.go, rename the function OldName to NewName. The file should still build with `go build ./...`.",
+  "max_turns": 12,
+  "expected_tools": ["read", "edit", "write", "grep", "glob", "bash", "todo"]
+}

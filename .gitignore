@@ -1,0 +1,17 @@
+/enso
+/bin/
+*.test
+*.prof
+.DS_Store
+
+# Per-user "Allow + Remember" allowlist written by the runtime.
+# Stays local; never commit.
+.enso/config.local.toml
+
+# Claude Code per-user permission overlay.
+.claude/settings.local.json
+
+# Crush per-user state (sqlite, logs). Self-ignores via its own
+# .gitignore, but pin it here so a contributor whose copy lacks
+# that self-ignore can't accidentally commit `crush.db`.
+.crush/

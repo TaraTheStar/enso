@@ -1,0 +1,76 @@
+# Project-local enso config for the enso repo itself.
+#
+# This is the "shared, committed" project config — distinct from
+# `.enso/config.local.toml` (gitignored, where "Allow + Remember"
+# writes). It layers on top of the user config in
+# `~/.config/enso/config.toml`.
+#
+# What it does:
+#   - Names a Go-toolchain image so the bash sandbox can build/test
+#     this codebase if the user has sandboxing enabled at the user
+#     level (`[bash] sandbox = "docker"` or similar).
+#   - Allowlists a few read-only / safe build commands so dogfooders
+#     don't get prompted for every `go test`.
+#
+# What it doesn't do:
+#   - Choose the sandbox backend (docker/podman/off). That's a
+#     per-user decision; set it in your user config.
+#   - Configure providers, MCP servers, hooks, etc. — those are also
+#     per-user.
+
+# --- bash sandbox image ------------------------------------------------
+#
+# Active only when the user has [bash] sandbox set to a non-"off"
+# value. Alpine variant keeps the pull small; init installs the few
+# extras enso's own Makefile needs (git for module fetches that
+# bypass GOPROXY, make for `make check`).
+
+[bash.sandbox_options]
+image = "golang:1.26-alpine"
+init = [
+    "apk add --no-cache git make",
+]
+
+# --- permissions -------------------------------------------------------
+#
+# Read-only and routine build commands the agent runs all the time
+# while working in this repo. Adjust if your workflow differs; the
+# user-level deny list always wins, so additions here can't escalate
+# beyond what the user has already permitted.
+
+[permissions]
+allow = [
+    "bash(go test *)",
+    "bash(go build *)",
+    "bash(go vet *)",
+    "bash(go mod *)",
+    "bash(gofmt *)",
+    "bash(make check)",
+    "bash(make)",
+    "bash(git status)",
+    "bash(git diff *)",
+    "bash(git log *)",
+    "bash(git show *)",
+    "bash(git branch *)",
+    "read(**)",
+    "grep(**)",
+    "glob(**)",
+]
+ask = [
+    # Always prompt on push regardless of mode — blast radius matters.
+    "bash(git push *)",
+]
+
+# --- language servers --------------------------------------------------
+#
+# This repo is Go, so wire gopls in by default. Servers are spawned
+# lazily on first use of an lsp_* tool against a matching file, so this
+# costs nothing until the agent actually reaches for it. Anyone who has
+# `gopls` on their PATH (`go install golang.org/x/tools/gopls@latest`)
+# gets symbol lookups, diagnostics, hover, and references for free.
+
+[lsp.gopls]
+command      = "gopls"
+extensions   = [".go"]
+root_markers = ["go.mod", ".git"]
+language_id  = "go"

@@ -1,0 +1,10 @@
+{
+  "description": "Two-step task that exercises mid-session model swap. Step 1 (model A): explore and describe. Step 2 (model B, after resume): make a concrete code change. The new model inherits the previous model's voice in conversation history and the original system prompt — exactly the case we want to study.",
+  "prompt": "Read the files in this directory and tell me, in two sentences, what the program does.",
+  "max_turns": 8,
+  "expected_tools": ["read", "edit", "write", "grep", "glob", "bash", "todo"],
+  "swap": {
+    "prompt": "Now add a `--name <string>` flag to this CLI. Default value: \"world\". When set, the program should print `Hello, <name>!` instead of its current output. Build and run it to confirm.",
+    "max_turns": 16
+  }
+}

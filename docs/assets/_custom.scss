@@ -1,0 +1,138 @@
+// ensō docs: ink-on-paper aesthetic anchored on Kaimurasaki (#4F284B).
+//
+// Dark is the :root default. Light kicks in only when prefers-color-scheme
+// reports "light" or the theme switcher sets [data-theme=light] — so users
+// on systems that report no preference (or browsers where the media query
+// fails) land on dark, which matches the inkier vibe of the brand.
+
+@import url('https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,500;0,600;1,500&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@mixin dark-palette {
+  --body-background:      #1A1018;
+  --body-font-color:      #ECE4DA;
+  --body-mono-background: #221820;
+
+  --color-link:           #B889A8;
+  --color-visited-link:   #B889A8;
+
+  --gray-100:             rgba(184, 137, 168, 0.08);
+  --gray-200:             rgba(184, 137, 168, 0.16);
+  --gray-500:             #8A7682;
+
+  --icon-filter:          invert(0.85) sepia(0.1) hue-rotate(280deg);
+  --paper-grain:          none;
+
+  --code-keyword:         #C28DAB;
+  --code-string:          #C5A672;
+  --code-comment:         #6F5C6A;
+  --code-function:        #94B5B8;
+  --code-number:          #D4ABC4;
+  --code-operator:        #ECE4DA;
+  --code-diff-add:        #4A7A4A;
+  --code-diff-del:        #B86060;
+  --code-error:           #D86060;
+}
+
+@mixin light-palette {
+  --body-background:      #FAF6EC;
+  --body-font-color:      #1F1A1F;
+  --body-mono-background: #F2EBEF;
+
+  --color-link:           #4F284B;
+  --color-visited-link:   #4F284B;
+
+  --gray-100:             rgba(79, 40, 75, 0.06);
+  --gray-200:             rgba(79, 40, 75, 0.12);
+  --gray-500:             #7A6873;
+
+  --icon-filter:          none;
+
+  // Inline SVG noise tile, tinted with a faint Kaimurasaki overlay.
+  // baseFrequency tunes the grain size; the alpha in feColorMatrix
+  // controls how visible it is.
+  --paper-grain: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='g'><feTurbulence baseFrequency='0.85' numOctaves='1' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.12 0 0 0 0 0.10 0 0 0 0 0.12 0 0 0 0.06 0'/></filter><rect width='100%' height='100%' filter='url(%23g)'/></svg>");
+
+  --code-keyword:         #4F284B;
+  --code-string:          #6F5520;
+  --code-comment:         #8A7682;
+  --code-function:        #356470;
+  --code-number:          #6B3868;
+  --code-operator:        #1F1A1F;
+  --code-diff-add:        #3A6E3A;
+  --code-diff-del:        #B73A3A;
+  --code-error:           #B73A3A;
+}
+
+:root                                          { @include dark-palette; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme=dark])                 { @include light-palette; }
+}
+[data-theme=light]                             { @include light-palette; }
+[data-theme=dark]                              { @include dark-palette; }
+
+// ─── Typography ──────────────────────────────────────────────────────
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+               sans-serif;
+  background-image: var(--paper-grain);
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Lora', Georgia, "Times New Roman", serif;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+  color: var(--color-link);
+}
+h1 { letter-spacing: -0.015em; }
+
+code, pre, kbd, samp, tt {
+  font-family: 'JetBrains Mono', ui-monospace, "Cascadia Code",
+               "Fira Code", monospace;
+  font-size: 0.92em;
+}
+
+// The Kaimurasaki logo only has ~3:1 contrast against the dark bg.
+// Brightness+saturate lift it into the same family as the dark-mode link
+// color so it stays clearly visible without losing the purple cast.
+@mixin lift-logo {
+  .book-brand img { filter: brightness(2.4) saturate(0.7); }
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) { @include lift-logo; }
+}
+[data-theme=dark] { @include lift-logo; }
+
+// Inline code (anywhere not inside a chroma highlight block).
+:not(pre) > code {
+  background-color: var(--body-mono-background);
+  border: 1px solid var(--gray-200);
+  border-radius: 3px;
+  padding: 0 0.3em;
+}
+
+// ─── Syntax highlighting (Chroma classes) ────────────────────────────
+// Set markup.highlight.noClasses = false in hugo.toml so Chroma emits
+// class names instead of inline styles.
+.chroma {
+  background-color: var(--body-mono-background);
+  color: var(--body-font-color);
+
+  .c,  .ch, .cm, .c1, .cs, .cp, .cpf { color: var(--code-comment);  font-style: italic; }
+  .k,  .kc, .kd, .kn, .kp, .kr, .kt  { color: var(--code-keyword);  font-weight: 500;   }
+  .s,  .sa, .sb, .sc, .dl, .sd, .s2,
+  .se, .sh, .si, .sx, .sr, .s1, .ss  { color: var(--code-string);                        }
+  .m,  .mb, .mf, .mh, .mi, .il, .mo  { color: var(--code-number);                        }
+  .nf, .fm                           { color: var(--code-function);                      }
+  .nb, .bp                           { color: var(--code-keyword);                       }
+  .nc, .nn, .nt                      { color: var(--code-function);                      }
+  .o                                 { color: var(--code-operator);                      }
+  .ow                                { color: var(--code-keyword);  font-weight: 500;    }
+
+  // Generic (diffs, shell prompts, headings, output)
+  .gd { color: var(--code-diff-del); background-color: rgba(184, 96, 96,  0.08); }
+  .gi { color: var(--code-diff-add); background-color: rgba( 74, 122, 74, 0.08); }
+  .gh { color: var(--code-keyword); font-weight: 600; }
+  .gp { color: var(--code-comment); }
+
+  .err { color: var(--code-error); }
+}
