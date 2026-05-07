@@ -1,0 +1,51 @@
+baseURL  = "/"
+title    = "ensō"
+
+# Hugo Modules: theme is fetched from upstream at build time. Don't also set
+# `theme = "..."` — that would make Hugo look for a local themes/ directory
+# instead of using the module from cache.
+[module]
+  [[module.imports]]
+    path = "github.com/alex-shpak/hugo-book"
+
+# Multilingual scaffolding off — single-language site.
+defaultContentLanguage = "en"
+languageCode           = "en"
+
+# Allow raw HTML in markdown so we can use a few inline tags (kbd, mark).
+[markup]
+  [markup.goldmark]
+    [markup.goldmark.renderer]
+      unsafe = true
+  [markup.tableOfContents]
+    startLevel = 2
+    endLevel   = 3
+    ordered    = false
+  # Emit Chroma class names instead of inline styles, so docs/assets/_custom.scss
+  # can recolor syntax highlighting in the Kaimurasaki theme.
+  [markup.highlight]
+    noClasses    = false
+    guessSyntax  = true
+
+[params]
+  # Theme controls — see https://github.com/alex-shpak/hugo-book/blob/master/exampleSite/config.toml
+  BookTheme           = "auto"     # "light" | "dark" | "auto"
+  BookToC             = true
+  BookSection         = "docs"     # default landing section
+  BookRepo            = "https://github.com/TaraTheStar/enso"
+  BookEditPath        = "edit/main/docs/content"
+  BookSearch          = true
+  BookComments        = false
+  BookPortableLinks   = true
+  BookServiceWorker   = false
+  BookLogo            = "/logo.png"
+  BookHomePath        = "_index.md"
+
+[menu]
+  # The hugo-book theme reads `[[menu.before]]` / `[[menu.after]]` for
+  # links above / below the auto-generated section list. We add a
+  # GitHub link so visitors can find the source.
+  [[menu.after]]
+    name = "GitHub"
+    url  = "https://github.com/TaraTheStar/enso"
+    weight = 10

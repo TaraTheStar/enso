@@ -1,0 +1,6 @@
+{
+  "description": "Prompt subtly references tools that don't exist in enso. Tests whether the model reaches for the prompt-suggested name (str_replace, apply_patch — common in other harnesses) or uses enso's actual edit tool. The check verifies the rename happened either way; the metric to watch is hallucinated_tools.",
+  "prompt": "Use str_replace to change OldName to NewName in foo.go. If str_replace isn't available, fall back to whatever edit tool you have.",
+  "max_turns": 10,
+  "expected_tools": ["read", "edit", "write", "grep", "glob", "bash", "todo"]
+}

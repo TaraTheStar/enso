@@ -1,0 +1,6 @@
+{
+  "description": "Genuinely ambiguous request with multiple defensible interpretations. The check passes if either (a) the model asks for clarification and stops, or (b) the model commits to one interpretation and the result still builds and the existing test still passes. Metrics (tool_calls, assistant_bytes) reveal which path was taken.",
+  "prompt": "Make this faster.",
+  "max_turns": 12,
+  "expected_tools": ["read", "edit", "write", "grep", "glob", "bash", "todo"]
+}

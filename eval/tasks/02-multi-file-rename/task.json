@@ -1,0 +1,6 @@
+{
+  "description": "Rename a function across three files. Tests the grep-then-edit loop and whether the model finds every call site.",
+  "prompt": "Rename the function Greet to SayHello everywhere in this module. The module must still build (`go build ./...`).",
+  "max_turns": 16,
+  "expected_tools": ["read", "edit", "write", "grep", "glob", "bash", "todo"]
+}

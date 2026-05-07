@@ -1,0 +1,6 @@
+{
+  "description": "A trivial task that should be done in one or two tool calls. Tests whether the model executes or describes — a common failure mode for instruct-tuned models is to produce a long explanation of what they would do without actually doing it.",
+  "prompt": "Create a file called hello.txt containing exactly the text `hello world` followed by a single trailing newline.",
+  "max_turns": 6,
+  "expected_tools": ["read", "edit", "write", "grep", "glob", "bash", "todo"]
+}

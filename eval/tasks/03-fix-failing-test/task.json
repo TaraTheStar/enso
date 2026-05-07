@@ -1,0 +1,6 @@
+{
+  "description": "A failing Go test where the bug is in a sibling source file, not the test. Tests verify-after-change and root-cause behavior — fixing the test itself instead of the source is a wrong answer.",
+  "prompt": "Run the tests in this module and fix the failure. The test is correct; the bug is in the implementation.",
+  "max_turns": 14,
+  "expected_tools": ["read", "edit", "write", "grep", "glob", "bash", "todo"]
+}

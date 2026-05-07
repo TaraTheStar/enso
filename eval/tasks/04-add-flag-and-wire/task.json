@@ -1,0 +1,6 @@
+{
+  "description": "Add a CLI flag and wire it through to a function. Tests end-to-end completeness — partial implementations (only the flag, only the function param) fail the build or the smoke test.",
+  "prompt": "Add a `--verbose` boolean flag to this CLI. Default false. When true, the program should print the line `verbose: on` (followed by a newline) before its normal output. Update main, the Run function, and any tests as needed. The build and tests must pass.",
+  "max_turns": 18,
+  "expected_tools": ["read", "edit", "write", "grep", "glob", "bash", "todo"]
+}
