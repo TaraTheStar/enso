@@ -7,7 +7,7 @@ require (
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/gdamore/tcell/v2 v2.13.9
 	github.com/google/uuid v1.6.0
-	github.com/mark3labs/mcp-go v0.51.0
+	github.com/mark3labs/mcp-go v0.52.0
 	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/rivo/tview v0.42.0
