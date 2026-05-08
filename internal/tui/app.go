@@ -305,6 +305,13 @@ func Run(opts Options) error {
 		lspMgr,
 		mcpMgr,
 	)
+	// Surface the persisted label (auto-derived on prior turns or
+	// /rename'd) when resuming. Fresh sessions stay unlabelled until
+	// the first user message lands and AppendMessage's auto-label
+	// fires; the host pulls that back via the bus listener below.
+	if resumed != nil && resumed.Info.Label != "" {
+		sidebar.SetLabel(resumed.Info.Label)
+	}
 	sidebar.Refresh()
 
 	agentsEvents := busInst.Subscribe(32)
@@ -512,8 +519,20 @@ func Run(opts Options) error {
 		checker:     checker,
 		registry:    registry,
 		store:       store,
+		writer:      writer,
 		cwd:         cwd,
 		activeAgent: opts.Agent,
+		setSessionLabel: func(label string) (string, error) {
+			slug := session.SlugifyLabel(label)
+			if writer != nil {
+				if err := writer.SetLabel(slug); err != nil {
+					return "", err
+				}
+			}
+			sidebar.SetLabel(slug)
+			app.QueueUpdateDraw(sidebar.Refresh)
+			return slug, nil
+		},
 		runDeps: workflow.RunDeps{
 			Providers:          providers,
 			DefaultProvider:    defaultName,
@@ -704,6 +723,15 @@ func Run(opts Options) error {
 				// updateActivityFromEvent call above; the only thing
 				// pinned to this branch now is the sidebar refresh.
 				refreshSidebar = true
+				// AppendMessage's auto-label may have fired during this
+				// turn; pull the current label so a freshly-derived slug
+				// shows up on the next paint. One DB read per turn end —
+				// negligible cost.
+				if writer != nil {
+					if label, err := writer.Label(); err == nil {
+						sidebar.SetLabel(label)
+					}
+				}
 			case bus.EventCompacted:
 				// Token count just dropped — refresh both the status
 				// bar's tokens segment and the sidebar's bar.

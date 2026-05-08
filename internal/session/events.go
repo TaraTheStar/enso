@@ -6,12 +6,18 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/TaraTheStar/enso/internal/llm"
 )
+
+// labelMaxLen caps the slugified session label. 30 chars keeps the
+// label tag-shaped and ensures a single-line render in the 28-col
+// sidebar with at most a 2-char ellipsis.
+const labelMaxLen = 30
 
 // SessionInfo summarises a row in the sessions table.
 type SessionInfo struct {
@@ -22,6 +28,10 @@ type SessionInfo struct {
 	Provider    string
 	Cwd         string
 	Interrupted bool
+	// Label is the session's display name (slug form, e.g.
+	// "fix-the-flaky-auth-test"). Empty until the first top-level
+	// user message lands or /rename is invoked.
+	Label string
 }
 
 // Writer persists session state synchronously. Each call commits before
@@ -122,11 +132,82 @@ func (w *Writer) AppendMessage(msg llm.Message, agentID string) error {
 		tx.Rollback()
 		return fmt.Errorf("update session ts: %w", err)
 	}
+	// Auto-label: first top-level user message wins. The WHERE label = ''
+	// guard makes this idempotent — resumed sessions or sessions that
+	// have been /rename'd keep their existing label without a separate
+	// read.
+	if msg.Role == "user" && agentID == "" {
+		if label := SlugifyLabel(msg.Content); label != "" {
+			if _, err := tx.Exec(
+				`UPDATE sessions SET label = ? WHERE id = ? AND label = ''`,
+				label, w.sessionID,
+			); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("auto-label: %w", err)
+			}
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
 	w.hasMessages = true
 	return nil
+}
+
+// SetLabel overrides the session's display label. Input is normalised
+// through the same slugifier as the auto-label so /rename and
+// auto-derivation produce labels in the same shape. Empty input clears
+// the label, re-arming auto-derivation on the next user message.
+func (w *Writer) SetLabel(label string) error {
+	slug := SlugifyLabel(label)
+	if _, err := w.db.Exec(
+		`UPDATE sessions SET label = ? WHERE id = ?`, slug, w.sessionID,
+	); err != nil {
+		return fmt.Errorf("set label: %w", err)
+	}
+	return nil
+}
+
+// Label returns the session's current display label, or "" if none is set.
+func (w *Writer) Label() (string, error) {
+	var label string
+	err := w.db.QueryRow(
+		`SELECT label FROM sessions WHERE id = ?`, w.sessionID,
+	).Scan(&label)
+	if err != nil {
+		return "", fmt.Errorf("read label: %w", err)
+	}
+	return label, nil
+}
+
+// SlugifyLabel folds an arbitrary string into a tag-shaped label:
+// lowercase ASCII alphanumerics joined by single hyphens, trimmed,
+// capped at labelMaxLen. Non-ASCII and punctuation collapse into
+// hyphen separators. Returns "" for input that has no alphanumeric
+// content (so callers can treat empty as "no label").
+func SlugifyLabel(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	pendingDash := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			if pendingDash && b.Len() > 0 {
+				b.WriteByte('-')
+			}
+			pendingDash = false
+			b.WriteRune(r)
+		default:
+			if b.Len() > 0 {
+				pendingDash = true
+			}
+		}
+	}
+	out := b.String()
+	if len(out) > labelMaxLen {
+		out = out[:labelMaxLen]
+	}
+	return strings.TrimRight(out, "-")
 }
 
 // HasMessages reports whether at least one message has been persisted
@@ -232,7 +313,7 @@ func ListRecentWithStats(s *Store, limit int) ([]SessionInfoWithStats, error) {
 	// Discard()ed on close, but historical rows from before that fix
 	// still need filtering at the read path.
 	rows, err := s.DB.Query(
-		`SELECT s.id, s.created_at, s.updated_at, s.model, s.provider, s.cwd, s.interrupted,
+		`SELECT s.id, s.created_at, s.updated_at, s.model, s.provider, s.cwd, s.interrupted, s.label,
 		        COUNT(m.seq) AS msg_count,
 		        COALESCE(SUM(LENGTH(m.content)), 0) AS char_total,
 		        COALESCE((SELECT content FROM messages
@@ -257,7 +338,7 @@ func ListRecentWithStats(s *Store, limit int) ([]SessionInfoWithStats, error) {
 		var inter int
 		var charTotal int64
 		if err := rows.Scan(
-			&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter,
+			&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter, &info.Label,
 			&info.MessageCount, &charTotal, &info.LastUserMessage,
 		); err != nil {
 			return nil, fmt.Errorf("scan session stats: %w", err)
@@ -274,7 +355,7 @@ func ListRecentWithStats(s *Store, limit int) ([]SessionInfoWithStats, error) {
 // ListRecent returns the N most-recently-updated sessions.
 func ListRecent(s *Store, limit int) ([]SessionInfo, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, created_at, updated_at, model, provider, cwd, interrupted
+		`SELECT id, created_at, updated_at, model, provider, cwd, interrupted, label
 		 FROM sessions ORDER BY updated_at DESC LIMIT ?`, limit,
 	)
 	if err != nil {
@@ -287,7 +368,7 @@ func ListRecent(s *Store, limit int) ([]SessionInfo, error) {
 		var info SessionInfo
 		var ca, ua int64
 		var inter int
-		if err := rows.Scan(&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter); err != nil {
+		if err := rows.Scan(&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter, &info.Label); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		info.CreatedAt = time.Unix(ca, 0)

@@ -26,9 +26,9 @@ func Load(s *Store, sessionID string) (*State, error) {
 	var ca, ua int64
 	var inter int
 	err := s.DB.QueryRow(
-		`SELECT id, created_at, updated_at, model, provider, cwd, interrupted
+		`SELECT id, created_at, updated_at, model, provider, cwd, interrupted, label
 		 FROM sessions WHERE id = ?`, sessionID,
-	).Scan(&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter)
+	).Scan(&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter, &info.Label)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("session %s not found", sessionID)
 	}
