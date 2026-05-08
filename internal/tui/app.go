@@ -623,10 +623,6 @@ func Run(opts Options) error {
 			submit(text)
 		},
 		func() {
-			agt.Cancel()
-			handler.SetBusy(false)
-		},
-		func() {
 			// Cancel any in-flight turn so the agent goroutine returns
 			// promptly; otherwise app.Stop() can race the still-running
 			// turn and leave the UI feeling unresponsive.
@@ -736,6 +732,18 @@ func Run(opts Options) error {
 		// generic modifier early-return below — that bug previously
 		// silently swallowed Ctrl-R on those terminals.
 		switch event.Key() {
+		case tcell.KeyCtrlC:
+			// tview's Application.Run intercepts Ctrl-C BEFORE the
+			// focused primitive's InputCapture, calling a.Stop() if the
+			// app-level capture returns the event unchanged. So Ctrl-C
+			// has to be handled here, not in InputHandler — otherwise
+			// pressing it during a stuck turn exits the app instead of
+			// cancelling. Always returning nil keeps tview from stopping.
+			if handler != nil && handler.IsBusy() {
+				agt.Cancel()
+				handler.SetBusy(false)
+			}
+			return nil
 		case tcell.KeyCtrlA:
 			sidebarVisible = !sidebarVisible
 			layout.ShowSidebar(sidebarVisible)

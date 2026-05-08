@@ -128,16 +128,22 @@ func RunAttached(sessionID string) error {
 			}()
 		},
 		func() {
-			_ = ac.Cancel(daemon.CancelReq{SessionID: sessionID})
-			handler.SetBusy(false)
-		},
-		func() {
 			cancel()
 			app.Stop()
 		},
 	)
 
 	app.SetInputCapture(func(event *tcell.EventKey) *tcell.EventKey {
+		// tview's Application.Run intercepts Ctrl-C before the focused
+		// primitive's InputCapture, so cancellation has to be wired here.
+		// Returning nil prevents tview from calling a.Stop().
+		if event.Key() == tcell.KeyCtrlC {
+			if handler != nil && handler.IsBusy() {
+				_ = ac.Cancel(daemon.CancelReq{SessionID: sessionID})
+				handler.SetBusy(false)
+			}
+			return nil
+		}
 		return event
 	})
 
