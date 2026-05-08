@@ -98,6 +98,7 @@ func Run(opts Options) error {
 
 	registry := tools.BuildDefault()
 	agent.RegisterSpawn(registry)
+	tools.RegisterSearch(registry, cfg.Search)
 
 	// Per-agent transcripts — populated by spawn_agent / workflow.runRole
 	// post-completion, read by the agents-pane click-to-expand overlay.

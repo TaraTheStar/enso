@@ -28,6 +28,7 @@ type Config struct {
 	Bash        BashConfig                `toml:"bash"`
 	Hooks       HooksConfig               `toml:"hooks"`
 	WebFetch    WebFetchConfig            `toml:"web_fetch"`
+	Search      SearchConfig              `toml:"search"`
 }
 
 // WebFetchConfig controls the web_fetch tool's SSRF guard. By default the
@@ -43,6 +44,30 @@ type Config struct {
 // stays on regardless: the resolved IP is pinned for the actual TCP dial.
 type WebFetchConfig struct {
 	AllowHosts []string `toml:"allow_hosts"`
+}
+
+// SearchConfig configures the web_search tool. Provider selects which
+// backend implementation is used; today the choices are "searxng" (point
+// at a self-hosted instance for higher-quality, multi-engine results),
+// "duckduckgo" / "ddg" (no signup; scrapes html.duckduckgo.com), or
+// "none" (suppress the tool entirely). When unset, web_search defaults
+// to SearXNG if SearXNG.Endpoint is configured, otherwise DuckDuckGo.
+//
+// Adding a new backend = a new file in internal/tools implementing
+// SearchBackend, plus a case in tools.pickSearchBackend.
+type SearchConfig struct {
+	Provider string        `toml:"provider"`
+	SearXNG  SearXNGConfig `toml:"searxng"`
+}
+
+// SearXNGConfig configures the SearXNG backend.
+type SearXNGConfig struct {
+	Endpoint   string   `toml:"endpoint"`    // e.g. "http://localhost:8888"
+	Categories []string `toml:"categories"`  // optional, e.g. ["general","it"]
+	Engines    []string `toml:"engines"`     // optional, e.g. ["google","duckduckgo"]
+	MaxResults int      `toml:"max_results"` // capped count; 0 → 10
+	APIKey     string   `toml:"api_key"`     // forwarded as Authorization: Bearer; ENSO_-prefixed env-var refs expanded
+	Timeout    int      `toml:"timeout"`     // seconds; 0 → 15
 }
 
 // HooksConfig holds the two supported lifecycle commands. Empty
@@ -470,6 +495,7 @@ func LoadWithFirstRun(cwd, explicit string) (*Config, bool, error) {
 		p.APIKey = ExpandEnsoEnv(p.APIKey)
 		cfg.Providers[name] = p
 	}
+	cfg.Search.SearXNG.APIKey = ExpandEnsoEnv(cfg.Search.SearXNG.APIKey)
 	return &cfg, freshlyWritten, nil
 }
 

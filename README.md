@@ -14,8 +14,9 @@ A small TUI agentic coding agent in Go (binary: `enso`). Talks to
 any OpenAI-compatible chat endpoint (designed against `llama.cpp`'s
 `llama-server` running Qwen3.6-35B-A3B, but the LLM client doesn't
 care). Built-in tools: `read`, `write`, `edit` (with diff prompt),
-`bash`, `grep`, `glob`, `web_fetch`, `todo`, `memory_save`. Sessions
-persist to SQLite and resume across crashes.
+`bash`, `grep`, `glob`, `web_fetch`, `web_search` (DuckDuckGo by default;
+opt into SearXNG via `[search.searxng] endpoint = "..."`), `todo`,
+`memory_save`. Sessions persist to SQLite and resume across crashes.
 
 📖 **Full documentation:** <https://tarathestar.github.io/enso/>
 
@@ -159,6 +160,19 @@ allow_hosts = []              # opt local hosts back through the SSRF guard
                               # (web_fetch refuses loopback / private / link-local IPs by default).
                               # Entries are exact host or host:port matches; a host without a port
                               # matches any port. Example: ["localhost:8080", "127.0.0.1:11434"].
+
+[search]
+provider = ""                 # "" (auto) | "searxng" | "duckduckgo" | "none".
+                              # Auto: SearXNG when [search.searxng] endpoint is set, DDG otherwise.
+                              # "none" suppresses the web_search tool entirely.
+
+[search.searxng]
+endpoint    = ""              # e.g. "http://localhost:8888" or "https://searx.be"
+categories  = []              # ["general", "it", ...] — empty leaves SearXNG default
+engines     = []              # ["google", "duckduckgo", ...] — empty leaves SearXNG default
+max_results = 10              # ceiling; the model can ask for fewer
+api_key     = ""              # optional — sent as Authorization: Bearer; "$ENSO_*" refs expanded
+timeout     = 15              # seconds
 ```
 
 Patterns are `tool(arg-pattern)`. Per-tool matching:

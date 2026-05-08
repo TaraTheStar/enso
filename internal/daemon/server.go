@@ -164,6 +164,7 @@ func Run(ctx context.Context, explicitConfig string) error {
 
 	registry := tools.BuildDefault()
 	agent.RegisterSpawn(registry)
+	tools.RegisterSearch(registry, cfg.Search)
 
 	mcpMgr := mcp.NewManager()
 	if len(cfg.MCP) > 0 {

@@ -112,4 +112,21 @@ attribution_name = "enso"
 # args = ["--stdio"]
 # extensions = [".py"]
 # root_markers = ["pyproject.toml", "setup.py", ".git"]
+
+# Web search. The web_search tool is always available; by default it
+# scrapes DuckDuckGo's html endpoint (no signup, no API key). For higher-
+# quality multi-engine results, point [search.searxng] at a self-hosted
+# SearXNG instance. Set [search] provider = "none" to suppress the tool
+# entirely.
+#
+# [search]
+# provider = "searxng"          # "" (auto) | "searxng" | "duckduckgo" | "none"
+#
+# [search.searxng]
+# endpoint    = "http://localhost:8888"
+# categories  = ["general"]
+# engines     = []
+# max_results = 10
+# api_key     = "$ENSO_SEARXNG_KEY"   # optional
+# timeout     = 15                     # seconds
 `
