@@ -437,6 +437,13 @@ func (a *Agent) Run(ctx context.Context, inputCh <-chan string) error {
 			a.mu.Lock()
 			a.curCancel = nil
 			a.mu.Unlock()
+
+			// Whole pipeline (LLM completion + any tool-call rounds) is now
+			// done — distinct from EventAssistantDone which fires per
+			// completion. The TUI gates input-busy and the activity
+			// "ready" indicator on this so Ctrl-C between turns still
+			// cancels.
+			a.Bus.Publish(bus.Event{Type: bus.EventAgentIdle})
 		}
 	}
 }

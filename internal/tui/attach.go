@@ -108,11 +108,9 @@ func RunAttached(sessionID string) error {
 		}
 	}()
 
-	var handler *InputHandler
-	handler = NewInputHandler(
+	NewInputHandler(
 		layout.Input(),
 		func(text string) {
-			handler.SetBusy(true)
 			activity.Set(ActivitySubmitting, "")
 			refreshStatus()
 			go func() {
@@ -137,10 +135,14 @@ func RunAttached(sessionID string) error {
 		// tview's Application.Run intercepts Ctrl-C before the focused
 		// primitive's InputCapture, so cancellation has to be wired here.
 		// Returning nil prevents tview from calling a.Stop().
+		//
+		// Gate on activity.IsBusy() rather than handler.IsBusy(): the
+		// latter was being cleared by per-completion EventAssistantDone
+		// in the middle of a tool-call chain, so Ctrl-C silently
+		// no-op'd between turns.
 		if event.Key() == tcell.KeyCtrlC {
-			if handler != nil && handler.IsBusy() {
+			if activity.IsBusy() {
 				_ = ac.Cancel(daemon.CancelReq{SessionID: sessionID})
-				handler.SetBusy(false)
 			}
 			return nil
 		}
@@ -323,6 +325,8 @@ func toBusEvent(e daemon.Event) bus.Event {
 		return bus.Event{Type: bus.EventAssistantDelta, Payload: s}
 	case "AssistantDone":
 		return bus.Event{Type: bus.EventAssistantDone}
+	case "AgentIdle":
+		return bus.Event{Type: bus.EventAgentIdle}
 	case "Error":
 		s, _ := payload.(string)
 		return bus.Event{Type: bus.EventError, Payload: fmt.Errorf("%s", s)}

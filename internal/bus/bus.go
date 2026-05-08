@@ -25,6 +25,13 @@ const (
 	EventAgentStart
 	EventAgentEnd
 	EventCompacted
+	// EventAgentIdle fires when the agent's runUntilQuiescent loop returns —
+	// i.e., the entire user-message → reply (including any tool-call rounds)
+	// pipeline is done. EventAssistantDone fires per LLM completion, which
+	// includes intermediate completions whose only output is a tool call;
+	// the TUI must not treat those as "agent idle" or Ctrl-C between turns
+	// silently no-ops while the agent is mid-loop.
+	EventAgentIdle
 )
 
 // Event is a typed message sent through the bus.
@@ -103,6 +110,8 @@ func eventTypeString(t EventType) string {
 		return "AgentEnd"
 	case EventCompacted:
 		return "Compacted"
+	case EventAgentIdle:
+		return "AgentIdle"
 	default:
 		return "Unknown"
 	}
