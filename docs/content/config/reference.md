@@ -116,6 +116,47 @@ for that host; with a port the port must match. The DNS-rebind
 defence stays on regardless: the resolved IP is pinned for the actual
 TCP dial.
 
+## `[search]` and `[search.searxng]`
+
+```toml
+[search]
+provider = ""                  # "" (auto) | "searxng" | "duckduckgo" | "none"
+
+[search.searxng]
+endpoint    = ""               # "http://localhost:8888" or "https://searx.be"
+categories  = []               # ["general", "it", ...]
+engines     = []               # ["google", "duckduckgo", ...]
+max_results = 10               # ceiling; the model can ask for fewer
+api_key     = ""               # optional — sent as Authorization: Bearer
+timeout     = 15               # seconds
+```
+
+The `web_search` tool is registered by default. With no configuration it
+scrapes DuckDuckGo's HTML endpoint (`html.duckduckgo.com/html/`) — no
+signup, works anywhere with internet, but no engine attribution and no
+publishedDate. Point `[search.searxng] endpoint` at a self-hosted (or
+public) SearXNG instance for higher-quality, multi-engine results with
+attribution.
+
+`provider` selects the backend explicitly:
+
+- `""` (unset) — auto: SearXNG when `endpoint` is set, DuckDuckGo otherwise.
+- `"searxng"` — force SearXNG; if `endpoint` is empty, logs a warning and falls back to DuckDuckGo.
+- `"duckduckgo"` / `"ddg"` — force the DuckDuckGo fallback.
+- `"none"` / `"off"` / `"disabled"` — suppress `web_search` entirely.
+
+`api_key` accepts `$ENSO_*` env-var references (same gated expansion as
+`providers.*.api_key`). Only ENSO\_-prefixed names expand; anything else
+collapses to empty.
+
+Permission patterns match against the query string:
+
+```toml
+[permissions]
+allow = ["web_search(*)"]              # any query
+ask   = ["web_search(* exploit *)"]    # prompt for queries containing "exploit"
+```
+
 ## `[bash]` and `[bash.sandbox_options]`
 
 ```toml

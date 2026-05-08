@@ -85,6 +85,7 @@ func runOnce(promptArgs []string) error {
 
 	registry := tools.BuildDefault()
 	agent.RegisterSpawn(registry)
+	tools.RegisterSearch(registry, cfg.Search)
 
 	mcpMgr := mcp.NewManager()
 	if len(cfg.MCP) > 0 {
@@ -470,6 +471,7 @@ func runWorkflow(name string, argParts []string) error {
 	}
 	registry := tools.BuildDefault()
 	agent.RegisterSpawn(registry)
+	tools.RegisterSearch(registry, cfg.Search)
 
 	mcpMgr := mcp.NewManager()
 	if len(cfg.MCP) > 0 {
