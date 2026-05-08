@@ -519,6 +519,26 @@ func Run(opts Options) error {
 		}
 	}()
 
+	// Tool-call elapsed-time ticker: when a tool call has been running
+	// past the live-badge threshold, repaint the chat once a second so
+	// the "running · 12s" segment advances. Idle sessions take zero
+	// redraws here — the gate inside HasLiveTimerBlock keeps cost to a
+	// per-second slice walk and nothing more.
+	go func() {
+		t := time.NewTicker(time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if chatDisp.HasLiveTimerBlock() {
+					app.QueueUpdateDraw(chatDisp.Redraw)
+				}
+			}
+		}
+	}()
+
 	// Slash command registry + builtins.
 	slashReg := slash.NewRegistry()
 	sCtx := &slashContext{

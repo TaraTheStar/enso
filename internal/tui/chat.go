@@ -77,10 +77,44 @@ type assistantBlock struct{ text string }
 // header. Carries no state — render just paints the pill.
 type assistantHeaderBlock struct{}
 type toolBlock struct {
-	id     string
-	call   string
-	output string // accumulated stdout/stderr from progress events
+	id        string
+	call      string
+	output    string        // accumulated stdout/stderr from progress events
+	startedAt time.Time     // wall-clock time the call began (zero on replay/legacy blocks — no badge then)
+	duration  time.Duration // zero while running; final wall-clock duration once End fires
 }
+
+// liveBadgeThreshold is how long a tool call must run before its
+// elapsed-time badge appears in the chat. Most read/grep/glob calls
+// finish in <500ms; surfacing "0s" / "1s" on those would flicker
+// without conveying anything useful — the threshold means the badge
+// appears only when the wait actually starts to matter.
+const liveBadgeThreshold = 2 * time.Second
+
+// finalBadgeThreshold is the lower bound for showing a persistent
+// duration on completed tool blocks. Sub-second calls stay un-badged
+// so scrolled-back history stays clean.
+const finalBadgeThreshold = time.Second
+
+// running reports whether this block represents an in-flight tool call.
+// Replay/resume paths leave startedAt zero, so they never look "running"
+// even though duration is also zero.
+func (b *toolBlock) running() bool {
+	return !b.startedAt.IsZero() && b.duration == 0
+}
+
+// elapsed is the duration to display in the badge: live time-since for
+// running calls, the recorded final duration for completed ones.
+func (b *toolBlock) elapsed() time.Duration {
+	if b.startedAt.IsZero() {
+		return 0
+	}
+	if b.duration > 0 {
+		return b.duration
+	}
+	return time.Since(b.startedAt)
+}
+
 type errorBlock struct{ msg string }
 type cancelledBlock struct{}
 type compactedBlock struct {
@@ -113,7 +147,7 @@ func (b *assistantBlock) render(v *tview.TextView, _ bool) {
 }
 
 func (b *toolBlock) render(v *tview.TextView, _ bool) {
-	fmt.Fprintf(v, "%s%s%s\n", barTool, b.call, barToolEnd)
+	fmt.Fprintf(v, "%s%s%s%s\n", barTool, b.call, barToolEnd, toolBlockBadge(b))
 	if b.output != "" {
 		// Indent each output line by two spaces and dim it. Trailing
 		// newline normalised so we always produce a single blank-line gap
@@ -292,6 +326,29 @@ func (c *ChatDisplay) ToggleThinking() {
 	c.redraw()
 }
 
+// HasLiveTimerBlock reports whether any tool block is currently running
+// past the live-badge threshold. The host's 1s chat ticker uses this to
+// gate redraws — a clean idle session takes zero redraws, but a long
+// `bash` keeps the elapsed-time counter ticking.
+func (c *ChatDisplay) HasLiveTimerBlock() bool {
+	for _, b := range c.blocks {
+		tb, ok := b.(*toolBlock)
+		if !ok || !tb.running() {
+			continue
+		}
+		if time.Since(tb.startedAt) >= liveBadgeThreshold {
+			return true
+		}
+	}
+	return false
+}
+
+// Redraw is the exported entry point the host's chat ticker uses to
+// repaint the elapsed-time badge on in-flight tool calls. Internal
+// redraw() stays unexported so other packages don't accidentally
+// depend on it for unrelated reasons.
+func (c *ChatDisplay) Redraw() { c.redraw() }
+
 // ShowThinking returns the current visibility flag (for status display).
 func (c *ChatDisplay) ShowThinking() bool { return c.showThinking }
 
@@ -345,12 +402,14 @@ func (c *ChatDisplay) Render(evt bus.Event) {
 			c.ensureTurnHeader()
 			c.flushStream()
 			id, _ := m["id"].(string)
-			b := &toolBlock{id: id, call: formatToolCall(m)}
+			b := &toolBlock{id: id, call: formatToolCall(m), startedAt: time.Now()}
 			c.blocks = append(c.blocks, b)
-			// Print the call line; output (if any) streams in via
-			// EventToolCallProgress and we paint it directly without
-			// re-rendering the whole block.
-			fmt.Fprintf(c.view, "%s%s%s\n", barTool, b.call, barToolEnd)
+			// Print the call line; the badge is empty here because the
+			// call hasn't run long enough to cross the threshold. Output
+			// (if any) streams in via EventToolCallProgress and we paint
+			// it directly. The 1s chat ticker re-renders this block once
+			// the call passes the live-badge threshold.
+			fmt.Fprintf(c.view, "%s%s%s%s\n", barTool, b.call, barToolEnd, toolBlockBadge(b))
 			c.scrollIfFollowing()
 		}
 
@@ -386,10 +445,23 @@ func (c *ChatDisplay) Render(evt bus.Event) {
 		// block (assistant turn, more tool calls) starts on a fresh row.
 		// Only emit the spacer if the tool actually produced output —
 		// otherwise we already added the trailing \n on the call line.
+		// We also stamp the final duration on the toolBlock and force a
+		// redraw so the persistent "· 12s" badge replaces any in-flight
+		// "· running · 11s" already on screen.
+		needRedraw := false
 		if m, ok := evt.Payload.(map[string]any); ok {
 			id, _ := m["id"].(string)
 			for i := len(c.blocks) - 1; i >= 0; i-- {
 				if tb, ok := c.blocks[i].(*toolBlock); ok && tb.id == id {
+					if !tb.startedAt.IsZero() {
+						tb.duration = time.Since(tb.startedAt)
+						// Sub-threshold completions don't get a badge,
+						// so there's nothing to refresh on screen — skip
+						// the redraw cost in the common fast-tool case.
+						if tb.duration >= liveBadgeThreshold || tb.duration >= finalBadgeThreshold {
+							needRedraw = true
+						}
+					}
 					if tb.output != "" {
 						if !strings.HasSuffix(tb.output, "\n") {
 							fmt.Fprint(c.view, "\n")
@@ -400,6 +472,9 @@ func (c *ChatDisplay) Render(evt bus.Event) {
 			}
 		}
 		fmt.Fprint(c.view, "\n")
+		if needRedraw {
+			c.redraw()
+		}
 		c.scrollIfFollowing()
 
 	case bus.EventCompacted:
@@ -822,6 +897,39 @@ func (c *ChatDisplay) ReplayHistory(history []llm.Message, modelID string) {
 		}
 	}
 	c.scrollIfFollowing()
+}
+
+// toolBlockBadge returns the trailing " · running · 12s" / " · 12s"
+// segment for a tool block, or "" when nothing should render. Pulled
+// out of (b *toolBlock).render so the live-paint path at
+// EventToolCallStart can also call it (the call line is written once
+// directly to the view, then a 1s ticker triggers redraw to update
+// the badge — everything that paints the same line uses this helper
+// to stay consistent).
+func toolBlockBadge(b *toolBlock) string {
+	switch {
+	case b.running():
+		e := b.elapsed()
+		if e < liveBadgeThreshold {
+			return ""
+		}
+		return fmt.Sprintf(" [gray]· running · %s[-]", fmtToolElapsed(e))
+	case b.duration >= finalBadgeThreshold:
+		return fmt.Sprintf(" [gray]· %s[-]", fmtToolElapsed(b.duration))
+	}
+	return ""
+}
+
+// fmtToolElapsed renders an elapsed duration at second precision —
+// "12s" / "2m05s". Used for tool-call badges where sub-second jitter
+// would just be noise; reasoning blocks still use fmtDuration's
+// fractional form because their durations are usually short.
+func fmtToolElapsed(d time.Duration) string {
+	secs := int(d.Seconds())
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	return fmt.Sprintf("%dm%02ds", secs/60, secs%60)
 }
 
 // fmtDuration prints a short, scannable duration like "1.2s" or "850ms".
