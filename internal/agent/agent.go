@@ -387,6 +387,23 @@ func (a *Agent) RunOneShot(ctx context.Context, prompt string) (string, error) {
 	return "", fmt.Errorf("agent produced no settled assistant reply")
 }
 
+// drainInputCh non-blockingly pulls every queued message from inputCh
+// and returns the count. Used after a cancelled turn so frustration-
+// retry submits don't get processed out of order on the next turn.
+// Safe because the caller (Run loop) is between turns and is the only
+// reader of the channel.
+func drainInputCh(inputCh <-chan string) int {
+	n := 0
+	for {
+		select {
+		case <-inputCh:
+			n++
+		default:
+			return n
+		}
+	}
+}
+
 // Cancel interrupts the in-flight turn (if any). The agent stays running and
 // can accept the next user message.
 func (a *Agent) Cancel() {
@@ -433,10 +450,25 @@ func (a *Agent) Run(ctx context.Context, inputCh <-chan string) error {
 
 			a.runUntilQuiescent(turnCtx)
 
+			// Detect "the user cancelled this turn" before the trailing
+			// cancel() unconditionally marks turnCtx done. If the user
+			// queued more submits while the turn hung (frustrated retries
+			// during a stuck tool call), they'd otherwise land as the
+			// next turn after cancel — silently corrupting session
+			// history. Drain non-blocking and report the count so the UI
+			// can render a notice.
+			turnCancelled := turnCtx.Err() != nil
+
 			cancel()
 			a.mu.Lock()
 			a.curCancel = nil
 			a.mu.Unlock()
+
+			if turnCancelled && ctx.Err() == nil {
+				if n := drainInputCh(inputCh); n > 0 {
+					a.Bus.Publish(bus.Event{Type: bus.EventInputDiscarded, Payload: n})
+				}
+			}
 
 			// Whole pipeline (LLM completion + any tool-call rounds) is now
 			// done — distinct from EventAssistantDone which fires per
