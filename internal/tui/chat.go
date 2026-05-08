@@ -3,6 +3,8 @@
 package tui
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -116,7 +118,11 @@ func (b *toolBlock) elapsed() time.Duration {
 	return time.Since(b.startedAt)
 }
 
-type errorBlock struct{ msg string }
+type errorBlock struct {
+	msg     string
+	apiErr  *llm.APIError // non-nil for 4xx/5xx; drives the classified render path
+	retryAt time.Time     // wall-clock deadline for Retry-After countdown; zero = no countdown
+}
 type cancelledBlock struct{}
 type inputDiscardedBlock struct{ count int }
 type compactedBlock struct {
@@ -166,7 +172,78 @@ func (b *toolBlock) render(v *tview.TextView, _ bool) {
 }
 
 func (b *errorBlock) render(v *tview.TextView, _ bool) {
-	fmt.Fprintf(v, "%s%s\n\n", errPrefix, b.msg)
+	if b.apiErr == nil {
+		fmt.Fprintf(v, "%s%s\n\n", errPrefix, b.msg)
+		return
+	}
+	// Classified-error path: badge first, body excerpt second. Splits
+	// transient (429) from serious (5xx/4xx) so users know whether to
+	// wait or to fix something.
+	fmt.Fprintf(v, "%s ", apiErrorBadge(b))
+	if excerpt := apiErrorExcerpt(b.apiErr.Body); excerpt != "" {
+		fmt.Fprintf(v, "%s", excerpt)
+	}
+	fmt.Fprint(v, "\n\n")
+}
+
+// apiErrorBadge returns the leading classification segment for an
+// error block — pre-styled with the per-status colour and including
+// any live Retry-After countdown. The caller appends a body excerpt.
+func apiErrorBadge(b *errorBlock) string {
+	status := b.apiErr.StatusCode
+	switch {
+	case b.apiErr.IsRateLimited():
+		base := fmt.Sprintf("[yellow]⊘ rate-limited (%d)[-]", status)
+		if !b.retryAt.IsZero() {
+			remaining := time.Until(b.retryAt)
+			if remaining > 0 {
+				return base + fmt.Sprintf(" [comment]· retry in %s[-]", fmtToolElapsed(remaining))
+			}
+			return base + " [comment]· retry now[-]"
+		}
+		return base
+	case b.apiErr.IsServerError():
+		return fmt.Sprintf("[red]✘ provider error (%d)[-]", status)
+	default:
+		return fmt.Sprintf("[red]✘ API error (%d)[-]", status)
+	}
+}
+
+// apiErrorExcerpt trims the response body to one ~100-char line. If
+// the body is JSON with an OpenAI-style `error.message` field, prefer
+// that — providers consistently put the human-readable reason there
+// ("context length exceeded", "invalid model id", "incorrect API
+// key"). Falls back to the raw body when parsing fails.
+func apiErrorExcerpt(body string) string {
+	const maxLen = 100
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return ""
+	}
+	if msg := extractErrorMessage(body); msg != "" {
+		body = msg
+	}
+	body = strings.ReplaceAll(body, "\n", " ")
+	body = strings.ReplaceAll(body, "\r", " ")
+	if len(body) > maxLen {
+		body = body[:maxLen] + "…"
+	}
+	return body
+}
+
+// extractErrorMessage pulls `error.message` out of an OpenAI-style
+// JSON error body. Returns "" if the body isn't JSON or doesn't carry
+// that shape.
+func extractErrorMessage(body string) string {
+	var env struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(body), &env); err != nil {
+		return ""
+	}
+	return env.Error.Message
 }
 
 func (b *cancelledBlock) render(v *tview.TextView, _ bool) {
@@ -340,18 +417,24 @@ func (c *ChatDisplay) ToggleThinking() {
 	c.redraw()
 }
 
-// HasLiveTimerBlock reports whether any tool block is currently running
-// past the live-badge threshold. The host's 1s chat ticker uses this to
-// gate redraws — a clean idle session takes zero redraws, but a long
-// `bash` keeps the elapsed-time counter ticking.
+// HasLiveTimerBlock reports whether any block carries a counter that's
+// still ticking — running tool calls past the badge threshold, or
+// rate-limit error blocks with an unexpired Retry-After deadline. The
+// host's 1s chat ticker uses this to gate redraws; a clean idle
+// session takes zero redraws, but a long `bash` or a recent 429 keeps
+// the counter ticking.
 func (c *ChatDisplay) HasLiveTimerBlock() bool {
+	now := time.Now()
 	for _, b := range c.blocks {
-		tb, ok := b.(*toolBlock)
-		if !ok || !tb.running() {
-			continue
-		}
-		if time.Since(tb.startedAt) >= liveBadgeThreshold {
-			return true
+		switch v := b.(type) {
+		case *toolBlock:
+			if v.running() && now.Sub(v.startedAt) >= liveBadgeThreshold {
+				return true
+			}
+		case *errorBlock:
+			if !v.retryAt.IsZero() && v.retryAt.After(now) {
+				return true
+			}
 		}
 	}
 	return false
@@ -550,7 +633,7 @@ func (c *ChatDisplay) Render(evt bus.Event) {
 
 	case bus.EventError:
 		c.flushStream()
-		b := &errorBlock{msg: fmt.Sprint(evt.Payload)}
+		b := errorBlockFromPayload(evt.Payload)
 		c.blocks = append(c.blocks, b)
 		b.render(c.view, c.showThinking)
 		c.scrollIfFollowing()
@@ -1007,6 +1090,27 @@ func fmtToolElapsed(d time.Duration) string {
 		return fmt.Sprintf("%ds", secs)
 	}
 	return fmt.Sprintf("%dm%02ds", secs/60, secs%60)
+}
+
+// errorBlockFromPayload turns an EventError payload into a chat block.
+// If the underlying error is an *llm.APIError, the resulting block
+// carries the structured info (status code, body, retry deadline) so
+// render can produce a classified badge instead of "✘ HTTP 429: ...".
+// Anything else falls through to the generic Sprint path that's been
+// in place since well before the classification work.
+func errorBlockFromPayload(payload any) *errorBlock {
+	var apiErr *llm.APIError
+	if err, ok := payload.(error); ok {
+		errors.As(err, &apiErr)
+	}
+	b := &errorBlock{msg: fmt.Sprint(payload)}
+	if apiErr != nil {
+		b.apiErr = apiErr
+		if apiErr.RetryAfter > 0 {
+			b.retryAt = time.Now().Add(apiErr.RetryAfter)
+		}
+	}
+	return b
 }
 
 // fmtDuration prints a short, scannable duration like "1.2s" or "850ms".
