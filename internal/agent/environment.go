@@ -48,7 +48,9 @@ func environmentNote(cwd string, now time.Time, sb tools.SandboxRunner, restrict
 
 	if sb != nil {
 		mount := sb.WorkdirMount()
-		fmt.Fprintf(&b, "- Working directory: %s (sandboxed; host path %s is bind-mounted here)\n", mount, cwd)
+		fmt.Fprintf(&b, "- Working directory: %s\n", mount)
+		fmt.Fprintf(&b, "- Sandbox bind-mount: host %s is mounted at %s. In shell commands, always use %s — never the host path.\n", cwd, mount, mount)
+		fmt.Fprintf(&b, "  Example: use `find %s -name \"*.go\"` (NOT `find %s -name \"*.go\"`).\n", mount, cwd)
 		fmt.Fprintf(&b, "- Sandbox: enabled — runtime %s, image %s, container %s\n", sb.Runtime(), sb.Image(), sb.ContainerName())
 		b.WriteString("- Bash tool runs inside the sandbox and sees container paths; file-touching tools (read/write/edit/grep/glob) run on the host process and take host paths — they do NOT go through the sandbox.\n")
 	} else {
