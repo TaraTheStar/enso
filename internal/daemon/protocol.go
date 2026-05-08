@@ -104,6 +104,11 @@ type PermissionRequestPayload struct {
 	Diff      string                 `json:"diff,omitempty"`
 	AgentID   string                 `json:"agent_id,omitempty"`
 	AgentRole string                 `json:"agent_role,omitempty"`
+	// Deadline is the wall-clock time at which the daemon will
+	// auto-deny if no client decision arrives. Empty (zero-time) on
+	// older daemons; the TUI countdown treats that as "no countdown
+	// known" and renders the prompt without a timer.
+	Deadline time.Time `json:"deadline,omitempty"`
 }
 
 // SessionInfo is the daemon's view of one session.

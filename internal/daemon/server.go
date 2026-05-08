@@ -77,6 +77,7 @@ type sessionState struct {
 	cancel    context.CancelFunc
 	createdAt time.Time
 	inputCh   chan string
+	server    *Server // back-ref so per-session goroutines can read live config
 
 	mu   sync.Mutex
 	seq  int64
@@ -91,11 +92,19 @@ type sessionState struct {
 	pendingPerms map[string]chan permissions.Decision
 }
 
-// permissionTimeout caps how long the agent waits for a client decision.
-// After that we deny so the agent doesn't hang forever.
-const permissionTimeout = 60 * time.Second
-
 const ringCapacity = 256
+
+// permissionTimeout returns the auto-deny budget for one permission
+// request, derived from `[daemon].permission_timeout` (seconds; 0 →
+// DefaultPermissionTimeout). Read fresh per-prompt so a config edit +
+// daemon SIGHUP-style reload (future) takes effect immediately.
+func (s *Server) permissionTimeout() time.Duration {
+	secs := config.DefaultPermissionTimeout
+	if s.cfg != nil && s.cfg.Daemon.PermissionTimeout > 0 {
+		secs = s.cfg.Daemon.PermissionTimeout
+	}
+	return time.Duration(secs) * time.Second
+}
 
 // Run starts the daemon synchronously and blocks until ctx is cancelled.
 // Acquires a pid lock; refuses to start if another daemon is already running.
@@ -395,6 +404,7 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 		createdAt:    time.Now(),
 		inputCh:      make(chan string, 16),
 		pendingPerms: make(map[string]chan permissions.Decision),
+		server:       s,
 	}
 
 	// Permission proxy: when the agent asks for a decision we generate a
@@ -539,6 +549,7 @@ func (st *sessionState) proxyPermission(pr *permissions.PromptRequest, yolo bool
 	st.pendingPerms[id] = pr.Respond
 	st.permsMu.Unlock()
 
+	timeout := st.server.permissionTimeout()
 	payload, err := json.Marshal(PermissionRequestPayload{
 		RequestID: id,
 		Tool:      pr.ToolName,
@@ -546,6 +557,7 @@ func (st *sessionState) proxyPermission(pr *permissions.PromptRequest, yolo bool
 		Diff:      pr.Diff,
 		AgentID:   pr.AgentID,
 		AgentRole: pr.AgentRole,
+		Deadline:  time.Now().Add(timeout),
 	})
 	if err != nil {
 		st.resolvePermission(id, permissions.Deny)
@@ -568,9 +580,10 @@ func (st *sessionState) proxyPermission(pr *permissions.PromptRequest, yolo bool
 	}
 
 	// Hard timeout so the agent goroutine never hangs on a disconnected
-	// or unresponsive client.
+	// or unresponsive client. Computed once above so the wire-deadline
+	// the client renders matches what we enforce.
 	go func() {
-		time.Sleep(permissionTimeout)
+		time.Sleep(timeout)
 		st.resolvePermission(id, permissions.Deny)
 	}()
 }
