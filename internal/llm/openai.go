@@ -6,12 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // Debug logging.
@@ -91,6 +93,113 @@ type Client struct {
 	Endpoint string
 	APIKey   string
 	Model    string
+
+	// HTTPClient is the transport used for both /chat/completions and
+	// the recovery probe. nil means http.DefaultClient — production
+	// leaves it unset; tests inject a custom RoundTripper to drive
+	// retry/probe state transitions deterministically.
+	HTTPClient *http.Client
+
+	// RetryBackoff and ProbeInterval are test seams. Production leaves
+	// both nil/zero and falls back to the package defaults
+	// (retryBackoff / probeInterval). Tests use tight values so a full
+	// retry-and-probe cycle finishes in milliseconds.
+	RetryBackoff  func(attempt int) time.Duration
+	ProbeInterval time.Duration
+
+	// conn tracks the last-known transport state for this endpoint so
+	// the TUI can render a "reconnecting / disconnected" indicator. Only
+	// transport-class errors (DNS, refused, reset, timeout, …) move the
+	// state — HTTP-status errors leave it Connected because TLS+TCP did
+	// succeed.
+	conn connTracker
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.HTTPClient != nil {
+		return c.HTTPClient
+	}
+	return http.DefaultClient
+}
+
+// LLMConnState satisfies ConnStateReporter. Returning by value keeps the
+// reader path lock-light — callers don't need to hold any reference to
+// the tracker itself.
+func (c *Client) LLMConnState() ConnState { return c.conn.get() }
+
+// retryBackoff returns the wait between attempt N and attempt N+1. Two
+// retries (500ms, 1.5s) cover the vast majority of transient blips —
+// DHCP renews, restart of a local llama.cpp, momentary upstream 502s on
+// a hosted API — without piling up wait time when the endpoint is
+// genuinely down.
+func retryBackoff(attempt int) time.Duration {
+	switch attempt {
+	case 0:
+		return 500 * time.Millisecond
+	case 1:
+		return 1500 * time.Millisecond
+	default:
+		return 3 * time.Second
+	}
+}
+
+// maxChatRetries is the number of *additional* attempts after the
+// initial request fails on a transport error. Total request budget is
+// maxChatRetries + 1.
+const maxChatRetries = 2
+
+// doChatRequest performs the HTTP request with transport-only retry.
+// Non-transport errors (HTTP status, body marshal, context cancel) bypass
+// the retry loop and surface immediately — only network-class failures
+// are worth retrying.
+func (c *Client) doChatRequest(ctx context.Context, body []byte) (*http.Response, error) {
+	var lastErr error
+	for attempt := 0; attempt <= maxChatRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, "POST", c.Endpoint+"/chat/completions", bytes.NewReader(body))
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if c.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+c.APIKey)
+		}
+
+		resp, err := c.httpClient().Do(req)
+		if err == nil {
+			return resp, nil
+		}
+
+		// User-cancellation isn't a transport problem — surface as-is so
+		// callers using errors.Is(ctx.Err()) still match.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
+
+		// Non-transport errors don't benefit from retry.
+		if classifyTransportError(err) == "" {
+			return nil, friendlyHTTPError(c.Endpoint, err)
+		}
+
+		lastErr = err
+		// We're going to retry — surface that on the indicator before
+		// the user-visible delay starts. Probe goroutine isn't spawned
+		// here; that only happens once retries are exhausted.
+		c.conn.set(StateReconnecting)
+
+		if attempt == maxChatRetries {
+			break
+		}
+		backoff := retryBackoff
+		if c.RetryBackoff != nil {
+			backoff = c.RetryBackoff
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(backoff(attempt)):
+		}
+	}
+	return nil, friendlyHTTPError(c.Endpoint, lastErr)
 }
 
 // Chat sends a streaming chat completion request and yields events on the returned channel.
@@ -104,20 +213,24 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (<-chan Event, error
 	}
 	fmt.Fprintf(debugLog(), "POST %s/chat/completions\nbody: %s\n", c.Endpoint, string(data))
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.Endpoint+"/chat/completions", bytes.NewReader(data))
+	resp, err := c.doChatRequest(ctx, data)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		// All retries (if any) exhausted on a transport error: flip the
+		// indicator to Disconnected and start the recovery probe so the
+		// TUI clears the marker once the endpoint is back, even if the
+		// user never sends another turn.
+		if classifyTransportError(err) != "" {
+			if c.conn.set(StateDisconnected) != StateDisconnected {
+				c.startRecoveryProbe()
+			}
+		}
+		return nil, err
 	}
 
-	httpReq.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
-	}
-
-	resp, err := http.DefaultClient.Do(httpReq)
-	if err != nil {
-		return nil, friendlyHTTPError(c.Endpoint, err)
-	}
+	// We got *some* HTTP response — TCP+TLS were healthy enough. Even a
+	// 500 means the endpoint is reachable, so clear any prior degraded
+	// state. (HTTP-error rendering is handled below / by callers.)
+	c.conn.set(StateConnected)
 
 	if resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))

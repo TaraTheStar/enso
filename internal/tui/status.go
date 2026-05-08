@@ -22,6 +22,7 @@ type statusContext struct {
 	TokensFmt      string // pre-formatted "12k/32k" segment, with [yellow]/[red] tcell tags applied at ≥50% / ≥80%
 	TokensPerSec   int    // live streaming rate (≈ chars/4 over the open turn); 0 when not streaming
 	SidebarVisible bool   // true when the right-side session sidebar is open; default template uses this to skip duplicating the tokens segment
+	ConnState      string // pre-styled connection-degraded marker ("[yellow]○ reconnecting[-]" / "[red]✘ disconnected[-]"); empty when healthy
 }
 
 // defaultStatusLine renders only the data that's transient or
@@ -32,7 +33,14 @@ type statusContext struct {
 // turn is actively streaming. If the sidebar is open and nothing is
 // streaming, the bar is empty by design — both the duplicating
 // segment and the transient one are gated.
-const defaultStatusLine = "{{if not .SidebarVisible}}{{.TokensFmt}}{{if .TokensPerSec}} · {{end}}{{end}}{{if .TokensPerSec}}{{.TokensPerSec}} t/s{{end}}"
+// The conn-state segment leads, since a degraded transport is the most
+// urgent thing on the bar — and it's only present when degraded, so it
+// doesn't clutter the healthy case. The trailing separator is gated on
+// at least one downstream segment being non-empty.
+const defaultStatusLine = "{{.ConnState}}" +
+	"{{if and .ConnState (or (and (not .SidebarVisible) .TokensFmt) .TokensPerSec)}} · {{end}}" +
+	"{{if not .SidebarVisible}}{{.TokensFmt}}{{if .TokensPerSec}} · {{end}}{{end}}" +
+	"{{if .TokensPerSec}}{{.TokensPerSec}} t/s{{end}}"
 
 // compileStatusLine parses `tpl` (or the default if empty) into a
 // text/template. Errors propagate so the host can fall back gracefully.
