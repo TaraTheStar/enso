@@ -5,6 +5,8 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -78,6 +80,9 @@ func registerBuiltins(reg *slash.Registry, sc *slashContext) {
 	reg.Register(&loopCmd{sc: sc})
 	reg.Register(&renameCmd{sc: sc})
 	reg.Register(&findCmd{sc: sc})
+	reg.Register(&exportCmd{sc: sc})
+	reg.Register(&statsCmd{sc: sc})
+	reg.Register(&forkCmd{sc: sc})
 	reg.Register(&quitCmd{sc: sc})
 }
 
@@ -427,20 +432,80 @@ func formatWindow(n int) string {
 
 type compactCmd struct{ sc *slashContext }
 
-func (c *compactCmd) Name() string        { return "compact" }
-func (c *compactCmd) Description() string { return "force a context-compaction pass on this session" }
+func (c *compactCmd) Name() string { return "compact" }
+func (c *compactCmd) Description() string {
+	return "force a context-compaction pass on this session (with confirm-preview)"
+}
 func (c *compactCmd) Run(ctx context.Context, args string) error {
-	did, err := c.sc.agt.ForceCompact(ctx)
-	if err != nil {
-		writeChat(c.sc, "compact: %v", err)
-		return err
-	}
-	if did {
-		writeChat(c.sc, "compaction complete")
-	} else {
+	preview := c.sc.agt.CompactPreview()
+	if preview.NothingToDo {
 		writeChat(c.sc, "compact: nothing to summarise")
+		return nil
 	}
+	showCompactConfirm(c.sc, preview)
 	return nil
+}
+
+// showCompactConfirm overlays a yes/no modal carrying the preview
+// counts. On "Compact" the actual ForceCompact runs in a background
+// goroutine — the LLM summary call can take seconds, and we don't
+// want to block the slash dispatcher (which holds tview's event
+// loop). Failure paths route results back through QueueUpdateDraw so
+// chat output stays on the tview goroutine.
+func showCompactConfirm(sc *slashContext, preview agent.CompactPreviewResult) {
+	const pageName = "compact-confirm"
+	text := fmt.Sprintf(
+		"Compact this session?\n\n"+
+			"  before:      ~%s tokens\n"+
+			"  after (est): ~%s tokens\n"+
+			"  %d message%s will be summarised\n\n"+
+			"The summary call uses your current model.",
+		formatThousands(preview.BeforeTokens),
+		formatThousands(preview.EstAfterTokens),
+		preview.MessagesToSummarise, plural(preview.MessagesToSummarise),
+	)
+	modal := tview.NewModal().
+		SetText(text).
+		AddButtons([]string{"Compact", "Cancel"})
+	modal.SetDoneFunc(func(_ int, label string) {
+		sc.pages.RemovePage(pageName)
+		if sc.chat != nil {
+			sc.app.SetFocus(sc.chat)
+		}
+		if label != "Compact" {
+			return
+		}
+		go runCompactInBackground(sc)
+	})
+	sc.pages.AddPage(pageName, modal, true, true)
+	sc.app.SetFocus(modal)
+}
+
+func runCompactInBackground(sc *slashContext) {
+	did, err := sc.agt.ForceCompact(context.Background())
+	sc.app.QueueUpdateDraw(func() {
+		switch {
+		case err != nil:
+			writeChat(sc, "compact: %v", err)
+		case did:
+			writeChat(sc, "compaction complete")
+		default:
+			writeChat(sc, "compact: nothing to summarise")
+		}
+	})
+}
+
+// formatThousands mirrors session.formatThousands but stays local so
+// slash_builtins.go doesn't need to import the format helper directly.
+// 12345 → "12,345".
+func formatThousands(n int) string {
+	if n < 0 {
+		return "-" + formatThousands(-n)
+	}
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+	return formatThousands(n/1000) + fmt.Sprintf(",%03d", n%1000)
 }
 
 // /workflow
@@ -728,6 +793,202 @@ func (c *findCmd) Run(ctx context.Context, args string) error {
 		pattern = strings.TrimSpace(strings.TrimPrefix(pattern, "-e"))
 	}
 	ShowFindOverlay(c.sc.app, c.sc.pages, c.sc.chat, c.sc.chatDisp, pattern, useRegex)
+	return nil
+}
+
+// /export
+
+type exportCmd struct{ sc *slashContext }
+
+func (c *exportCmd) Name() string { return "export" }
+func (c *exportCmd) Description() string {
+	return "save the current session as markdown: /export [path] (default: <cwd>/.enso/exports/)"
+}
+func (c *exportCmd) Run(ctx context.Context, args string) error {
+	if c.sc.store == nil {
+		writeChat(c.sc, "export: store unavailable (running --ephemeral)")
+		return nil
+	}
+	if c.sc.agt == nil || c.sc.agt.AgentCtx == nil {
+		writeChat(c.sc, "export: agent unavailable")
+		return nil
+	}
+	sessionID := c.sc.agt.AgentCtx.SessionID
+	if sessionID == "" {
+		writeChat(c.sc, "export: no session id")
+		return nil
+	}
+	path := strings.TrimSpace(args)
+	if path == "" {
+		short := sessionID
+		if len(short) > 8 {
+			short = short[:8]
+		}
+		dir := filepath.Join(c.sc.cwd, ".enso", "exports")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			writeChat(c.sc, "export: mkdir: %v", err)
+			return nil
+		}
+		// Best-effort: ensure the exports/ subtree is gitignored so a
+		// project doesn't accidentally check in transcripts. Failure
+		// is a soft warning — the export still proceeds.
+		if err := ensureEnsoGitignore(c.sc.cwd); err != nil {
+			writeChat(c.sc, "export: could not write .enso/.gitignore: %v", err)
+		}
+		path = filepath.Join(dir, short+".md")
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		writeChat(c.sc, "export: create %s: %v", path, err)
+		return nil
+	}
+	defer f.Close()
+	if err := session.WriteMarkdownByID(f, c.sc.store, sessionID); err != nil {
+		writeChat(c.sc, "export: %v", err)
+		return nil
+	}
+	writeChat(c.sc, "export: wrote %s", path)
+	return nil
+}
+
+// ensureEnsoGitignore guarantees that <cwd>/.enso/.gitignore exists
+// and lists `exports/`. Idempotent — re-running does nothing if the
+// rule is already present. Uses a nested .gitignore so we don't have
+// to modify whatever rules the user keeps at the repo root.
+func ensureEnsoGitignore(cwd string) error {
+	dir := filepath.Join(cwd, ".enso")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, ".gitignore")
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.TrimSpace(line) == "exports/" {
+			return nil
+		}
+	}
+	prefix := ""
+	if len(data) > 0 && !strings.HasSuffix(string(data), "\n") {
+		prefix = "\n"
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.WriteString(prefix + "exports/\n")
+	return err
+}
+
+// /stats
+
+type statsCmd struct{ sc *slashContext }
+
+func (c *statsCmd) Name() string { return "stats" }
+func (c *statsCmd) Description() string {
+	return "session activity summary: /stats [--all]"
+}
+func (c *statsCmd) Run(ctx context.Context, args string) error {
+	args = strings.TrimSpace(args)
+	if args == "--all" {
+		if c.sc.store == nil {
+			writeChat(c.sc, "stats: store unavailable (running --ephemeral)")
+			return nil
+		}
+		st, err := session.ComputeStats(c.sc.store, time.Time{})
+		if err != nil {
+			writeChat(c.sc, "stats: %v", err)
+			return nil
+		}
+		var buf strings.Builder
+		if err := session.WriteStatsText(&buf, st, time.Time{}); err != nil {
+			writeChat(c.sc, "stats: render: %v", err)
+			return nil
+		}
+		// Stats text already carries newlines and labels — bypass the
+		// gray-prefix wrapper so multi-line output isn't all rendered
+		// on one wrapped line.
+		fmt.Fprintf(c.sc.chat, "[gray]%s[-]\n", buf.String())
+		c.sc.chat.ScrollToEnd()
+		return nil
+	}
+	if args != "" {
+		writeChat(c.sc, "stats: usage /stats [--all]")
+		return nil
+	}
+	c.writeCurrentSessionStats()
+	return nil
+}
+
+// writeCurrentSessionStats reports the live agent's history without
+// hitting the DB — message-by-role counts and the same 4-char token
+// estimate the sidebar uses, so the numbers agree across surfaces.
+func (c *statsCmd) writeCurrentSessionStats() {
+	if c.sc.agt == nil {
+		writeChat(c.sc, "stats: agent unavailable")
+		return
+	}
+	hist := c.sc.agt.History
+	byRole := map[string]int{}
+	toolCalls := 0
+	for _, m := range hist {
+		byRole[m.Role]++
+		toolCalls += len(m.ToolCalls)
+	}
+	tokens := llm.Estimate(hist)
+	window := c.sc.agt.ContextWindow()
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "Current session:\n")
+	fmt.Fprintf(&b, "  Messages: %d  (user %d, assistant %d, tool %d, system %d)\n",
+		len(hist), byRole["user"], byRole["assistant"], byRole["tool"], byRole["system"])
+	fmt.Fprintf(&b, "  Tool calls: %d\n", toolCalls)
+	if window > 0 {
+		pct := float64(tokens) / float64(window) * 100
+		fmt.Fprintf(&b, "  Tokens (~est): %d / %d  (%.0f%% of context window)\n", tokens, window, pct)
+	} else {
+		fmt.Fprintf(&b, "  Tokens (~est): %d\n", tokens)
+	}
+	fmt.Fprintf(&b, "  (use /stats --all for cross-session totals)")
+	fmt.Fprintf(c.sc.chat, "[gray]%s[-]\n", b.String())
+	c.sc.chat.ScrollToEnd()
+}
+
+// /fork
+
+type forkCmd struct{ sc *slashContext }
+
+func (c *forkCmd) Name() string { return "fork" }
+func (c *forkCmd) Description() string {
+	return "branch a session: /fork [id]  (defaults to current session)"
+}
+func (c *forkCmd) Run(ctx context.Context, args string) error {
+	if c.sc.store == nil {
+		writeChat(c.sc, "fork: store unavailable (running --ephemeral)")
+		return nil
+	}
+	src := strings.TrimSpace(args)
+	if src == "" {
+		if c.sc.agt == nil || c.sc.agt.AgentCtx == nil {
+			writeChat(c.sc, "fork: no session id")
+			return nil
+		}
+		src = c.sc.agt.AgentCtx.SessionID
+	}
+	if src == "" {
+		writeChat(c.sc, "fork: no session id")
+		return nil
+	}
+	newID, err := session.Fork(c.sc.store, src)
+	if err != nil {
+		writeChat(c.sc, "fork: %v", err)
+		return nil
+	}
+	writeChat(c.sc, "fork: created session %s", newID)
+	writeChat(c.sc, "       resume with:  enso --session %s", newID)
 	return nil
 }
 

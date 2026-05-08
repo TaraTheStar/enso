@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package main
+package session
 
 import (
 	"bytes"
@@ -9,17 +9,16 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/enso/internal/llm"
-	"github.com/TaraTheStar/enso/internal/session"
 )
 
-func TestWriteMarkdownExport(t *testing.T) {
+func TestWriteMarkdown(t *testing.T) {
 	asst := llm.Message{Role: "assistant", Content: "let me check"}
 	asst.ToolCalls = []llm.ToolCall{{ID: "c1"}}
 	asst.ToolCalls[0].Function.Name = "bash"
 	asst.ToolCalls[0].Function.Arguments = `{"cmd":"ls"}`
 
-	state := &session.State{
-		Info: session.SessionInfo{
+	state := &State{
+		Info: SessionInfo{
 			ID:        "abc-123",
 			Model:     "qwen3.6",
 			Provider:  "local",
@@ -36,7 +35,7 @@ func TestWriteMarkdownExport(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	if err := writeMarkdownExport(&buf, state); err != nil {
+	if err := WriteMarkdown(&buf, state); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
