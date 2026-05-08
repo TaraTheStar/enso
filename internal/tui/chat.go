@@ -117,6 +117,7 @@ func (b *toolBlock) elapsed() time.Duration {
 
 type errorBlock struct{ msg string }
 type cancelledBlock struct{}
+type inputDiscardedBlock struct{ count int }
 type compactedBlock struct {
 	before int
 	after  int
@@ -165,6 +166,14 @@ func (b *errorBlock) render(v *tview.TextView, _ bool) {
 
 func (b *cancelledBlock) render(v *tview.TextView, _ bool) {
 	fmt.Fprint(v, "[teal](cancelled)[-]\n\n")
+}
+
+func (b *inputDiscardedBlock) render(v *tview.TextView, _ bool) {
+	noun := "messages"
+	if b.count == 1 {
+		noun = "message"
+	}
+	fmt.Fprintf(v, "[teal](%d %s discarded after cancel)[-]\n\n", b.count, noun)
 }
 
 func (b *compactedBlock) render(v *tview.TextView, _ bool) {
@@ -535,6 +544,20 @@ func (c *ChatDisplay) Render(evt bus.Event) {
 	case bus.EventCancelled:
 		c.flushStream()
 		b := &cancelledBlock{}
+		c.blocks = append(c.blocks, b)
+		b.render(c.view, c.showThinking)
+		c.scrollIfFollowing()
+
+	case bus.EventInputDiscarded:
+		// Local-mode payloads carry an int; daemon-attached events
+		// arrive as float64 after JSON round-trip. tokenField in this
+		// file already handles both; reuse it.
+		count := tokenField(evt.Payload)
+		if count <= 0 {
+			return
+		}
+		c.flushStream()
+		b := &inputDiscardedBlock{count: count}
 		c.blocks = append(c.blocks, b)
 		b.render(c.view, c.showThinking)
 		c.scrollIfFollowing()

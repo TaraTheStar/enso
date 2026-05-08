@@ -32,6 +32,14 @@ const (
 	// the TUI must not treat those as "agent idle" or Ctrl-C between turns
 	// silently no-ops while the agent is mid-loop.
 	EventAgentIdle
+
+	// EventInputDiscarded fires when the agent drains user-message
+	// submissions that piled up in the input channel during a turn the
+	// user then cancelled. Payload is the int count of discarded
+	// messages. Without this drain, queued submits would land as the
+	// next turn out of order — the UI shows the count so the user
+	// knows their followups didn't make it through.
+	EventInputDiscarded
 )
 
 // Event is a typed message sent through the bus.
@@ -112,6 +120,8 @@ func eventTypeString(t EventType) string {
 		return "Compacted"
 	case EventAgentIdle:
 		return "AgentIdle"
+	case EventInputDiscarded:
+		return "InputDiscarded"
 	default:
 		return "Unknown"
 	}
