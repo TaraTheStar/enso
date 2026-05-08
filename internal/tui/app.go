@@ -453,6 +453,7 @@ func Run(opts Options) error {
 			TokensFmt:      fmtTokens(agt.EstimateTokens(), agt.ContextWindow()),
 			TokensPerSec:   streamRate(),
 			SidebarVisible: sidebarVisible,
+			ConnState:      fmtConnState(p.Client),
 		}
 		return renderStatusLine(statusTpl, ctx)
 	}
@@ -490,9 +491,15 @@ func Run(opts Options) error {
 	// — terminals invalidate any active text selection on app output,
 	// and a periodic timer-driven redraw kills mouse drag-to-copy.
 	// Sidebar refreshes piggyback on bus events instead.
+	//
+	// Exception: the LLM connection-state probe flips state at idle
+	// when the endpoint comes back. We can't redraw on every tick or
+	// we lose drag-select, so we sample the current segment each tick
+	// and only redraw when it actually changed.
 	go func() {
 		t := time.NewTicker(100 * time.Millisecond)
 		defer t.Stop()
+		var lastConn string
 		for {
 			select {
 			case <-ctx.Done():
@@ -502,7 +509,10 @@ func Run(opts Options) error {
 				if busy {
 					activity.Tick()
 				}
-				if busy || streamStartNanos.Load() != 0 {
+				connNow := fmtConnState(agt.Provider().Client)
+				connChanged := connNow != lastConn
+				lastConn = connNow
+				if busy || streamStartNanos.Load() != 0 || connChanged {
 					app.QueueUpdateDraw(refreshStatus)
 				}
 			}
