@@ -30,9 +30,9 @@ func TestAPIError_Error(t *testing.T) {
 
 func TestAPIError_Classification(t *testing.T) {
 	cases := []struct {
-		status         int
-		wantRateLimit  bool
-		wantServerErr  bool
+		status        int
+		wantRateLimit bool
+		wantServerErr bool
 	}{
 		{200, false, false},
 		{401, false, false},
