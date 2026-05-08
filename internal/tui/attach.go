@@ -389,6 +389,7 @@ func handlePermissionRequest(
 		AgentID:   p.AgentID,
 		AgentRole: p.AgentRole,
 		Respond:   respCh,
+		Deadline:  p.Deadline,
 	}
 	app.QueueUpdateDraw(func() {
 		// Allow + Remember persistence isn't supported over the socket
