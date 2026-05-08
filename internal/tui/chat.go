@@ -78,7 +78,8 @@ type assistantBlock struct{ text string }
 type assistantHeaderBlock struct{}
 type toolBlock struct {
 	id        string
-	call      string
+	name      string        // tool name (e.g. "bash", "read", "lsp_hover") — drives the untrusted-content marker
+	call      string        // formatted "name(arg=val, ...)" for display
 	output    string        // accumulated stdout/stderr from progress events
 	startedAt time.Time     // wall-clock time the call began (zero on replay/legacy blocks — no badge then)
 	duration  time.Duration // zero while running; final wall-clock duration once End fires
@@ -148,7 +149,11 @@ func (b *assistantBlock) render(v *tview.TextView, _ bool) {
 }
 
 func (b *toolBlock) render(v *tview.TextView, _ bool) {
-	fmt.Fprintf(v, "%s%s%s%s\n", barTool, b.call, barToolEnd, toolBlockBadge(b))
+	marker := ""
+	if isUntrustedContentTool(b.name) {
+		marker = untrustedMarker
+	}
+	fmt.Fprintf(v, "%s%s%s%s%s\n", barTool, marker, b.call, barToolEnd, toolBlockBadge(b))
 	if b.output != "" {
 		// Indent each output line by two spaces and dim it. Trailing
 		// newline normalised so we always produce a single blank-line gap
@@ -451,14 +456,23 @@ func (c *ChatDisplay) Render(evt bus.Event) {
 			c.ensureTurnHeader()
 			c.flushStream()
 			id, _ := m["id"].(string)
-			b := &toolBlock{id: id, call: formatToolCall(m), startedAt: time.Now()}
+			name, _ := m["name"].(string)
+			b := &toolBlock{id: id, name: name, call: formatToolCall(m), startedAt: time.Now()}
 			c.blocks = append(c.blocks, b)
 			// Print the call line; the badge is empty here because the
 			// call hasn't run long enough to cross the threshold. Output
 			// (if any) streams in via EventToolCallProgress and we paint
 			// it directly. The 1s chat ticker re-renders this block once
-			// the call passes the live-badge threshold.
-			fmt.Fprintf(c.view, "%s%s%s%s\n", barTool, b.call, barToolEnd, toolBlockBadge(b))
+			// the call passes the live-badge threshold. Untrusted-content
+			// marker (when the tool's output is external text) goes
+			// between the bar and the call name; same `marker` lookup as
+			// in (b *toolBlock).render so live-paint and full-redraw
+			// agree.
+			marker := ""
+			if isUntrustedContentTool(b.name) {
+				marker = untrustedMarker
+			}
+			fmt.Fprintf(c.view, "%s%s%s%s%s\n", barTool, marker, b.call, barToolEnd, toolBlockBadge(b))
 			c.scrollIfFollowing()
 		}
 
@@ -947,7 +961,7 @@ func (c *ChatDisplay) ReplayHistory(history []llm.Message, modelID string) {
 				b.render(c.view, c.showThinking)
 			}
 			for _, tc := range m.ToolCalls {
-				b := &toolBlock{call: tc.Function.Name + "()"}
+				b := &toolBlock{name: tc.Function.Name, call: tc.Function.Name + "()"}
 				c.blocks = append(c.blocks, b)
 				b.render(c.view, c.showThinking)
 			}
