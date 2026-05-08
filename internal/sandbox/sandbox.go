@@ -74,6 +74,16 @@ func (m *Manager) Runtime() string { return m.runtime }
 // ContainerName returns the name the manager uses for this project.
 func (m *Manager) ContainerName() string { return m.containerName }
 
+// Image returns the container image this manager runs (e.g.
+// "alpine:latest"). Surfaced to the model in the environment note so it
+// knows what userland is available inside the sandbox.
+func (m *Manager) Image() string { return m.cfg.Image }
+
+// WorkdirMount returns the in-container path the host cwd is bind-
+// mounted at (e.g. "/work"). This is the cwd from the model's
+// perspective when running shell commands through the sandbox.
+func (m *Manager) WorkdirMount() string { return m.cfg.WorkdirMount }
+
 // Ensure creates the container if it doesn't exist, recreates it if its
 // init-hash label doesn't match the current config, and starts it if
 // stopped. Idempotent — call as often as you like.
