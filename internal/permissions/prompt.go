@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/TaraTheStar/enso/internal/bus"
 )
@@ -35,6 +36,12 @@ type PromptRequest struct {
 	AgentID   string
 	AgentRole string
 	Respond   chan Decision
+	// Deadline is the wall-clock time at which the request will be
+	// auto-denied if no decision arrives. Set by attach mode (the
+	// daemon enforces a per-request timeout); zero in standalone mode
+	// where there's no auto-deny. The modal renders a countdown only
+	// when this is non-zero.
+	Deadline time.Time
 }
 
 // Checker evaluates tool calls against allowlist and config mode.

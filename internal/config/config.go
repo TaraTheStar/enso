@@ -29,7 +29,25 @@ type Config struct {
 	Hooks       HooksConfig               `toml:"hooks"`
 	WebFetch    WebFetchConfig            `toml:"web_fetch"`
 	Search      SearchConfig              `toml:"search"`
+	Daemon      DaemonConfig              `toml:"daemon"`
 }
+
+// DaemonConfig holds settings that only apply when running enso under
+// the long-lived daemon (`enso daemon` + `enso attach`). Standalone
+// runs ignore this section entirely.
+type DaemonConfig struct {
+	// PermissionTimeout caps how long the daemon waits for a client
+	// decision on a permission request before auto-denying. Seconds;
+	// 0 → 60. Setting this above ~5 minutes is reasonable if you walk
+	// away from terminals; very small values will surprise users by
+	// auto-denying mid-thought.
+	PermissionTimeout int `toml:"permission_timeout"`
+}
+
+// DefaultPermissionTimeout is the auto-deny budget when the user
+// hasn't customised [daemon].permission_timeout. Exposed as a constant
+// so the daemon and the TUI countdown can both reference one source.
+const DefaultPermissionTimeout = 60
 
 // WebFetchConfig controls the web_fetch tool's SSRF guard. By default the
 // tool refuses any URL that resolves to a loopback / private / link-local
