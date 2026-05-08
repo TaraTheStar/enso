@@ -104,7 +104,9 @@ func TestEnvironmentNote_SandboxedReportsContainerCwd(t *testing.T) {
 	got := environmentNote(tmp, time.Now(), sb, []string{tmp})
 
 	for _, want := range []string{
-		"Working directory: /work (sandboxed; host path " + tmp + " is bind-mounted here)",
+		"Working directory: /work\n",
+		"Sandbox bind-mount: host " + tmp + " is mounted at /work. In shell commands, always use /work — never the host path.",
+		"Example: use `find /work -name \"*.go\"` (NOT `find " + tmp + " -name \"*.go\"`).",
 		"Sandbox: enabled — runtime docker, image alpine:latest, container enso-test-abc123",
 		"Bash tool runs inside the sandbox",
 		"file-touching tools (read/write/edit/grep/glob) run on the host process",
@@ -115,9 +117,10 @@ func TestEnvironmentNote_SandboxedReportsContainerCwd(t *testing.T) {
 		}
 	}
 	// The host cwd should NOT appear as the primary "Working directory:"
-	// line — only inside the parenthetical. Guard against regressions
-	// where both lines are emitted and the model sees a contradiction.
-	if strings.Contains(got, "Working directory: "+tmp+"\n") {
+	// line — small models latch onto whatever path follows that label.
+	// The host path is allowed elsewhere (e.g. the bind-mount line, the
+	// do/don't example) so the model knows the mapping.
+	if strings.Contains(got, "Working directory: "+tmp) {
 		t.Errorf("sandboxed note should not list the host cwd as the primary working directory, got:\n%s", got)
 	}
 }
