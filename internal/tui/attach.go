@@ -394,7 +394,10 @@ func handlePermissionRequest(
 	app.QueueUpdateDraw(func() {
 		// Allow + Remember persistence isn't supported over the socket
 		// today (would need to round-trip back to the daemon's checker
-		// and config.local.toml), so we pass nil for onRemember.
-		ShowPermissionModal(app, layout.Pages(), layout.Input(), nil, req)
+		// and config.local.toml), so we pass nil for onRemember. Same
+		// reasoning for onAllowTurn — the daemon's checker is in a
+		// different process and there's no wire path for "grant this
+		// pattern for the current turn only".
+		ShowPermissionModal(app, layout.Pages(), layout.Input(), nil, nil, req)
 	})
 }
