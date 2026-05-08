@@ -55,6 +55,11 @@ type slashContext struct {
 	// by the host (Run); used by /grep's overlay when the user picks a
 	// hit. Mirrors the Ctrl-R sessions-overlay path.
 	switchSession func(id string)
+
+	// chatDisp is the live ChatDisplay for the current session. Slash
+	// commands that operate on the rendered conversation (today: /find)
+	// reach into it to read the block model and drive highlights.
+	chatDisp *ChatDisplay
 }
 
 // registerBuiltins attaches the standard built-in commands to a slash registry.
@@ -72,6 +77,7 @@ func registerBuiltins(reg *slash.Registry, sc *slashContext) {
 	reg.Register(&agentsCmd{sc: sc})
 	reg.Register(&loopCmd{sc: sc})
 	reg.Register(&renameCmd{sc: sc})
+	reg.Register(&findCmd{sc: sc})
 	reg.Register(&quitCmd{sc: sc})
 }
 
@@ -696,6 +702,32 @@ func (c *renameCmd) Run(ctx context.Context, args string) error {
 		return nil
 	}
 	writeChat(c.sc, "rename: label set to %q", slug)
+	return nil
+}
+
+// /find
+
+type findCmd struct{ sc *slashContext }
+
+func (c *findCmd) Name() string { return "find" }
+func (c *findCmd) Description() string {
+	return "search the current chat: /find [-e] <pattern> (Ctrl-F also opens this overlay)"
+}
+func (c *findCmd) Run(ctx context.Context, args string) error {
+	if c.sc.chatDisp == nil {
+		writeChat(c.sc, "find: chat display unavailable")
+		return nil
+	}
+	useRegex := false
+	pattern := strings.TrimSpace(args)
+	// Single-flag parser: `-e` switches to regex. /grep accepts longer
+	// flags (--regex, --all, --text); /find has just the one toggle so
+	// the short form keeps the common case fast to type.
+	if strings.HasPrefix(pattern, "-e ") || pattern == "-e" {
+		useRegex = true
+		pattern = strings.TrimSpace(strings.TrimPrefix(pattern, "-e"))
+	}
+	ShowFindOverlay(c.sc.app, c.sc.pages, c.sc.chat, c.sc.chatDisp, pattern, useRegex)
 	return nil
 }
 

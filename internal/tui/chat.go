@@ -352,15 +352,55 @@ func (c *ChatDisplay) Redraw() { c.redraw() }
 // ShowThinking returns the current visibility flag (for status display).
 func (c *ChatDisplay) ShowThinking() bool { return c.showThinking }
 
-// redraw clears the view and re-renders every block.
+// redraw clears the view and re-renders every block. Each block is
+// wrapped in a tview region tag (`["block-N"]…[""]`) so /find can
+// drive ScrollToHighlight without needing a parallel offset map. The
+// tags are zero-cost markup (invisible in copy/paste) and the chat's
+// TextView already has SetRegions(true) from layout.go.
 func (c *ChatDisplay) redraw() {
 	c.view.Clear()
 	c.stream = streamNone
-	for _, b := range c.blocks {
+	for i, b := range c.blocks {
+		fmt.Fprintf(c.view, blockRegionOpen, i)
 		b.render(c.view, c.showThinking)
+		fmt.Fprint(c.view, blockRegionClose)
 	}
 	c.scrollIfFollowing()
 }
+
+// blockRegionOpen / blockRegionClose are tview region markup. The id
+// format is `block-<idx>` so HighlightBlock can address blocks by
+// their slice position. The closing `[""]` resets the active region
+// without affecting any color tags emitted by the block itself.
+const (
+	blockRegionOpen  = "[\"block-%d\"]"
+	blockRegionClose = "[\"\"]"
+)
+
+// HighlightBlock scrolls the chat to the block at idx and turns on
+// the tview highlight on its region. Callers should ensure a recent
+// redraw has happened so the region tags are present in the view —
+// the find overlay invokes redraw on open for that reason.
+func (c *ChatDisplay) HighlightBlock(idx int) {
+	if idx < 0 || idx >= len(c.blocks) {
+		return
+	}
+	c.view.Highlight(fmt.Sprintf("block-%d", idx))
+	c.view.ScrollToHighlight()
+}
+
+// ClearHighlight turns off any active region highlight. The find
+// overlay calls this on Esc / dismiss so the chat returns to its
+// unmarked state.
+func (c *ChatDisplay) ClearHighlight() {
+	c.view.Highlight()
+}
+
+// Blocks exposes the current block slice (read-only) so the /find
+// overlay can run findInBlocks against it. Returning the slice
+// directly is fine since callers only iterate; mutation would be a
+// bug regardless of accessor shape.
+func (c *ChatDisplay) Blocks() []chatBlock { return c.blocks }
 
 // Render handles a single bus event. Caller is responsible for synchronising
 // with the tview application loop (e.g. via Application.QueueUpdateDraw).
