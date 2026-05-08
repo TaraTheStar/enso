@@ -23,12 +23,18 @@ import (
 // (button or `r` shortcut) before the Allow decision is sent. The caller
 // supplies it to add the rule to the live checker and persist it.
 //
+// `onAllowTurn`, when non-nil, is invoked when the user picks "Turn"
+// (button or `t` shortcut). It should add a turn-scoped grant to the
+// live checker — typically `Checker.AddTurnAllow(DerivePattern(...))`.
+// nil hides the button (e.g., daemon-attach mode where the TUI has no
+// in-process Checker to mutate).
+//
 // Visual: bordered box (yellow border so it's clearly a prompt), titled with
 // the tool name. tview's default white-bg/black-text buttons are readable on
 // every terminal we've tested; the active button gets a loud yellow-on-black
 // override so it can't be missed. Single-key shortcuts: a/y allow, r remember,
-// d/n deny, Esc deny.
-func ShowPermissionModal(app *tview.Application, pages *tview.Pages, focusAfter tview.Primitive, onRemember func(), req *permissions.PromptRequest) {
+// t turn-allow, d/n deny, Esc deny.
+func ShowPermissionModal(app *tview.Application, pages *tview.Pages, focusAfter tview.Primitive, onRemember func(), onAllowTurn func(), req *permissions.PromptRequest) {
 	argStr := formatArgs(req.Args)
 
 	body := tview.NewTextView()
@@ -48,9 +54,10 @@ func ShowPermissionModal(app *tview.Application, pages *tview.Pages, focusAfter 
 	}
 
 	const (
-		labelAllow    = "  (a)llow  "
-		labelRemember = "  (r)emember  "
-		labelDeny     = "  (d)eny  "
+		labelAllow     = "  (a)llow  "
+		labelRemember  = "  (r)emember  "
+		labelAllowTurn = "  (t)urn  "
+		labelDeny      = "  (d)eny  "
 	)
 
 	form := tview.NewForm()
@@ -91,8 +98,18 @@ func ShowPermissionModal(app *tview.Application, pages *tview.Pages, focusAfter 
 		resolve(permissions.Allow)
 	}
 
+	allowTurn := func() {
+		if onAllowTurn != nil {
+			onAllowTurn()
+		}
+		resolve(permissions.Allow)
+	}
+
 	form.AddButton(labelAllow, func() { resolve(permissions.Allow) })
 	form.AddButton(labelRemember, remember)
+	if onAllowTurn != nil {
+		form.AddButton(labelAllowTurn, allowTurn)
+	}
 	form.AddButton(labelDeny, func() { resolve(permissions.Deny) })
 
 	// countdown is rendered between the body and the form when the
@@ -119,8 +136,13 @@ func ShowPermissionModal(app *tview.Application, pages *tview.Pages, focusAfter 
 	// for forms with input fields, but a buttons-only form doesn't always
 	// pick up Left/Right/Tab — so we do it ourselves. focusedBtn is closed
 	// over by the input handlers; SetFocus(idx) targets the n-th button
-	// (form items count first, of which we have none).
-	const numBtns = 3
+	// (form items count first, of which we have none). numBtns is dynamic
+	// because the "Turn" button only appears when onAllowTurn is wired
+	// (standalone mode); attach mode still has 3 buttons.
+	numBtns := 3
+	if onAllowTurn != nil {
+		numBtns = 4
+	}
 	focusedBtn := 0
 	advance := func(delta int) {
 		focusedBtn = (focusedBtn + delta + numBtns) % numBtns
@@ -150,6 +172,11 @@ func ShowPermissionModal(app *tview.Application, pages *tview.Pages, focusAfter 
 			case 'r', 'R':
 				remember()
 				return nil
+			case 't', 'T':
+				if onAllowTurn != nil {
+					allowTurn()
+					return nil
+				}
 			}
 		}
 		return event

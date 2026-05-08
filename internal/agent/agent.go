@@ -444,6 +444,20 @@ func (a *Agent) Run(ctx context.Context, inputCh <-chan string) error {
 			a.curCancel = cancel
 			a.mu.Unlock()
 
+			// Turn-scoped permission grants ("Allow Turn" modal button)
+			// reset here, before any tool call in the new turn can run.
+			// This is the only safe boundary: sub-agent fan-out and
+			// chained tool calls all run within one user-driven turn,
+			// so resetting on tool boundaries would expire the grant
+			// mid-chain and resetting only on EventAgentIdle would let
+			// it survive into the next user message. EventUserMessage
+			// fires only from real user input (no synthetic submitters
+			// in the codebase), which is what the security caveat in
+			// TODO P2 #13 demands.
+			if a.Perms != nil {
+				a.Perms.ResetTurnAllows()
+			}
+
 			a.appendMessage(llm.Message{Role: "user", Content: prompt})
 			a.Bus.Publish(bus.Event{Type: bus.EventUserMessage, Payload: prompt})
 			a.AgentCtx.TurnCount = 0

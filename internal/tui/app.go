@@ -353,8 +353,21 @@ func Run(opts Options) error {
 				}
 				fmt.Fprintf(layout.Chat(), "[teal]remembered %s → %s[-]\n\n", pattern, path)
 			}
+			// Turn-scoped grant: same pattern derivation as Remember, but
+			// not persisted to disk and reset on the next user message.
+			// The agent loop calls Perms.ResetTurnAllows before every
+			// EventUserMessage, so this lives only as long as the user's
+			// current request fans out.
+			onAllowTurn := func() {
+				pattern := permissions.DerivePattern(pinned.ToolName, pinned.Args)
+				if err := checker.AddTurnAllow(pattern); err != nil {
+					fmt.Fprintf(layout.Chat(), "[red]allow-turn %s: %v[-]\n\n", pattern, err)
+					return
+				}
+				fmt.Fprintf(layout.Chat(), "[teal]allowing %s for this turn[-]\n\n", pattern)
+			}
 			app.QueueUpdateDraw(func() {
-				ShowPermissionModal(app, layout.Pages(), layout.Input(), onRemember, pinned)
+				ShowPermissionModal(app, layout.Pages(), layout.Input(), onRemember, onAllowTurn, pinned)
 			})
 		}
 	}()
