@@ -38,7 +38,9 @@ func (e *APIError) Error() string {
 // IsRateLimited is true for 429 Too Many Requests. Surfaced as its own
 // classification because the user response is "wait, then resubmit"
 // — different from a 5xx where retrying immediately is fine.
-func (e *APIError) IsRateLimited() bool { return e != nil && e.StatusCode == http.StatusTooManyRequests }
+func (e *APIError) IsRateLimited() bool {
+	return e != nil && e.StatusCode == http.StatusTooManyRequests
+}
 
 // IsServerError is true for 5xx. The model provider is broken; user
 // can resubmit, but the underlying issue is upstream.
