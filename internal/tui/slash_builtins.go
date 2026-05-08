@@ -31,7 +31,7 @@ type slashContext struct {
 	agt         *agent.Agent
 	checker     *permissions.Checker
 	registry    *tools.Registry
-	store       *session.Store // may be nil for ephemeral
+	store       *session.Store  // may be nil for ephemeral
 	writer      *session.Writer // may be nil for ephemeral
 	cwd         string
 	activeAgent string // name of the declarative agent in use, "" = default
