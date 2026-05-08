@@ -466,7 +466,11 @@ func Run(opts Options) error {
 					streamStartNanos.CompareAndSwap(0, time.Now().UnixNano())
 					streamChars.Add(int64(len(s)))
 				}
-			case bus.EventAssistantDone, bus.EventCancelled, bus.EventError:
+			case bus.EventAgentIdle, bus.EventCancelled, bus.EventError:
+				// Reset the t/s counter when the pipeline goes idle —
+				// resetting it on every per-completion AssistantDone
+				// would also zero it between intermediate tool-call
+				// turns, hiding the rate during the rest of the run.
 				streamStartNanos.Store(0)
 				streamChars.Store(0)
 			}
@@ -617,7 +621,6 @@ func Run(opts Options) error {
 				}()
 				return
 			}
-			handler.SetBusy(true)
 			activity.Set(ActivitySubmitting, "")
 			refreshStatus()
 			submit(text)
@@ -696,8 +699,10 @@ func Run(opts Options) error {
 			changed := updateActivityFromEvent(activity, ev)
 			refreshSidebar := false
 			switch ev.Type {
-			case bus.EventAssistantDone, bus.EventCancelled, bus.EventError:
-				app.QueueUpdateDraw(func() { handler.SetBusy(false) })
+			case bus.EventAgentIdle, bus.EventCancelled, bus.EventError:
+				// Pipeline-level "done". Activity is cleared by the
+				// updateActivityFromEvent call above; the only thing
+				// pinned to this branch now is the sidebar refresh.
 				refreshSidebar = true
 			case bus.EventCompacted:
 				// Token count just dropped — refresh both the status
@@ -739,9 +744,16 @@ func Run(opts Options) error {
 			// has to be handled here, not in InputHandler — otherwise
 			// pressing it during a stuck turn exits the app instead of
 			// cancelling. Always returning nil keeps tview from stopping.
-			if handler != nil && handler.IsBusy() {
+			//
+			// Gating on activity.IsBusy() rather than handler.IsBusy()
+			// matters: handler.busy was being cleared by EventAssistantDone
+			// after every intermediate turn (model emits a tool call →
+			// AssistantDone → busy=false → tools run → next turn …),
+			// leaving Ctrl-C silently no-op'd between turns. Activity is
+			// driven off the full event stream and stays busy across the
+			// whole pipeline.
+			if activity.IsBusy() {
 				agt.Cancel()
-				handler.SetBusy(false)
 			}
 			return nil
 		case tcell.KeyCtrlA:
