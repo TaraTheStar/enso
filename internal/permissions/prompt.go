@@ -202,6 +202,10 @@ func extractArg(tool string, args map[string]any) string {
 		if v, ok := args["url"].(string); ok {
 			return v
 		}
+	case "web_search":
+		if v, ok := args["query"].(string); ok {
+			return v
+		}
 	case "spawn_agent":
 		if v, ok := args["role"].(string); ok {
 			return v

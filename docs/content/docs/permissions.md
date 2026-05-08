@@ -42,6 +42,7 @@ Per-tool argument matching:
 | `read` / `write` / `edit` / `grep`         | The path arg             | `edit(./src/**)`, `read(**/*.md)`       |
 | `glob`                                     | The pattern arg          | `glob(**/*.go)`                         |
 | `web_fetch`                                | The URL                  | `web_fetch(domain:example.com)`         |
+| `web_search`                               | The query                | `web_search(*)`, `web_search(rust *)`   |
 | `spawn_agent`                              | The role arg             | `spawn_agent(reviewer)`                 |
 | anything else (MCP, custom)                | All args as `k=v` string | `mcp__github__list_issues(repo=foo)`    |
 
