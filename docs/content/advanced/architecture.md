@@ -124,13 +124,6 @@ Honest "watch for it" items, not blockers:
   wrong lane or HTTP 400 on the *next* turn ("Assistant message must
   contain either 'content' or 'tool_calls'!"). Check
   `~/.enso/enso.log` first.
-- **Permission proxy timeout** is hard-coded to 60s. Daemon-attached
-  prompts that sit unanswered auto-deny — surprising if you walked
-  away. Tunable via constant in `daemon/server.go`.
-- **Submit-after-stuck-tool**. If a tool genuinely hangs (a `bash`
-  command that never returns), Ctrl-C cancels the turn but inputCh
-  submits queue up via goroutines. The next message after recovery
-  may process before any in-flight queued ones.
 - **Workflow sibling parallelism** is goroutine-correct but not
   load-tested at large fan-outs. Three-role pipelines work; 10+
   siblings with shared output state under mutex are unexplored.
