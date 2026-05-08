@@ -234,8 +234,13 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (<-chan Event, error
 
 	if resp.StatusCode > 299 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		retryAfter := parseRetryAfter(resp.Header)
 		resp.Body.Close()
-		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+			RetryAfter: retryAfter,
+		}
 	}
 
 	eventCh := make(chan Event, 32)
