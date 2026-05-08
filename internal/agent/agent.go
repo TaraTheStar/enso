@@ -306,7 +306,7 @@ func New(cfg Config) (*Agent, error) {
 		if err != nil {
 			return nil, fmt.Errorf("build system prompt: %w", err)
 		}
-		if note := environmentNote(cfg.Cwd, time.Now()); note != "" {
+		if note := environmentNote(cfg.Cwd, time.Now(), cfg.Sandbox, cfg.RestrictedRoots); note != "" {
 			systemPrompt = systemPrompt + "\n\n" + note
 		}
 		if note := gitAttributionNote(cfg.GitAttribution, cfg.GitAttributionName); note != "" {
