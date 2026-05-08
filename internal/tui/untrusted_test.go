@@ -33,9 +33,9 @@ func TestIsUntrustedContentTool(t *testing.T) {
 		// Unknown / future / MCP tools must default to false. MCP
 		// servers carry their own threat profile and need an
 		// explicit decision before getting the marker.
-		"":                       false,
-		"mcp__some__tool":        false,
-		"unknown_tool_invented":  false,
+		"":                      false,
+		"mcp__some__tool":       false,
+		"unknown_tool_invented": false,
 	}
 	for name, want := range cases {
 		if got := isUntrustedContentTool(name); got != want {
