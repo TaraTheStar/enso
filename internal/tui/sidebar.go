@@ -42,6 +42,7 @@ type Sidebar struct {
 
 	agent        SidebarAgent
 	sessionID    string
+	sessionLabel string // mu-protected; auto-set on first user message, overridable via /rename
 	sessionStart time.Time
 	cwd          string
 	lspMgr       *lsp.Manager
@@ -96,6 +97,15 @@ func NewSidebar(
 		agents:       make(map[string]*sidebarAgent),
 		gitTrigger:   make(chan struct{}, 1),
 	}
+}
+
+// SetLabel updates the session's display label. Caller is responsible
+// for triggering Refresh afterwards (typically batched with other
+// state updates on the tview goroutine).
+func (s *Sidebar) SetLabel(label string) {
+	s.mu.Lock()
+	s.sessionLabel = label
+	s.mu.Unlock()
 }
 
 // SetGitRefreshCallback registers a function the git-status worker calls
@@ -241,6 +251,12 @@ func section(sb *strings.Builder, title string) {
 
 func (s *Sidebar) renderSession(sb *strings.Builder) {
 	section(sb, "session")
+	s.mu.Lock()
+	label := s.sessionLabel
+	s.mu.Unlock()
+	if label != "" {
+		fmt.Fprintf(sb, "[lavender]%s[-]\n", truncateOneLine(label, sidebarBarWidth))
+	}
 	if s.agent != nil {
 		p := s.agent.Provider()
 		if p != nil {
