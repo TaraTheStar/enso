@@ -32,11 +32,19 @@ type slashContext struct {
 	checker     *permissions.Checker
 	registry    *tools.Registry
 	store       *session.Store // may be nil for ephemeral
+	writer      *session.Writer // may be nil for ephemeral
 	cwd         string
 	activeAgent string // name of the declarative agent in use, "" = default
 	runDeps     workflow.RunDeps
 	stop        func()
 	setMode     func(string) // status-bar mode label setter ("PROMPT" / "AUTO")
+
+	// setSessionLabel persists a new session label and pushes it into
+	// the sidebar. Callback so /rename doesn't need to know about the
+	// sidebar struct directly. Returns the normalised slug actually
+	// stored, or "" if input slugified to empty. Errors come from the
+	// underlying writer.
+	setSessionLabel func(label string) (string, error)
 
 	// submit injects a synthetic user message into the agent's input queue,
 	// applying an optional one-shot tool restriction first. This is the same
@@ -63,6 +71,7 @@ func registerBuiltins(reg *slash.Registry, sc *slashContext) {
 	reg.Register(&initCmd{sc: sc})
 	reg.Register(&agentsCmd{sc: sc})
 	reg.Register(&loopCmd{sc: sc})
+	reg.Register(&renameCmd{sc: sc})
 	reg.Register(&quitCmd{sc: sc})
 }
 
@@ -644,6 +653,50 @@ func truncatePrompt(s string, n int) string {
 		return s
 	}
 	return s[:n-1] + "…"
+}
+
+// /rename
+
+type renameCmd struct{ sc *slashContext }
+
+func (c *renameCmd) Name() string { return "rename" }
+func (c *renameCmd) Description() string {
+	return "show or override the session's display label: /rename (shows current) | /rename <label>"
+}
+func (c *renameCmd) Run(ctx context.Context, args string) error {
+	args = strings.TrimSpace(args)
+	if args == "" {
+		// No-arg: report current. Read from the writer when available
+		// so the answer reflects the persisted truth even if a recent
+		// auto-label hasn't yet propagated to the sidebar.
+		current := ""
+		if c.sc.writer != nil {
+			if got, err := c.sc.writer.Label(); err == nil {
+				current = got
+			}
+		}
+		if current == "" {
+			writeChat(c.sc, "rename: no label set yet — usage /rename <label>")
+		} else {
+			writeChat(c.sc, "rename: current label %q (override with /rename <label>)", current)
+		}
+		return nil
+	}
+	if c.sc.setSessionLabel == nil {
+		writeChat(c.sc, "rename: unavailable in this session")
+		return nil
+	}
+	slug, err := c.sc.setSessionLabel(args)
+	if err != nil {
+		writeChat(c.sc, "rename: %v", err)
+		return nil
+	}
+	if slug == "" {
+		writeChat(c.sc, "rename: %q has no usable characters (alphanumerics required)", args)
+		return nil
+	}
+	writeChat(c.sc, "rename: label set to %q", slug)
+	return nil
 }
 
 // /quit
