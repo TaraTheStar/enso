@@ -545,6 +545,7 @@ func Run(opts Options) error {
 		app:         app,
 		pages:       layout.Pages(),
 		chat:        layout.Chat(),
+		chatDisp:    chatDisp,
 		agt:         agt,
 		checker:     checker,
 		registry:    registry,
@@ -832,6 +833,9 @@ func Run(opts Options) error {
 				cancel()
 				app.Stop()
 			})
+			return nil
+		case tcell.KeyCtrlF:
+			ShowFindOverlay(app, layout.Pages(), layout.Input(), chatDisp, "", false)
 			return nil
 		case tcell.KeyPgUp:
 			// Page-scroll the chat without stealing focus. Disables
