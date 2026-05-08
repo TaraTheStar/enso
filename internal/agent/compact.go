@@ -64,6 +64,53 @@ func (a *Agent) ForceCompact(ctx context.Context) (bool, error) {
 	return a.forceCompact(ctx, "manual")
 }
 
+// CompactPreviewResult is the dry-run report the /compact slash
+// command shows before asking the user to confirm. Token estimates
+// use the same 4-char heuristic everything else does, so numbers
+// match what the sidebar displays.
+type CompactPreviewResult struct {
+	BeforeTokens        int  // current total tokens (4-char heuristic)
+	EstAfterTokens      int  // projected total tokens after compaction
+	MessagesToSummarise int  // count of older messages collapsed into the summary
+	NothingToDo         bool // true when boundary detection found no slack to compact
+}
+
+// estSummaryTokens is the placeholder budget for the synthetic summary
+// message that compaction emits. The real summary varies (system
+// prompt asks for "under 800 words" ≈ ~1000 tokens worst case) but
+// most compactions land well under that. 500 is a deliberately
+// optimistic round number for the *preview* — the actual after-count
+// after commit will be exact, and the EventCompacted event already
+// surfaces it in the chat.
+const estSummaryTokens = 500
+
+// CompactPreview returns a dry-run snapshot of what ForceCompact
+// would do — enough info for the user to confirm before committing.
+// Does not call the LLM and does not mutate history. Boundary logic
+// matches forceCompact exactly so "nothing to do" here means
+// ForceCompact would also be a no-op.
+func (a *Agent) CompactPreview() CompactPreviewResult {
+	_, oldStart, oldEnd, ok := compactionBoundary(a.History, recentTurnsToPin)
+	if !ok || oldEnd-oldStart == 0 {
+		return CompactPreviewResult{NothingToDo: true}
+	}
+	older := a.History[oldStart:oldEnd]
+	before := llm.Estimate(a.History)
+	// The 4-char heuristic in llm.Estimate is approximately additive
+	// across slices (per-message overhead is constant per message),
+	// so subtracting the older slice's estimate is close enough for a
+	// preview number.
+	estAfter := before - llm.Estimate(older) + estSummaryTokens
+	if estAfter < 0 {
+		estAfter = 0
+	}
+	return CompactPreviewResult{
+		BeforeTokens:        before,
+		EstAfterTokens:      estAfter,
+		MessagesToSummarise: len(older),
+	}
+}
+
 func (a *Agent) forceCompact(ctx context.Context, reason string) (bool, error) {
 	systemIdx, oldStart, oldEnd, ok := compactionBoundary(a.History, recentTurnsToPin)
 	if !ok {
