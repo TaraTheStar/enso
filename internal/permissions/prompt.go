@@ -49,6 +49,16 @@ type Checker struct {
 	allowlist *Allowlist
 	mode      string // "prompt", "allow", "deny"
 	yolo      bool
+
+	// turnAllow holds patterns the user granted via the modal's
+	// "Allow Turn" button — auto-allow matching calls until the next
+	// real user message resets it. Lazily allocated so an unused
+	// checker keeps zero overhead. Reset via ResetTurnAllows from
+	// the agent's Run loop right before EventUserMessage publish; see
+	// the security caveat on TODO P2 #13 for why turn boundary alone
+	// is wrong (chained sub-agent calls would extend the grant
+	// indefinitely).
+	turnAllow *Allowlist
 }
 
 // NewChecker creates a permission checker. `ask` rules always cause a
@@ -89,6 +99,41 @@ func (c *Checker) AddAllow(pattern string) error {
 	p.Kind = KindAllow
 	c.allowlist.AppendPattern(p)
 	return nil
+}
+
+// AddTurnAllow appends a pattern to the turn-scoped allowlist. The
+// grant survives only until ResetTurnAllows fires (next real user
+// message). Used by the modal's "Allow Turn" button — same pattern
+// derivation as "Allow + Remember" but transient.
+func (c *Checker) AddTurnAllow(pattern string) error {
+	p, err := ParsePattern(pattern)
+	if err != nil {
+		return fmt.Errorf("parse pattern %q: %w", pattern, err)
+	}
+	if p == nil {
+		return fmt.Errorf("invalid pattern %q (expected `tool(arg)` form)", pattern)
+	}
+	p.Kind = KindAllow
+	if c.turnAllow == nil {
+		c.turnAllow = NewAllowlist(nil, nil, nil)
+	}
+	c.turnAllow.AppendPattern(p)
+	return nil
+}
+
+// ResetTurnAllows clears every turn-scoped grant so the next call
+// matching one of those patterns prompts again. Called by the agent
+// loop right before each new user message starts processing — that's
+// the only safe boundary, since sub-agent fan-out and tool-call
+// chains all run within one user-driven turn.
+func (c *Checker) ResetTurnAllows() {
+	c.turnAllow = nil
+}
+
+// HasTurnAllows reports whether any turn-scoped grants are active.
+// Useful for /permissions debugging and tests.
+func (c *Checker) HasTurnAllows() bool {
+	return c.turnAllow != nil && len(c.turnAllow.patterns) > 0
 }
 
 // RemoveRule drops the matching tool(arg) entry of the given kind from
@@ -152,8 +197,12 @@ func DerivePattern(toolName string, args map[string]any) string {
 
 // Check evaluates a tool call and returns the decision.
 //
-// Order of precedence: yolo bypass > deny pattern > ask pattern > allow
-// pattern > config mode default.
+// Order of precedence: yolo bypass > deny pattern > turn allow > ask
+// pattern > persistent allow pattern > config mode default. Turn-allow
+// sits above ask deliberately: if the user explicitly clicked "Allow
+// Turn" on a pattern, an `ask` rule that would otherwise re-prompt
+// for that pattern is what they're trying to silence. Deny rules
+// still win, so a user grant can never override a hard "never".
 func (c *Checker) Check(toolName string, args map[string]interface{}, busInst *bus.Bus) (Decision, error) {
 	if c.yolo {
 		emitAutoAllow(busInst, toolName, args, "yolo")
@@ -164,10 +213,19 @@ func (c *Checker) Check(toolName string, args map[string]interface{}, busInst *b
 	matchArg := extractArg(toolName, args)
 
 	matched, kind := c.allowlist.Match(toolName, matchArg)
+	if matched && kind == KindDeny {
+		return Deny, nil
+	}
+
+	if c.turnAllow != nil {
+		if turnMatched, turnKind := c.turnAllow.Match(toolName, matchArg); turnMatched && turnKind == KindAllow {
+			emitAutoAllow(busInst, toolName, args, "allow-turn")
+			return Allow, nil
+		}
+	}
+
 	if matched {
 		switch kind {
-		case KindDeny:
-			return Deny, nil
 		case KindAsk:
 			return Prompt, nil
 		case KindAllow:
