@@ -670,6 +670,8 @@ func toWireEvent(evt bus.Event) (Event, bool) {
 		typ = "AgentEnd"
 	case bus.EventCompacted:
 		typ = "Compacted"
+	case bus.EventAgentIdle:
+		typ = "AgentIdle"
 	default:
 		return Event{}, false
 	}

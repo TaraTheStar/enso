@@ -169,7 +169,12 @@ func updateActivityFromEvent(a *Activity, ev bus.Event) bool {
 		// Tool finished; the agent is back to "working" until the next
 		// delta or tool start clarifies what kind of work.
 		return a.Set(ActivitySubmitting, "")
-	case bus.EventAssistantDone:
+	case bus.EventAgentIdle:
+		// Don't overwrite a terminal Error/Cancelled state — those events
+		// fire from the same pipeline exit and should win the indicator.
+		if a.State() == ActivityError || a.State() == ActivityCancelled {
+			return false
+		}
 		return a.Set(ActivityReady, "")
 	case bus.EventCancelled:
 		return a.Set(ActivityCancelled, "")

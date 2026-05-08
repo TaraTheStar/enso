@@ -12,13 +12,14 @@ import (
 // Ctrl-C is NOT handled here. tview's Application.Run intercepts Ctrl-C
 // before the focused primitive's InputCapture and calls Stop() unless the
 // app-level inputCapture swallows it — see internal/tui/app.go and
-// internal/tui/attach.go for the actual cancel wiring.
+// internal/tui/attach.go for the actual cancel wiring. The host gates
+// cancellation off the Activity indicator (which tracks the whole
+// pipeline) rather than this handler, so there is no busy field here.
 type InputHandler struct {
 	area        *tview.TextArea
 	onSubmit    func(text string)
 	onQuit      func()
 	onAtTrigger func() // called when @ would start a new token; set by host
-	busy        bool   // true while agent is processing
 
 	// Vim-mode state. When `vim` is true, `vimNormal` toggles between
 	// normal-mode (key commands navigate/edit) and insert-mode (default
@@ -79,16 +80,6 @@ func (h *InputHandler) SetOnAtTrigger(cb func()) {
 func (h *InputHandler) InsertAtCursor(text string) {
 	off := cursorByteOffset(h.area)
 	h.area.Replace(off, off, text)
-}
-
-// SetBusy toggles the busy state (disables submit while true).
-func (h *InputHandler) SetBusy(busy bool) {
-	h.busy = busy
-}
-
-// IsBusy reports whether the agent is currently processing a turn.
-func (h *InputHandler) IsBusy() bool {
-	return h.busy
 }
 
 func (h *InputHandler) handleKey(event *tcell.EventKey) *tcell.EventKey {
