@@ -130,10 +130,16 @@ type SessionWriter interface {
 // SandboxRunner is the slice of `internal/sandbox.Manager` that the
 // bash tool needs. Defined here so the tools package doesn't pull in
 // sandbox. Nil on the AgentContext means "run bash on the host".
+//
+// Image and WorkdirMount are read by the agent when building the
+// system-prompt environment note so the model knows it is inside a
+// container and what its in-container cwd is.
 type SandboxRunner interface {
 	Exec(ctx context.Context, w io.Writer, cmd string) error
 	ContainerName() string
 	Runtime() string
+	Image() string
+	WorkdirMount() string
 }
 
 // Transcripts is a goroutine-safe map from agent id to that agent's full
