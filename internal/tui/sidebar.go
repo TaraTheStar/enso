@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -300,20 +299,24 @@ func (s *Sidebar) renderMCPs(sb *strings.Builder) {
 		fmt.Fprintf(sb, "[comment](none configured)[-]\n")
 		return
 	}
-	servers := s.mcpMgr.Servers()
-	if len(servers) == 0 {
+	names := s.mcpMgr.ConfiguredNames()
+	if len(names) == 0 {
 		fmt.Fprintf(sb, "[comment](none configured)[-]\n")
 		return
 	}
-	names := make([]string, 0, len(servers))
-	for n := range servers {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	servers := s.mcpMgr.Servers()
 	for _, n := range names {
-		srv := servers[n]
+		state, reason := s.mcpMgr.State(n)
+		if state == mcp.StateFailed {
+			line := fmt.Sprintf("[red]✘[-] %s", n)
+			if reason != "" {
+				line += fmt.Sprintf(" [comment](%s)[-]", truncateOneLine(reason, sidebarBarWidth-len(n)-4))
+			}
+			fmt.Fprintln(sb, line)
+			continue
+		}
 		toolCount := 0
-		if srv != nil {
+		if srv := servers[n]; srv != nil {
 			toolCount = len(srv.Tools)
 		}
 		fmt.Fprintf(sb, "[sage]●[-] %s [comment](%d tool%s)[-]\n",

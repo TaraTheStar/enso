@@ -131,7 +131,7 @@ func TestAdaptTool_RejectsBadToolName(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.toolName, func(t *testing.T) {
-			got := adaptTool("server", nil, mcpproto.Tool{Name: tc.toolName})
+			got := adaptTool("server", nil, mcpproto.Tool{Name: tc.toolName}, nil)
 			if (got == nil) != tc.wantNil {
 				t.Errorf("adaptTool(%q) nil=%v, wantNil=%v", tc.toolName, got == nil, tc.wantNil)
 			}
@@ -140,7 +140,7 @@ func TestAdaptTool_RejectsBadToolName(t *testing.T) {
 }
 
 func TestAdaptTool_ValidNamePrefixed(t *testing.T) {
-	got := adaptTool("myserver", nil, mcpproto.Tool{Name: "search"})
+	got := adaptTool("myserver", nil, mcpproto.Tool{Name: "search"}, nil)
 	if got == nil {
 		t.Fatal("expected tool, got nil")
 	}

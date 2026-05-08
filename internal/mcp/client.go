@@ -6,6 +6,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
+	"sync"
 	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
@@ -15,6 +17,29 @@ import (
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
+
+// ServerState is the per-server health surfaced in the sidebar. There is
+// no Reconnecting state today because the manager doesn't reconnect —
+// failed servers stay failed until enso restarts. Adding the third
+// state would mean adding the retry loop, which we deliberately punted
+// for v1.
+type ServerState int
+
+const (
+	StateHealthy ServerState = iota
+	StateFailed
+)
+
+func (s ServerState) String() string {
+	switch s {
+	case StateHealthy:
+		return "healthy"
+	case StateFailed:
+		return "failed"
+	default:
+		return "unknown"
+	}
+}
 
 // dialTimeout is the budget for connecting + initialising one server.
 const dialTimeout = 10 * time.Second
@@ -26,24 +51,62 @@ type Server struct {
 	Tools  []tools.Tool
 }
 
+// serverStatus carries the sidebar-facing state for one server. Kept
+// separate from Server so failed entries (which never had a Client to
+// hold onto) can still appear in ConfiguredNames / State.
+type serverStatus struct {
+	state  ServerState
+	lastEr string // human-readable failure reason ("" while healthy)
+}
+
 // Manager holds connected MCP servers. The agent treats it as opaque after
 // `RegisterAll` has been called.
 type Manager struct {
+	mu sync.RWMutex
+	// servers contains successfully-connected entries; failed servers
+	// are absent so RegisterAll skips them naturally. Status carries
+	// state for *every* configured server, including ones that never
+	// connected — that's what the sidebar iterates.
 	servers map[string]*Server
+	status  map[string]*serverStatus
+	// configured preserves the input set of server names. Lets the
+	// sidebar render every name (including failures) regardless of
+	// connection success.
+	configured []string
 }
 
 // NewManager constructs an empty manager.
-func NewManager() *Manager { return &Manager{servers: make(map[string]*Server)} }
+func NewManager() *Manager {
+	return &Manager{
+		servers: make(map[string]*Server),
+		status:  make(map[string]*serverStatus),
+	}
+}
 
 // Start connects every server in cfg under a per-server timeout. Failures are
-// logged and skipped; one bad server does not abort startup. Server names
-// are validated up-front against the OpenAI-compatible name charset so a
-// typo'd `[mcp.with spaces]` block doesn't surface later as an opaque
-// upstream HTTP 400 on the model's next tool-call request.
+// logged and recorded in the status map (so the sidebar can render them as
+// ✘ failed) but do not abort startup. Server names are validated up-front
+// against the OpenAI-compatible name charset so a typo'd `[mcp.with spaces]`
+// block doesn't surface later as an opaque upstream HTTP 400 on the model's
+// next tool-call request.
 func (m *Manager) Start(ctx context.Context, cfg map[string]config.MCPConfig) {
-	for name, c := range cfg {
+	// Snapshot configured names up-front so ConfiguredNames returns
+	// everything, even servers we refuse to dial because of bad names.
+	names := make([]string, 0, len(cfg))
+	for name := range cfg {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	m.mu.Lock()
+	m.configured = names
+	m.mu.Unlock()
+
+	for _, name := range names {
+		c := cfg[name]
 		if err := validateName(name, maxServerNameLen); err != nil {
 			slog.Error("mcp: refusing server with invalid name", "server", name, "err", err)
+			m.recordFailure(name, fmt.Errorf("invalid name: %w", err))
 			continue
 		}
 		dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
@@ -51,11 +114,91 @@ func (m *Manager) Start(ctx context.Context, cfg map[string]config.MCPConfig) {
 		cancel()
 		if err != nil {
 			slog.Warn("mcp: server failed to start", "server", name, "err", err)
+			m.recordFailure(name, err)
 			continue
 		}
+		// Inject the failure callback into each adapted tool so a
+		// transport-level CallTool error during a tool invocation
+		// flips the server's sidebar badge to ✘.
+		serverName := name
+		for _, t := range srv.Tools {
+			if mt, ok := t.(*mcpTool); ok {
+				mt.onTransportError = func(err error) { m.MarkFailed(serverName, err) }
+			}
+		}
+		m.mu.Lock()
 		m.servers[name] = srv
+		m.status[name] = &serverStatus{state: StateHealthy}
+		m.mu.Unlock()
 		slog.Info("mcp: server connected", "server", name, "tools", len(srv.Tools))
 	}
+}
+
+func (m *Manager) recordFailure(name string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.status[name] = &serverStatus{state: StateFailed, lastEr: shortErr(err)}
+}
+
+// shortErr collapses long error chains into a single human-scannable
+// line for the sidebar. Per-server rows live in cramped 28-column
+// real estate; "context deadline exceeded" beats a multi-line stack.
+func shortErr(err error) string {
+	s := err.Error()
+	if len(s) > 80 {
+		s = s[:77] + "…"
+	}
+	return s
+}
+
+// ConfiguredNames returns every server name from the original config,
+// sorted, regardless of whether dial succeeded. The sidebar's MCP
+// section iterates this so failed-at-startup entries still appear.
+func (m *Manager) ConfiguredNames() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	out := make([]string, len(m.configured))
+	copy(out, m.configured)
+	return out
+}
+
+// State returns the current state and last failure reason for a
+// configured server. Returns (StateHealthy, "") for a server that has
+// never been seen (defensive default — the sidebar should only ask
+// about names it got from ConfiguredNames).
+func (m *Manager) State(name string) (ServerState, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	st, ok := m.status[name]
+	if !ok {
+		return StateHealthy, ""
+	}
+	return st.state, st.lastEr
+}
+
+// MarkFailed records a runtime failure for `name`. Called from the
+// adapter's tool-call path when a CallTool error suggests the
+// transport is dead (broken pipe, EOF on stdio, connection closed).
+// Idempotent — repeated calls keep the most recent reason.
+func (m *Manager) MarkFailed(name string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.status[name]; !ok && !contains(m.configured, name) {
+		// Don't record state for an unknown name — that would make
+		// ConfiguredNames misleading. The mark must come from a tool
+		// call routed through a configured server.
+		return
+	}
+	m.status[name] = &serverStatus{state: StateFailed, lastEr: shortErr(err)}
+}
+
+func contains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // RegisterAll adds every connected server's adapted tools to the registry.
@@ -165,7 +308,11 @@ func finishDial(ctx context.Context, name string, cli *mcpclient.Client) (*Serve
 
 	srv := &Server{Name: name, Client: cli}
 	for _, mt := range listed.Tools {
-		t := adaptTool(name, cli, mt)
+		// onTransportError is wired by the manager after dial returns
+		// (Start does that injection); finishDial doesn't see the
+		// manager itself, which keeps this function unit-testable
+		// without a Manager.
+		t := adaptTool(name, cli, mt, nil)
 		if t == nil {
 			slog.Warn("mcp: skipping tool with invalid name", "server", name, "tool", mt.Name)
 			continue

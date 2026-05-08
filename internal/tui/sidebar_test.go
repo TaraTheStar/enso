@@ -3,12 +3,14 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/rivo/tview"
 
+	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/lsp"
 	"github.com/TaraTheStar/enso/internal/mcp"
@@ -86,5 +88,65 @@ func TestSidebar_LabelTruncatedToBarWidth(t *testing.T) {
 	// string must not survive in full.
 	if strings.Contains(out, long) {
 		t.Errorf("oversized label not truncated: %q", out)
+	}
+}
+
+// newTestSidebarWithMCP wires a sidebar around a pre-populated MCP
+// manager so health-rendering tests can assert against known state
+// without standing up real subprocesses.
+func newTestSidebarWithMCP(t *testing.T, mgr *mcp.Manager) (*Sidebar, *tview.TextView) {
+	t.Helper()
+	view := tview.NewTextView()
+	stub := &stubSidebarAgent{
+		provider: &llm.Provider{Name: "test", Model: "stub"},
+		tokens:   100,
+		window:   10000,
+	}
+	sb := NewSidebar(
+		view,
+		stub,
+		"abc",
+		"/tmp",
+		time.Now(),
+		lsp.NewManager("/tmp", nil),
+		mgr,
+	)
+	return sb, view
+}
+
+func TestSidebar_MCPRendersFailedStartup(t *testing.T) {
+	mgr := mcp.NewManager()
+	// Whitespace in name fails validateName synchronously — no dial,
+	// no subprocess. Exercises the recordFailure path that the sidebar
+	// must render as ✘.
+	mgr.Start(context.Background(), map[string]config.MCPConfig{
+		"bad name": {},
+	})
+	sb, view := newTestSidebarWithMCP(t, mgr)
+	sb.Refresh()
+	out := view.GetText(true)
+	if !strings.Contains(out, "✘") {
+		t.Errorf("expected ✘ marker for failed server: %q", out)
+	}
+	if !strings.Contains(out, "bad name") {
+		t.Errorf("server name missing: %q", out)
+	}
+	// The failure reason should be appended after the name. We don't
+	// assert the exact wording (depends on validateName message), just
+	// that the parenthetical reason is present and non-trivial.
+	if !strings.Contains(out, "(") || !strings.Contains(out, ")") {
+		t.Errorf("expected reason parenthetical after name: %q", out)
+	}
+}
+
+func TestSidebar_MCPNoneConfiguredShowsFallback(t *testing.T) {
+	// Empty config must keep the existing fallback message — adding
+	// state tracking shouldn't make the empty case render differently.
+	mgr := mcp.NewManager()
+	sb, view := newTestSidebarWithMCP(t, mgr)
+	sb.Refresh()
+	out := view.GetText(true)
+	if !strings.Contains(out, "(none configured)") {
+		t.Errorf("expected '(none configured)' fallback: %q", out)
 	}
 }
