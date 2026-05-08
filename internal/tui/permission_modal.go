@@ -4,6 +4,7 @@ package tui
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -94,10 +95,20 @@ func ShowPermissionModal(app *tview.Application, pages *tview.Pages, focusAfter 
 	form.AddButton(labelRemember, remember)
 	form.AddButton(labelDeny, func() { resolve(permissions.Deny) })
 
-	frame := tview.NewFlex().
-		SetDirection(tview.FlexRow).
-		AddItem(body, 0, 1, false).
-		AddItem(form, 3, 0, true)
+	// countdown is rendered between the body and the form when the
+	// request carries a Deadline (attach mode — the daemon enforces a
+	// hard timeout). In standalone mode the deadline is zero and we
+	// hide the row so the modal is unchanged.
+	countdown := tview.NewTextView()
+	countdown.SetDynamicColors(true)
+	countdown.SetTextAlign(tview.AlignCenter)
+
+	frame := tview.NewFlex().SetDirection(tview.FlexRow).
+		AddItem(body, 0, 1, false)
+	if !req.Deadline.IsZero() {
+		frame.AddItem(countdown, 1, 0, false)
+	}
+	frame.AddItem(form, 3, 0, true)
 	frame.SetBorder(true).
 		SetBorderColor(tcell.GetColor("lavender")).
 		SetTitle(" permission ").
@@ -147,6 +158,52 @@ func ShowPermissionModal(app *tview.Application, pages *tview.Pages, focusAfter 
 	overlay := centered(frame, 80, 14)
 	pages.AddPage("perm", overlay, true, true)
 	app.SetFocus(form)
+
+	// Countdown loop. Updates the footer line each second; on
+	// expiry, dismisses the modal as Deny so the daemon's auto-deny
+	// and the visible UI agree. Goroutine exits when resolve() flips
+	// `resolved` (button press, Esc, or expiry).
+	if !req.Deadline.IsZero() {
+		countdown.SetText(fmtCountdown(time.Until(req.Deadline)))
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				<-t.C
+				if resolved {
+					return
+				}
+				remaining := time.Until(req.Deadline)
+				if remaining <= 0 {
+					app.QueueUpdateDraw(func() { resolve(permissions.Deny) })
+					return
+				}
+				app.QueueUpdateDraw(func() {
+					countdown.SetText(fmtCountdown(remaining))
+				})
+			}
+		}()
+	}
+}
+
+// fmtCountdown returns the styled "auto-deny in Ns" footer string.
+// Color escalates so the user gets a clear urgency signal: dim while
+// they have time, yellow under 30s, red under 10s. Sub-second
+// remaining values floor to "1s" rather than "0s" so the user sees
+// an honest last-tick value before dismissal.
+func fmtCountdown(remaining time.Duration) string {
+	secs := int(remaining.Seconds())
+	if remaining > 0 && secs < 1 {
+		secs = 1
+	}
+	switch {
+	case secs <= 10:
+		return fmt.Sprintf("[red]auto-deny in %ds[-]", secs)
+	case secs <= 30:
+		return fmt.Sprintf("[yellow]auto-deny in %ds[-]", secs)
+	default:
+		return fmt.Sprintf("[gray]auto-deny in %ds[-]", secs)
+	}
 }
 
 // centered returns a Flex that centers the given primitive at the given
