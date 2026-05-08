@@ -65,25 +65,33 @@ func validateName(s string, maxLen int) error {
 // PLAN §6). Returns nil when the tool name from the server fails
 // validation — the caller should skip nil entries and ideally log so
 // the user knows their MCP server returned a junk name.
-func adaptTool(serverName string, cli *mcpclient.Client, mt mcpproto.Tool) tools.Tool {
+//
+// onTransportError fires when CallTool itself returns a Go error
+// (transport-level failure — broken pipe, EOF, closed connection).
+// Tool-level errors come back as res.IsError with a successful Go
+// return and don't trigger this path. May be nil if the caller
+// doesn't care to track per-server health.
+func adaptTool(serverName string, cli *mcpclient.Client, mt mcpproto.Tool, onTransportError func(error)) tools.Tool {
 	if err := validateName(mt.Name, maxToolNameLen); err != nil {
 		return nil
 	}
 	return &mcpTool{
-		fullName:    mcpToolPrefix + serverName + "__" + mt.Name,
-		remoteName:  mt.Name,
-		description: mt.Description,
-		parameters:  schemaToMap(mt.InputSchema),
-		client:      cli,
+		fullName:         mcpToolPrefix + serverName + "__" + mt.Name,
+		remoteName:       mt.Name,
+		description:      mt.Description,
+		parameters:       schemaToMap(mt.InputSchema),
+		client:           cli,
+		onTransportError: onTransportError,
 	}
 }
 
 type mcpTool struct {
-	fullName    string
-	remoteName  string
-	description string
-	parameters  map[string]interface{}
-	client      *mcpclient.Client
+	fullName         string
+	remoteName       string
+	description      string
+	parameters       map[string]interface{}
+	client           *mcpclient.Client
+	onTransportError func(error)
 }
 
 func (t *mcpTool) Name() string                       { return t.fullName }
@@ -97,6 +105,13 @@ func (t *mcpTool) Run(ctx context.Context, args map[string]interface{}, _ *tools
 
 	res, err := t.client.CallTool(ctx, req)
 	if err != nil {
+		// User-cancellation isn't a transport failure — preserve the
+		// canonical sentinels so the agent loop's cancel handling
+		// still matches, and don't smear the sidebar with a "server
+		// failed" badge for a deliberate Ctrl-C.
+		if ctx.Err() == nil && t.onTransportError != nil {
+			t.onTransportError(err)
+		}
 		return tools.Result{}, fmt.Errorf("mcp %s: %w", t.fullName, err)
 	}
 
