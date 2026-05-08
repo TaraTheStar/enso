@@ -8,10 +8,14 @@ import (
 )
 
 // InputHandler manages the text input area and key bindings.
+//
+// Ctrl-C is NOT handled here. tview's Application.Run intercepts Ctrl-C
+// before the focused primitive's InputCapture and calls Stop() unless the
+// app-level inputCapture swallows it — see internal/tui/app.go and
+// internal/tui/attach.go for the actual cancel wiring.
 type InputHandler struct {
 	area        *tview.TextArea
 	onSubmit    func(text string)
-	onCancel    func()
 	onQuit      func()
 	onAtTrigger func() // called when @ would start a new token; set by host
 	busy        bool   // true while agent is processing
@@ -26,11 +30,10 @@ type InputHandler struct {
 }
 
 // NewInputHandler creates an input handler with key bindings.
-func NewInputHandler(area *tview.TextArea, onSubmit func(string), onCancel func(), onQuit func()) *InputHandler {
+func NewInputHandler(area *tview.TextArea, onSubmit func(string), onQuit func()) *InputHandler {
 	h := &InputHandler{
 		area:     area,
 		onSubmit: onSubmit,
-		onCancel: onCancel,
 		onQuit:   onQuit,
 	}
 
@@ -83,6 +86,11 @@ func (h *InputHandler) SetBusy(busy bool) {
 	h.busy = busy
 }
 
+// IsBusy reports whether the agent is currently processing a turn.
+func (h *InputHandler) IsBusy() bool {
+	return h.busy
+}
+
 func (h *InputHandler) handleKey(event *tcell.EventKey) *tcell.EventKey {
 	if h.vim {
 		if h.vimNormal {
@@ -116,12 +124,6 @@ func (h *InputHandler) handleKey(event *tcell.EventKey) *tcell.EventKey {
 		// in every terminal regardless of keyboard-protocol support.
 		return tcell.NewEventKey(tcell.KeyEnter, '\n', tcell.ModNone)
 
-	case tcell.KeyCtrlC:
-		if h.busy {
-			h.onCancel()
-		}
-		return nil
-
 	case tcell.KeyCtrlD:
 		h.onQuit()
 		return nil
@@ -152,7 +154,6 @@ func (h *InputHandler) handleKey(event *tcell.EventKey) *tcell.EventKey {
 //	o O       — open new line below / above + insert
 //	Enter     — submit
 //	Esc       — no-op (already normal)
-//	Ctrl-C    — cancel current turn (matches default behaviour)
 //	Ctrl-D    — quit
 func (h *InputHandler) vimNormalKey(event *tcell.EventKey) *tcell.EventKey {
 	enterInsert := func() {
@@ -167,11 +168,6 @@ func (h *InputHandler) vimNormalKey(event *tcell.EventKey) *tcell.EventKey {
 		h.area.SetText("", false)
 		if text != "" {
 			h.onSubmit(text)
-		}
-		return nil
-	case tcell.KeyCtrlC:
-		if h.busy {
-			h.onCancel()
 		}
 		return nil
 	case tcell.KeyCtrlD:
