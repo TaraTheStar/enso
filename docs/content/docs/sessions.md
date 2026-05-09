@@ -34,6 +34,15 @@ enso stats                   # summary across all sessions
 
 …or from the `/sessions` slash command in the TUI, or `Ctrl-R`.
 
+## Labels
+
+Each session has a short display label rendered in the recent-sessions
+overlay so you don't have to memorise UUIDs. The label is auto-derived
+from the first user message; override it with `/rename <text>` (no
+arg prints the current label). Labels live alongside the messages in
+SQLite — they survive resume and are visible in `/sessions` and
+`Ctrl-R`.
+
 ## Forking
 
 Branch a session into a new one — useful when you want to try a

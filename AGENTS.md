@@ -34,7 +34,7 @@ go test ./...
 
 ## Project conventions
 
-- **Go version**: target `1.23+`. Keep `go.mod` aligned.
+- **Go version**: target `1.26+` (matches the current `go.mod`). Keep `go.mod` aligned.
 - **Module path**: `github.com/TaraTheStar/enso`.
 - **No CGO**: every dependency must build with `CGO_ENABLED=0`. SQLite uses `modernc.org/sqlite` (pure Go), not `mattn/go-sqlite3`.
 - **Package layout**: one package per directory. The UI lives behind `internal/ui/`; nothing outside `internal/ui/bubble/` should import the Bubble Tea / Lipgloss libraries directly. Domain code talks to `internal/ui` (or `internal/bus` for events) only.
@@ -58,7 +58,7 @@ go test ./...
 - **Don't add backwards-compatibility shims.** Just change the code.
 - **Don't `git push` or commit** unless explicitly asked. Stage and report what's ready, let the human commit.
 - **Don't run destructive commands** (`rm -rf`, `git reset --hard`, etc.) without confirmation.
-- **Don't pull additional dependencies** without surfacing the choice first. Current deps are in `go.mod`. The load-bearing ones are `charmbracelet/bubbletea` + `charmbracelet/lipgloss` (scrollback-native TUI), `spf13/cobra` (CLI), `mark3labs/mcp-go` (MCP client), `modernc.org/sqlite` (no-CGO SQLite), `bmatcuk/doublestar` (path patterns), `pelletier/go-toml/v2` (config), `adrg/frontmatter` (workflow parsing).
+- **Don't pull additional dependencies** without surfacing the choice first. Current deps are in `go.mod`. The load-bearing ones are `charm.land/bubbletea/v2` + `charm.land/lipgloss/v2` + `charm.land/glamour/v2` (scrollback-native TUI + markdown rendering), `spf13/cobra` (CLI), `mark3labs/mcp-go` (MCP client), `modernc.org/sqlite` (no-CGO SQLite), `bmatcuk/doublestar` (path patterns), `pelletier/go-toml/v2` (config), `adrg/frontmatter` (workflow parsing).
 
 ## Known model-side quirks
 
