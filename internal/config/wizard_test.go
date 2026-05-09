@@ -94,12 +94,12 @@ func TestRunWizard_CustomFullPath(t *testing.T) {
 	// branch where there are no preset defaults and the wizard asks
 	// for a section name and context window.
 	input := strings.Join([]string{
-		"4",                              // preset choice = custom
-		"https://example.test/v1",        // endpoint
-		"my-model",                       // model
-		"openrouter",                     // section name
-		"65536",                          // context window
-		"$ENSO_OPENROUTER_KEY",           // API key (literal env-var ref)
+		"4",                       // preset choice = custom
+		"https://example.test/v1", // endpoint
+		"my-model",                // model
+		"openrouter",              // section name
+		"65536",                   // context window
+		"$ENSO_OPENROUTER_KEY",    // API key (literal env-var ref)
 	}, "\n") + "\n"
 	r, body := runWizardScripted(t, input)
 	if r.Preset != "custom" {

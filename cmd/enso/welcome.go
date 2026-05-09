@@ -24,7 +24,7 @@ var errFirstRunWelcome = errors.New("first-run welcome printed; user needs to co
 //     wizard-built config, fall through to load it. User exits the
 //     subcommand normally with a working setup.
 //   - Non-interactive (CI, scripts): the existing silent-default-write
-//     + welcome-message + clean-exit flow. No regression for automated
+//   - welcome-message + clean-exit flow. No regression for automated
 //     callers.
 //
 // Either way, returning a successfully loaded *Config means the
