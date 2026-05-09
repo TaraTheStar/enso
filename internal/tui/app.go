@@ -404,7 +404,13 @@ func Run(opts Options) error {
 		})
 	}
 
+	// agentDone closes when agt.Run returns. The shutdown sequence at
+	// the end of this function waits on it before closing the bus, so
+	// the agent (the only bus publisher) can't race a closed-channel
+	// panic from Bus.Close.
+	agentDone := make(chan struct{})
 	go func() {
+		defer close(agentDone)
 		if err := agt.Run(ctx, inputCh); err != nil && err != context.Canceled {
 			busInst.Publish(bus.Event{Type: bus.EventError, Payload: err})
 		}
@@ -722,9 +728,15 @@ func Run(opts Options) error {
 	// session's `events` table so diagnostic replay is possible. Skips
 	// per-token deltas (would bloat the table) and any payload that
 	// can't be JSON-marshalled (PermissionRequest carries a chan).
+	// auditDone closes when the audit goroutine has finished draining
+	// the bus channel. The shutdown sequence below waits on it before
+	// store.Close, which lets us drop the "database is closed"
+	// suppression that used to mask late writes.
+	auditDone := make(chan struct{})
 	if writer != nil {
 		auditCh := busInst.Subscribe(64)
 		go func() {
+			defer close(auditDone)
 			for evt := range auditCh {
 				typ := auditTypeName(evt.Type)
 				if typ == "" {
@@ -732,17 +744,12 @@ func Run(opts Options) error {
 				}
 				payload := sanitizePayload(evt.Payload)
 				if err := writer.AppendEvent(typ, payload); err != nil {
-					// "database is closed" is a benign shutdown
-					// race: agent emitted a late event (typically
-					// Cancelled) after the deferred store.Close fired.
-					// The row really is lost, but warning about it
-					// every shutdown adds noise without insight.
-					if !strings.Contains(err.Error(), "database is closed") {
-						slog.Warn("session: append event", "type", typ, "err", err)
-					}
+					slog.Warn("session: append event", "type", typ, "err", err)
 				}
 			}
 		}()
+	} else {
+		close(auditDone)
 	}
 
 	// Activity-state subscriber: drives the animated indicator off bus
@@ -892,6 +899,17 @@ func Run(opts Options) error {
 	if err := layout.SetRoot(app); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
+
+	// Ordered shutdown — the previous "defer store.Close + suppress
+	// 'database is closed'" pattern hid a real race. Cancel the agent
+	// context first so Run can return; wait for it so no more
+	// publishers exist; close the bus so subscriber channels drain;
+	// wait for the audit goroutine so its last DB writes commit.
+	// Then the deferred store.Close (line 158) is safe.
+	cancel()
+	<-agentDone
+	busInst.Close()
+	<-auditDone
 
 	if pendingSwitch != "" {
 		return execIntoSession(pendingSwitch)

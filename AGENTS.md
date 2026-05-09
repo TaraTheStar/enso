@@ -170,12 +170,6 @@ something feels off:
   the renderer is back-pressured for some other reason; bump the
   subscriber buffer or shorten the flush interval in
   `internal/tui/app.go`.
-- **`database is closed` on shutdown.** Late-firing `Cancelled`
-  events can hit the audit goroutine after `store.Close` ran. The
-  audit row is lost; we silently swallow the specific error so the
-  log stays clean. If you start seeing other DB errors at shutdown,
-  the suppression in `app.go` is the place to look first.
-
 ## Reference
 
 - `README.md` — user-facing quickstart + feature overview (also covers the layered config search paths).

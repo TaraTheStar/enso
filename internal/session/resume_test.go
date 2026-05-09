@@ -65,16 +65,36 @@ func TestBackfillInterrupted_OneMissingReply(t *testing.T) {
 	if !interrupted {
 		t.Errorf("want interrupted=true")
 	}
-	// Synthetic message appended at the end.
 	if len(patched) != len(hist)+1 {
 		t.Fatalf("patched len = %d, want %d", len(patched), len(hist)+1)
 	}
-	last := patched[len(patched)-1]
-	if last.Role != "tool" || last.ToolCallID != "B" {
-		t.Errorf("last patched message = %+v, want tool reply for B", last)
+	// Synthetic must be inline — between the assistant message and any
+	// other content — so the OpenAI contract (every tool_call followed
+	// by a tool reply before the next user turn) holds across reloads.
+	var foundSynth bool
+	for i, m := range patched {
+		if m.Role == "tool" && m.ToolCallID == "B" {
+			foundSynth = true
+			if i == 0 || patched[i-1].Role != "assistant" {
+				t.Errorf("synth at index %d not preceded by assistant: %+v", i, patched[i-1])
+			}
+			if m.Content == "" {
+				t.Errorf("synthetic content should describe the interruption")
+			}
+		}
 	}
-	if last.Content == "" {
-		t.Errorf("synthetic content should describe the interruption")
+	if !foundSynth {
+		t.Errorf("synth tool reply for B not found in patched: %+v", patched)
+	}
+	// The real tool reply for A must survive untouched.
+	var foundRealA bool
+	for _, m := range patched {
+		if m.Role == "tool" && m.ToolCallID == "A" && m.Content == "ra" {
+			foundRealA = true
+		}
+	}
+	if !foundRealA {
+		t.Errorf("real tool reply for A clobbered by backfill: %+v", patched)
 	}
 }
 
