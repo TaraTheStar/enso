@@ -26,11 +26,11 @@ type stubSidebarAgent struct {
 	cumOut   int64
 }
 
-func (s *stubSidebarAgent) Provider() *llm.Provider        { return s.provider }
-func (s *stubSidebarAgent) EstimateTokens() int             { return s.tokens }
-func (s *stubSidebarAgent) ContextWindow() int              { return s.window }
-func (s *stubSidebarAgent) CumulativeInputTokens() int64    { return s.cumIn }
-func (s *stubSidebarAgent) CumulativeOutputTokens() int64   { return s.cumOut }
+func (s *stubSidebarAgent) Provider() *llm.Provider       { return s.provider }
+func (s *stubSidebarAgent) EstimateTokens() int           { return s.tokens }
+func (s *stubSidebarAgent) ContextWindow() int            { return s.window }
+func (s *stubSidebarAgent) CumulativeInputTokens() int64  { return s.cumIn }
+func (s *stubSidebarAgent) CumulativeOutputTokens() int64 { return s.cumOut }
 
 func newTestSidebar(t *testing.T, sessionID string) (*Sidebar, *tview.TextView) {
 	t.Helper()

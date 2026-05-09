@@ -6,10 +6,10 @@ import "testing"
 
 func TestComputeCost(t *testing.T) {
 	cases := []struct {
-		name                   string
-		inTok, outTok          int64
-		inPriceM, outPriceM    float64
-		want                   float64
+		name                string
+		inTok, outTok       int64
+		inPriceM, outPriceM float64
+		want                float64
 	}{
 		{"both zero prices = free", 1_000_000, 1_000_000, 0, 0, 0},
 		{"input only", 1_000_000, 0, 2.50, 10.00, 2.50},
@@ -27,13 +27,13 @@ func TestComputeCost(t *testing.T) {
 
 func TestFormatCost(t *testing.T) {
 	cases := map[float64]string{
-		0:        "$0.0000",
-		0.00012:  "$0.0001",
-		0.15:     "$0.1500",
-		0.9999:   "$0.9999",
-		1.00:     "$1.00",
-		12.345:   "$12.35",
-		-0.05:    "$0.0000", // negative clamps to zero
+		0:       "$0.0000",
+		0.00012: "$0.0001",
+		0.15:    "$0.1500",
+		0.9999:  "$0.9999",
+		1.00:    "$1.00",
+		12.345:  "$12.35",
+		-0.05:   "$0.0000", // negative clamps to zero
 	}
 	for in, want := range cases {
 		if got := formatCost(in); got != want {
