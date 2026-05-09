@@ -82,6 +82,14 @@ func (h *InputHandler) InsertAtCursor(text string) {
 	h.area.Replace(off, off, text)
 }
 
+// handleKey is the TextArea's input capture. It only intercepts the
+// keys we genuinely repurpose (submit on Enter, quit on Ctrl-D, etc.);
+// everything else falls through to tview's built-in TextArea handler,
+// which is what powers cursor movement, selection, and — importantly
+// for accidentally-deleted-prompt recovery — Ctrl-Z / Ctrl-Y for
+// undo and redo. The pass-through is load-bearing, so don't add
+// `case tcell.KeyCtrlZ` (or KeyCtrlY) here without also wiring an
+// equivalent undo path; covered by TestHandleKey_DoesNotIntercept_UndoRedo.
 func (h *InputHandler) handleKey(event *tcell.EventKey) *tcell.EventKey {
 	if h.vim {
 		if h.vimNormal {
