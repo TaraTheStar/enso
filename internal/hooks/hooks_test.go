@@ -134,6 +134,63 @@ func TestOnFileEdit_TimeoutWarns(t *testing.T) {
 	}
 }
 
+func TestOnFileEdit_TimeoutCarriesOutputSnippet(t *testing.T) {
+	// A hook that prints something useful before hanging should have
+	// its first non-empty line surfaced in the timeout warning so the
+	// user can identify which command stalled.
+	h, msgs, mu := recordingHooks(`echo "starting linter on file"; sleep 5`, "")
+	h.Timeout = 200 * time.Millisecond
+	h.OnFileEdit(t.TempDir(), "x.go", "edit")
+
+	mu.Lock()
+	defer mu.Unlock()
+	var combined string
+	for _, m := range *msgs {
+		combined += m + "\n"
+	}
+	if !strings.Contains(combined, "starting linter on file") {
+		t.Errorf("expected output snippet in timeout warning, got %v", *msgs)
+	}
+}
+
+func TestOnFileEdit_TimeoutWithoutOutputUnchanged(t *testing.T) {
+	// Hook that hangs without writing anything should still produce a
+	// readable warning without a trailing colon-with-nothing-after.
+	h, msgs, mu := recordingHooks(`sleep 5`, "")
+	h.Timeout = 150 * time.Millisecond
+	h.OnFileEdit(t.TempDir(), "x.go", "edit")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*msgs) == 0 {
+		t.Fatal("expected a warn")
+	}
+	for _, m := range *msgs {
+		if strings.HasSuffix(strings.TrimSpace(m), ":") {
+			t.Errorf("warning ends with dangling colon: %q", m)
+		}
+	}
+}
+
+func TestFirstNonEmptyLine(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"   \n\n   ", ""},
+		{"hello", "hello"},
+		{"\nfirst real line\nlater", "first real line"},
+		{"   leading whitespace\nlater", "leading whitespace"},
+		{strings.Repeat("x", 200), strings.Repeat("x", 120) + "…"},
+	}
+	for _, tc := range cases {
+		if got := firstNonEmptyLine([]byte(tc.in)); got != tc.want {
+			t.Errorf("firstNonEmptyLine(%q)=%q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestOnFileEdit_NonZeroExitIsSilent(t *testing.T) {
 	h, msgs, mu := recordingHooks(`exit 1`, "")
 	h.OnFileEdit(t.TempDir(), "x.go", "edit")

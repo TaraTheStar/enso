@@ -514,14 +514,30 @@ type workflowCmd struct{ sc *slashContext }
 
 func (c *workflowCmd) Name() string { return "workflow" }
 func (c *workflowCmd) Description() string {
-	return "run a declarative workflow: /workflow <name> <args>"
+	return "run or validate a declarative workflow: /workflow <name> <args>  |  /workflow validate <name>"
 }
 func (c *workflowCmd) Run(ctx context.Context, args string) error {
 	parts := strings.SplitN(args, " ", 2)
 	if len(parts) == 0 || parts[0] == "" {
-		writeChat(c.sc, "workflow: usage /workflow <name> <args>")
+		writeChat(c.sc, "workflow: usage /workflow <name> <args>  |  /workflow validate <name>")
 		return nil
 	}
+
+	// `validate` subcommand: parse the workflow without running anything
+	// so authors can catch frontmatter / role / edge errors at edit
+	// time rather than three minutes into a real run.
+	if parts[0] == "validate" {
+		rest := ""
+		if len(parts) == 2 {
+			rest = strings.TrimSpace(parts[1])
+		}
+		if rest == "" {
+			writeChat(c.sc, "workflow: usage /workflow validate <name>")
+			return nil
+		}
+		return c.validate(rest)
+	}
+
 	name := parts[0]
 	rest := ""
 	if len(parts) == 2 {
@@ -543,6 +559,26 @@ func (c *workflowCmd) Run(ctx context.Context, args string) error {
 		fmt.Fprintf(c.sc.chat, "[::b]%s:[::-]\n%s\n\n", role, out)
 	}
 	c.sc.chat.ScrollToEnd()
+	return nil
+}
+
+// validate parses `name` through the same code path Run uses, but
+// stops before invoking the workflow. Reports the parse error verbatim
+// (the workflow package already wraps each error with role / edge /
+// section context that's user-friendly enough) or a one-line summary
+// on success — role list + edge count gives authors a quick visual
+// sanity check that the topology matches what they expected.
+func (c *workflowCmd) validate(name string) error {
+	wf, err := workflow.LoadByName(c.sc.cwd, name)
+	if err != nil {
+		writeChat(c.sc, "workflow validate: %v", err)
+		return nil
+	}
+	writeChat(c.sc, "workflow %q ok — %d role%s (%v), %d edge%s",
+		wf.Name,
+		len(wf.RoleOrder), plural(len(wf.RoleOrder)), wf.RoleOrder,
+		len(wf.Edges), plural(len(wf.Edges)),
+	)
 	return nil
 }
 

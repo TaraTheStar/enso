@@ -108,15 +108,49 @@ func (h *Hooks) run(label, tmpl, cwd string, vars map[string]any) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "sh", "-c", rendered)
 	cmd.Dir = cwd
+	// WaitDelay matters because we capture output below: when the ctx
+	// fires, sh gets SIGKILL but any grandchildren (e.g., `sleep`
+	// under `sh -c`) inherit the stdout/stderr fds, so Wait would
+	// otherwise block on the pipe drain forever. WaitDelay tells the
+	// stdlib to forcibly close the I/O after the grace window so the
+	// hook caller is never stuck.
+	cmd.WaitDelay = time.Second
 
-	err = cmd.Run()
+	// CombinedOutput so the timeout warning can include a snippet of
+	// what the hook was doing when it died. Capturing stdout+stderr
+	// adds a bounded buffer (limited by hook lifetime + Timeout) and
+	// is much cheaper than asking users to tail enso.log to figure
+	// out which gofmt/prettier/etc. is hung.
+	out, err := cmd.CombinedOutput()
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		h.Warn("hooks: %s timed out after %s", label, h.Timeout)
+		if snippet := firstNonEmptyLine(out); snippet != "" {
+			h.Warn("hooks: %s timed out after %s: %s", label, h.Timeout, snippet)
+		} else {
+			h.Warn("hooks: %s timed out after %s", label, h.Timeout)
+		}
 		return
 	}
 	// Non-zero exit, exec failures (e.g. sh missing): silent. The
 	// user's command is responsible for its own semantics.
 	_ = err
+}
+
+// firstNonEmptyLine returns the first non-blank line of `b` trimmed
+// and capped at 120 chars. Used to summarise hook output in warning
+// messages — we want enough to identify the failure mode without
+// flooding the chat with a multi-line stack trace.
+func firstNonEmptyLine(b []byte) string {
+	for _, line := range strings.Split(string(b), "\n") {
+		s := strings.TrimSpace(line)
+		if s == "" {
+			continue
+		}
+		if len(s) > 120 {
+			s = s[:120] + "…"
+		}
+		return s
+	}
+	return ""
 }
 
 func renderTemplate(tmpl string, vars map[string]any) (string, error) {
