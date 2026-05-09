@@ -3,9 +3,10 @@
 package bubble
 
 import (
+	"image/color"
 	"log/slog"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/TaraTheStar/enso/internal/ui/theme"
 )
@@ -33,6 +34,11 @@ var (
 	diffHunkStyle  lipgloss.Style
 	diffFileStyle  lipgloss.Style
 	codeBarStyle   lipgloss.Style
+
+	// currentPalette holds the most recently applied palette so the
+	// glamour markdown renderer can build its theme from the same
+	// source as every other style. Updated by applyStyles.
+	currentPalette theme.Palette
 )
 
 func init() {
@@ -61,7 +67,9 @@ func loadAndApplyTheme() {
 }
 
 func applyStyles(pal theme.Palette) {
-	hex := func(name string) lipgloss.Color {
+	currentPalette = pal
+	invalidateMarkdownRenderers()
+	hex := func(name string) color.Color {
 		if c, ok := pal[name]; ok {
 			return lipgloss.Color(c.Hex())
 		}

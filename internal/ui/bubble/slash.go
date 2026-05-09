@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/llm"

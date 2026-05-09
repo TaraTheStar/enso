@@ -155,6 +155,21 @@ func TestReasoningSurvivesAssistantDone(t *testing.T) {
 	}
 }
 
+// TestRenderMarkdownThemeBuilds: the custom glamour theme must build
+// successfully and produce non-empty output for trivial markdown
+// without panicking. Catches regressions in buildMarkdownTheme (e.g.
+// missing palette key, malformed StyleConfig) at test time rather
+// than the first time an assistant block graduates in the live UI.
+func TestRenderMarkdownThemeBuilds(t *testing.T) {
+	out := renderMarkdown("# heading\n\nbody **bold** and `code`.\n", 80)
+	if out == "" {
+		t.Fatal("renderMarkdown returned empty output for non-empty input")
+	}
+	if strings.Contains(out, "**bold**") {
+		t.Errorf("markdown bold marker not consumed; output still contains literal **bold**: %q", out)
+	}
+}
+
 // TestBackspaceRespectsUTF8: backspace must drop a rune, not a byte;
 // otherwise multi-byte characters get split into invalid sequences.
 // Cursor moves back by the rune width.

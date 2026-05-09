@@ -4,21 +4,43 @@ package bubble
 
 import (
 	"fmt"
+	"image/color"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/glamour/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/TaraTheStar/enso/internal/ui/blocks"
 	"github.com/TaraTheStar/enso/internal/ui/theme"
 )
+
+// mdTrailingPadRE matches glamour's per-line trailing padding in
+// three forms, repeated at end of line: (1) plain whitespace; (2)
+// styled "colour, optional whitespace, reset" cells (block-quote
+// fills); (3) zero-width "colour, reset" sentinels glamour emits at
+// the very end of styled blocks. All three are visually invisible
+// but bloat scrollback and copy-paste selections — the alternation
+// `\x1b[<codes>m\s*\x1b[0m` is intentionally narrow (only matches
+// styled regions whose interior is *only* whitespace), so we never
+// strip a colour-wrapped piece of real content.
+var mdTrailingPadRE = regexp.MustCompile(`(?:\x1b\[[0-9;]*m[ \t]*\x1b\[0?m|[ \t]+)+$`)
 
 // renderBlock returns the Lipgloss-styled multi-line string for a
 // block. Used both as the live-region rendering of the in-flight block
 // and as the scrollback graduation payload (tea.Println'd by the
 // model). Returns "" for blocks that have no display form (rare; mostly
 // empty assistant blocks from tool-call-only turns).
-func renderBlock(b blocks.Block) string {
+//
+// width is the terminal width used for word-wrapping markdown content
+// (0 falls back to a sensible default). finalized=true switches the
+// Assistant render path from raw streaming text to glamour-rendered
+// markdown with syntax-highlighted code blocks; finalized=false keeps
+// raw text so partially-streamed fences and tables don't render as
+// broken markdown.
+func renderBlock(b blocks.Block, width int, finalized bool) string {
 	switch v := b.(type) {
 	case *blocks.User:
 		text := strings.TrimRight(v.Text, "\n")
@@ -36,7 +58,14 @@ func renderBlock(b blocks.Block) string {
 		if text == "" {
 			return ""
 		}
-		return asstStyle.Render("enso") + " " + statusStyle.Render("›") + " " + renderAssistantBody(text)
+		prefix := asstStyle.Render("enso") + " " + statusStyle.Render("›") + " "
+		if finalized {
+			return prefix + renderMarkdown(text, width)
+		}
+		// Live streaming: raw text. Partial fenced blocks would render
+		// as broken markdown, and re-parsing on every delta would burn
+		// CPU for no visual gain.
+		return prefix + text
 
 	case *blocks.Reasoning:
 		bar := reasoningBar()
@@ -141,39 +170,97 @@ func renderDiffLine(line string) string {
 	}
 }
 
-// renderAssistantBody walks the assistant's response and visually
-// brackets fenced ```…``` code blocks with a left bar so code reads
-// as a distinct region from prose. The fence lines themselves are
-// suppressed — the bar is enough of a marker, and dropping the
-// triple-backtick noise reads cleaner. Body lines inside fences keep
-// the terminal's default colour so code stays legible; only the bar
-// is styled.
+// markdownDefaultWidth is the wrap width used when the caller has no
+// terminal width available (replay scripts, tests, etc.). Wide enough
+// to look natural, narrow enough to not overrun an 80-col terminal.
+const markdownDefaultWidth = 100
+
+// markdownPrefixWidth is how many cells the "enso › " prefix consumes
+// on the first line of an assistant block. Glamour's word wrap doesn't
+// know about content rendered before its output, so we shrink the
+// reported terminal width by this much to keep the *first* wrapped
+// line from running past the terminal edge.
+const markdownPrefixWidth = 7
+
+// renderMarkdown turns assistant markdown into glamour-rendered output:
+// fenced ```lang``` blocks pick up syntax highlighting via chroma,
+// inline code, bold/italic, lists and headings render with theme
+// colours. Only called for *finalized* assistant blocks (graduating to
+// scrollback) — live streaming keeps raw text so partial fences and
+// tables don't render as broken markdown.
 //
-// No syntax highlighting yet — that lands when (if) we adopt glamour
-// + chroma. Inline `code` spans are also untouched for the same
-// reason: the simple-detection version is unreliable, and the proper
-// fix is glamour.
-func renderAssistantBody(text string) string {
-	if !strings.Contains(text, "```") {
+// Errors in glamour fall back to raw text rather than swallowing the
+// content; a render error shouldn't lose the assistant's reply.
+func renderMarkdown(text string, width int) string {
+	if width <= 0 {
+		width = markdownDefaultWidth
+	}
+	wrap := width - markdownPrefixWidth
+	if wrap < 20 {
+		wrap = 20
+	}
+	r, err := markdownRenderer(wrap)
+	if err != nil {
 		return text
 	}
-	var rendered []string
-	inFence := false
-	for _, line := range strings.Split(text, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inFence = !inFence
-			// Suppress the fence line itself; the bar is sufficient
-			// marking and dropping the triple-backtick noise reads
-			// cleaner.
-			continue
-		}
-		if inFence {
-			rendered = append(rendered, codeBarStyle.Render("│ ")+line)
-		} else {
-			rendered = append(rendered, line)
-		}
+	out, err := r.Render(text)
+	if err != nil {
+		return text
 	}
-	return strings.Join(rendered, "\n")
+	// Strip glamour's per-line right-padding (see mdTrailingPadRE) so
+	// scrollback selection isn't dragged by invisible trailing spaces.
+	// Then trim leading/trailing blank lines that glamour wraps the
+	// document in — the leading blank would push the first line below
+	// the "enso › " prefix, the trailing one doubles up with the
+	// spacing the View already inserts.
+	lines := strings.Split(out, "\n")
+	for i, ln := range lines {
+		lines[i] = mdTrailingPadRE.ReplaceAllString(ln, "")
+	}
+	return strings.Trim(strings.Join(lines, "\n"), "\n")
+}
+
+// markdownRenderer caches one glamour renderer per wrap width. Glamour
+// renderer construction parses the style and instantiates chroma, so
+// building one per call is wasteful — every assistant graduation
+// would redo that work. The cache is keyed by width since wrap is the
+// only per-call variable; the style is held constant within a theme
+// generation. invalidateMarkdownRenderers clears the cache when the
+// palette is reloaded so theme overrides take effect on the very next
+// render.
+var (
+	mdRenderers   = map[int]*glamour.TermRenderer{}
+	mdRenderersMu sync.Mutex
+)
+
+func markdownRenderer(wrap int) (*glamour.TermRenderer, error) {
+	mdRenderersMu.Lock()
+	defer mdRenderersMu.Unlock()
+	if r, ok := mdRenderers[wrap]; ok {
+		return r, nil
+	}
+	pal := currentPalette
+	if pal == nil {
+		pal = theme.Default()
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStyles(buildMarkdownTheme(pal)),
+		glamour.WithWordWrap(wrap),
+	)
+	if err != nil {
+		return nil, err
+	}
+	mdRenderers[wrap] = r
+	return r, nil
+}
+
+// invalidateMarkdownRenderers drops the renderer cache so the next
+// render picks up an updated theme palette. Called from applyStyles
+// whenever the palette is (re)loaded.
+func invalidateMarkdownRenderers() {
+	mdRenderersMu.Lock()
+	defer mdRenderersMu.Unlock()
+	mdRenderers = map[int]*glamour.TermRenderer{}
 }
 
 // reasoningBar returns the dim left-bar prefix that opens reasoning lines.
@@ -295,10 +382,10 @@ func toolBar() string {
 	return lipgloss.NewStyle().Foreground(c).Bold(true).Render("▌ ⏵ ")
 }
 
-// paletteHex resolves a palette colour to a lipgloss.Color. Used by
-// per-block styling that doesn't fit cleanly into the package-level
-// styles in styles.go.
-func paletteHex(name string) lipgloss.Color {
+// paletteHex resolves a palette colour to a color.Color usable by any
+// lipgloss style method. Used by per-block styling that doesn't fit
+// cleanly into the package-level styles in styles.go.
+func paletteHex(name string) color.Color {
 	pal := theme.Default()
 	if c, ok := pal[name]; ok {
 		return lipgloss.Color(c.Hex())

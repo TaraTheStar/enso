@@ -26,7 +26,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/agents"
@@ -464,7 +464,7 @@ func pickDefaultProvider(providers map[string]*llm.Provider, requested string) (
 // printStartupBanner prints a one-or-two-line banner describing the
 // session that's about to start. The banner is the user's first
 // confirmation that MCP/LSP/sandbox are spinning up; the same data
-// is also reachable on demand via /info or the Ctrl-A overlay.
+// is also reachable on demand via /info or the Ctrl-Space overlay.
 func printStartupBanner(provider *llm.Provider, cfg *config.Config, sandboxOn bool, writer *session.Writer) {
 	header := asstStyle.Render("enso") + "  " + provider.Model
 	if writer != nil {
@@ -522,7 +522,7 @@ func replayHistory(history []llm.Message) {
 		if b == nil {
 			continue
 		}
-		if s := renderBlock(b); s != "" {
+		if s := renderBlock(b, 0, true); s != "" {
 			fmt.Println(s)
 		}
 	}
