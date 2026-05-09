@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/permissions"

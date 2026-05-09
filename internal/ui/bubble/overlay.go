@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/config"
@@ -59,7 +59,7 @@ func renderOverlay(d *overlayData, width, height int) string {
 	footer := lipgloss.NewStyle().
 		Foreground(paletteHex("comment")).
 		Faint(true).
-		Render("Esc / Ctrl-A  close")
+		Render("Esc / Ctrl-Space  close")
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,

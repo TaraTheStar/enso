@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/permissions"
@@ -69,7 +69,7 @@ type model struct {
 	inputCh chan<- string
 
 	// Identity for status line. Only the model name is shown by default;
-	// provider/base URL/context window live in /info and the Ctrl-A
+	// provider/base URL/context window live in /info and the Ctrl-Space
 	// sidebar overlay (planned for later phases). Showing the provider
 	// inline is redundant when the user has named their provider after
 	// the model, and load-bearing only when the same model is reachable
@@ -86,7 +86,7 @@ type model struct {
 	slashReg *slash.Registry
 	slashCtx *slashCtx
 
-	// overlay holds the data shown by the Ctrl-A alt-screen session
+	// overlay holds the data shown by the Ctrl-Space alt-screen session
 	// inspector. It's an overlay — full-screen alt-screen takeover —
 	// not a sidebar; naming reflects that. Set once at construction so
 	// the overlay reads from a stable snapshot of the runtime.
@@ -143,6 +143,12 @@ type model struct {
 	busy      bool
 	busySince time.Time
 
+	// lastEscAt is the time of the previous Esc keystroke; used to
+	// detect a double-Esc within escDoubleWindow that clears the input
+	// line. Reset to zero at the top of every handleKey call so any
+	// non-Esc key in between breaks the chord.
+	lastEscAt time.Time
+
 	width, height int
 	quitting      bool
 }
@@ -162,7 +168,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
 	case busEventMsg:
@@ -208,7 +214,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+// escDoubleWindow is how recently the previous Esc must have arrived
+// for the next Esc to count as the second half of a double-Esc clear.
+// Tight enough that an accidental double-tap from key chatter doesn't
+// wipe a half-typed message; loose enough for a deliberate two-tap.
+const escDoubleWindow = 500 * time.Millisecond
+
+func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Capture and clear the prior Esc timestamp so any non-Esc key
+	// that runs through this handler breaks the double-Esc chord.
+	// The Esc case below re-sets it for the *next* call to compare
+	// against.
+	prevEscAt := m.lastEscAt
+	m.lastEscAt = time.Time{}
+
 	// File picker handling: when open, all keys route to the picker.
 	if m.pickerOpen {
 		return m.handlePickerKey(msg)
@@ -235,30 +254,34 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Session-inspector overlay handling: Ctrl-A toggles, Esc dismisses
-	// while open. While open we swallow other keys so accidental typing
-	// doesn't enter the input buffer behind the overlay.
+	// Session-inspector overlay handling: Ctrl-Space toggles, Esc
+	// dismisses while open. (Ctrl-Space rather than Ctrl-A so the
+	// readline-style move-to-start-of-line binding stays free.)
+	// Bubble Tea reports the same chord as either "ctrl+space" or
+	// "ctrl+@" depending on the terminal's keyboard protocol — handle
+	// both. While the overlay is open we swallow other keys so
+	// accidental typing doesn't enter the input buffer behind it.
 	switch msg.String() {
-	case "ctrl+a":
+	case "ctrl+space", "ctrl+@":
 		if m.overlayOpen {
 			m.overlayOpen = false
-			return m, tea.ExitAltScreen
+			return m, nil
 		}
 		if m.overlay != nil {
 			m.overlayOpen = true
-			return m, tea.EnterAltScreen
+			return m, nil
 		}
 	case "ctrl+r":
 		if m.sessions != nil {
 			m.sessions.reset()
 			m.sessions.load()
 			m.sessionsOpen = true
-			return m, tea.EnterAltScreen
+			return m, nil
 		}
 	case "esc":
 		if m.overlayOpen {
 			m.overlayOpen = false
-			return m, tea.ExitAltScreen
+			return m, nil
 		}
 	}
 	if m.overlayOpen {
@@ -276,7 +299,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.input.vimNormal {
-			handled, exitNormal := handleVimNormalKey(&m.input, key, msg.Runes)
+			handled, exitNormal := handleVimNormalKey(&m.input, key, []rune(msg.Text))
 			if exitNormal {
 				m.input.vimNormal = false
 			}
@@ -301,6 +324,22 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// current turn" from "quit app" the way tui does.
 		m.quitting = true
 		return m, tea.Quit
+
+	case "esc":
+		// Double-Esc clears the input line. Single Esc is a no-op
+		// here in non-vim mode (vim mode handles it earlier as
+		// "enter normal" and never falls through to this switch).
+		// Keeps Esc cheap and undoable: a stray single Esc does
+		// nothing, but a deliberate two-tap wipes a misstart.
+		if m.input.buf == "" {
+			return m, nil
+		}
+		if !prevEscAt.IsZero() && time.Since(prevEscAt) < escDoubleWindow {
+			m.input.reset()
+			return m, nil
+		}
+		m.lastEscAt = time.Now()
+		return m, nil
 
 	case "enter":
 		text := m.input.trimSpace()
@@ -335,7 +374,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// the gap before the first delta arrives.
 		m.busy = true
 		m.busySince = time.Now()
-		printCmd := tea.Println(renderBlock(ub))
+		printCmd := tea.Println(renderBlock(ub, m.width, true))
 		if !m.spinning {
 			m.spinning = true
 			return m, tea.Batch(printCmd, spinTick())
@@ -352,11 +391,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "right":
 		m.input.right()
 		return m, nil
-	case "home", "ctrl+a": // ctrl+a is consumed earlier when overlay is closed; this is the readline binding
-		// (Note: ctrl+a as overlay toggle takes precedence above; this
-		// branch only matches if the overlay binding pre-empt didn't
-		// fire — which today it always does. Kept for clarity if the
-		// overlay binding ever moves.)
+	case "home", "ctrl+a":
+		// Readline-style move-to-start-of-line. Ctrl-A is reachable
+		// here now that the session-inspector overlay binding moved to
+		// Ctrl-Space.
 		m.input.home()
 		return m, nil
 	case "end", "ctrl+e":
@@ -370,18 +408,19 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Append printable runes. Bubble Tea delivers Runes for ordinary
-	// keypresses; control keys arrive as named strings handled above.
-	if len(msg.Runes) > 0 {
+	// Append printable text. Bubble Tea v2 delivers the typed runes as
+	// msg.Text (a string); control keys arrive as named strings handled
+	// above and have an empty Text field.
+	if msg.Text != "" {
 		// @-trigger: open the file picker if @ would start a new
 		// token. Mid-token @s (emails, URLs) fall through to insertion.
-		if msg.Runes[0] == '@' && m.input.atIsTokenStart() && m.picker != nil {
+		if msg.Text[0] == '@' && m.input.atIsTokenStart() && m.picker != nil {
 			m.picker.ensureWalked()
 			m.picker.reset()
 			m.pickerOpen = true
-			return m, tea.EnterAltScreen
+			return m, nil
 		}
-		m.input.insertString(string(msg.Runes))
+		m.input.insertString(msg.Text)
 	}
 	return m, nil
 }
@@ -390,11 +429,11 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // overlay. Up/Down navigate, Enter signals a session switch (run.go
 // picks up m.pendingSwitch and syscall.Execs the new session), Esc
 // cancels.
-func (m *model) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) handleSessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "ctrl+r":
 		m.sessionsOpen = false
-		return m, tea.ExitAltScreen
+		return m, nil
 	case "up", "ctrl+p":
 		if m.sessions.sel > 0 {
 			m.sessions.sel--
@@ -408,14 +447,15 @@ func (m *model) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if len(m.sessions.sessions) == 0 {
 			m.sessionsOpen = false
-			return m, tea.ExitAltScreen
+			return m, nil
 		}
 		m.pendingSwitch = m.sessions.sessions[m.sessions.sel].ID
 		m.sessionsOpen = false
 		m.quitting = true
-		// tea.Sequence ensures we exit alt-screen before quitting so
-		// the terminal is in a clean state for syscall.Exec.
-		return m, tea.Sequence(tea.ExitAltScreen, tea.Quit)
+		// Alt-screen is declarative in v2: m.quitting=true makes View()
+		// return an empty non-AltScreen view, so bubbletea exits the
+		// alt-screen buffer on its own before tea.Quit takes effect.
+		return m, tea.Quit
 	}
 	return m, nil
 }
@@ -424,22 +464,22 @@ func (m *model) handleSessionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // typing edits picker.filter, ↑/↓ move the selection, Enter inserts
 // the picked path at the input cursor (with a trailing space), Esc
 // cancels.
-func (m *model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) handlePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		m.pickerOpen = false
-		return m, tea.ExitAltScreen
+		return m, nil
 
 	case "enter":
 		matches := m.picker.matches()
 		if len(matches) == 0 {
 			m.pickerOpen = false
-			return m, tea.ExitAltScreen
+			return m, nil
 		}
 		path := matches[m.picker.sel]
 		m.input.insertString(path + " ")
 		m.pickerOpen = false
-		return m, tea.ExitAltScreen
+		return m, nil
 
 	case "up", "ctrl+p":
 		if m.picker.sel > 0 {
@@ -462,8 +502,8 @@ func (m *model) handlePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 
-	if len(msg.Runes) > 0 {
-		m.picker.filter += string(msg.Runes)
+	if msg.Text != "" {
+		m.picker.filter += msg.Text
 		m.picker.sel = 0
 	}
 	return m, nil
@@ -574,7 +614,7 @@ func (m *model) handleBusEvent(ev bus.Event) (tea.Model, tea.Cmd) {
 	if len(graduate) > 0 {
 		var lines []string
 		for _, b := range graduate {
-			if s := renderBlock(b); s != "" {
+			if s := renderBlock(b, m.width, true); s != "" {
 				lines = append(lines, s)
 			}
 		}
@@ -652,27 +692,34 @@ func subagentNotice(ev bus.Event) string {
 // single-line status, and the input prompt. Past blocks are NOT
 // rendered here — they live in terminal scrollback after tea.Println.
 //
-// When the inspector overlay is open the view switches to a full-
-// screen alt-screen render instead. Bubble Tea routes the View output
-// to the alt-screen buffer when EnterAltScreen has fired, so the same
-// View function serves both modes.
-func (m *model) View() string {
+// In bubbletea v2, alt-screen mode is declarative: View() returns a
+// tea.View struct with AltScreen=true when an overlay is open. The
+// runtime handles entering / exiting the alt-screen buffer based on
+// frame-to-frame changes to that field; we no longer fire imperative
+// EnterAltScreen / ExitAltScreen commands.
+func (m *model) View() tea.View {
 	if m.quitting {
-		return ""
+		return tea.NewView("")
 	}
 	if m.overlayOpen {
-		return renderOverlay(m.overlay, m.width, m.height)
+		v := tea.NewView(renderOverlay(m.overlay, m.width, m.height))
+		v.AltScreen = true
+		return v
 	}
 	if m.pickerOpen {
-		return renderPicker(m.picker, m.width, m.height)
+		v := tea.NewView(renderPicker(m.picker, m.width, m.height))
+		v.AltScreen = true
+		return v
 	}
 	if m.sessionsOpen {
-		return renderSessionsOverlay(m.sessions, m.width, m.height)
+		v := tea.NewView(renderSessionsOverlay(m.sessions, m.width, m.height))
+		v.AltScreen = true
+		return v
 	}
 	var sb strings.Builder
 
 	if live := m.conv.Live(); live != nil {
-		if rendered := renderBlock(live); rendered != "" {
+		if rendered := renderBlock(live, m.width, false); rendered != "" {
 			sb.WriteString(rendered)
 			if !strings.HasSuffix(rendered, "\n") {
 				sb.WriteByte('\n')
@@ -720,7 +767,7 @@ func (m *model) View() string {
 	sb.WriteString("\n\n")
 
 	sb.WriteString(m.input.render())
-	return sb.String()
+	return tea.NewView(sb.String())
 }
 
 // fmtCountdown renders a remaining-time duration as the compact

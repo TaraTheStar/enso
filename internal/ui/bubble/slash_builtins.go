@@ -1157,7 +1157,7 @@ func (c *transcriptCmd) printMessages(id string, msgs []llm.Message) {
 		if b == nil {
 			continue
 		}
-		if s := renderBlock(b); s != "" {
+		if s := renderBlock(b, 0, true); s != "" {
 			c.sc.printf("%s", s)
 		}
 	}
