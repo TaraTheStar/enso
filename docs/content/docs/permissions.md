@@ -51,6 +51,18 @@ Per-tool argument matching:
 - A single token (`bash(git)`) matches the command's first word only.
 - Multi-word patterns (`bash(git push *)`) match the whole command
   with `*` crossing spaces and slashes.
+- **Allow rules gate on shell metacharacters**: any of `;` `&` `|` `<`
+  `>` `$` `` ` `` `(` `)` `\` newline present in the command must
+  also appear in the pattern, so `bash(git *)` will *not*
+  auto-allow `git status; rm -rf ~`. Opt in explicitly with patterns
+  like `bash(git * | *)` if you genuinely want pipes auto-allowed.
+- **Deny rules are segment-aware**: `bash(rm -rf *)` blocks chained
+  variants like `do_evil; rm -rf /`, `cd / && rm -rf *`, and
+  `ls | rm -rf *` by splitting the command on top-level shell
+  separators. Deny rules are *guardrails, not walls* — they don't
+  recurse into command substitution (`$(...)`, backticks) or `eval`.
+  For real isolation against a hostile model or hostile codebase,
+  set `[bash] sandbox = "auto"`.
 
 **Path patterns** (read/write/edit/grep/glob) use doublestar globs.
 `./src/**` matches everything under `./src/` recursively.
@@ -92,13 +104,21 @@ the @-file picker so ignored files don't appear there.
 `!` negation is *not* supported — use explicit `[permissions] allow`
 rules for exceptions.
 
-## "Allow + Remember"
+## "Allow + Remember" + turn-scoped grants
 
-When a permission prompt fires, the modal offers three buttons:
-**(a)llow** (allow this call only), **(r)emember** (allow + persist
-the rule), **(d)eny**. Esc is a shortcut for deny.
+When a permission prompt fires, the modal offers four decisions:
 
-**(r)emember** writes the pattern to
+- **`y`** — allow this single call.
+- **`n`** — deny (Esc is a shortcut for deny).
+- **`a`** — Allow + Remember: allow this call *and* persist a rule.
+- **`t`** — turn-scoped: allow this call (and any further calls
+  matching the same pattern) for the rest of the current turn only.
+  The grant is dropped when the turn quiesces, so the next user
+  message starts from the same baseline. Useful when the model is
+  about to chain several similar tool calls and you don't want to
+  either prompt for every one or commit to a permanent rule.
+
+**`a` (allow + remember)** writes the pattern to
 `<cwd>/.enso/config.local.toml` (project-scoped, gitignored). The
 pattern derivation:
 
