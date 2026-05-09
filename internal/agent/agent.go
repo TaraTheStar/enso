@@ -739,10 +739,11 @@ func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, t
 	a.Bus.Publish(bus.Event{
 		Type: bus.EventToolCallEnd,
 		Payload: map[string]any{
-			"name":   tc.Function.Name,
-			"id":     tc.ID,
-			"result": result.LLMOutput,
-			"error":  runErr,
+			"name":    tc.Function.Name,
+			"id":      tc.ID,
+			"result":  result.LLMOutput,
+			"display": result.DisplayOutput,
+			"error":   runErr,
 		},
 	})
 
