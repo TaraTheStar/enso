@@ -46,6 +46,26 @@ func TestGlobTool_NoMatches(t *testing.T) {
 	}
 }
 
+func TestGlobTool_DisplayOutput(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "a.go"), "")
+	mustWriteFile(t, filepath.Join(tmp, "b.go"), "")
+	mustWriteFile(t, filepath.Join(tmp, "c.go"), "")
+	ac := newToolAC(tmp)
+	res, _ := GlobTool{}.Run(context.Background(),
+		map[string]any{"pattern": "*.go", "path": tmp}, ac)
+	if res.DisplayOutput != "3 matches" {
+		t.Errorf("display = %q, want `3 matches`", res.DisplayOutput)
+	}
+
+	mustWriteFile(t, filepath.Join(tmp, "only.toml"), "")
+	res, _ = GlobTool{}.Run(context.Background(),
+		map[string]any{"pattern": "*.toml", "path": tmp}, ac)
+	if res.DisplayOutput != "1 match" {
+		t.Errorf("display = %q, want `1 match`", res.DisplayOutput)
+	}
+}
+
 func TestGlobTool_DefaultsToCwd(t *testing.T) {
 	tmp := t.TempDir()
 	mustWriteFile(t, filepath.Join(tmp, "x.md"), "")

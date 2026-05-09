@@ -88,16 +88,73 @@ func (t WebFetchTool) Run(ctx context.Context, args map[string]interface{}, ac *
 	content := string(data)
 
 	ct := resp.Header.Get("Content-Type")
-	if strings.Contains(ct, "text/html") || strings.HasPrefix(content, "<!") || strings.HasPrefix(content, "<html") {
+	isHTML := strings.Contains(ct, "text/html") || strings.HasPrefix(content, "<!") || strings.HasPrefix(content, "<html")
+	var title string
+	if isHTML {
+		title = extractTitle(content)
 		content = stripHTML(content)
 	}
 
 	truncated, full := HeadTail(content, webFetchSummaryCap)
 
 	return Result{
-		LLMOutput:  truncated,
-		FullOutput: full,
+		LLMOutput:     truncated,
+		FullOutput:    full,
+		DisplayOutput: webFetchDisplay(resp.StatusCode, len(data), ct, title),
 	}, nil
+}
+
+// webFetchDisplay builds the one-line scrollback summary. The model
+// gets the full extracted text via LLMOutput; this is purely what the
+// user reads — they don't need to see 2000 chars of stripped HTML
+// every time a page is fetched.
+func webFetchDisplay(status, n int, contentType, title string) string {
+	parts := []string{fmt.Sprintf("%d", status), humanBytes(n)}
+	if title != "" {
+		parts = append(parts, fmt.Sprintf("%q", title))
+	} else if mt := mediaType(contentType); mt != "" {
+		parts = append(parts, mt)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// titleRe matches <title>…</title> case-insensitively, allowing
+// attributes and surrounding whitespace. Non-greedy so a page with
+// stray "</title>" elsewhere doesn't grab too much.
+var titleRe = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
+
+func extractTitle(html string) string {
+	m := titleRe.FindStringSubmatch(html)
+	if len(m) < 2 {
+		return ""
+	}
+	t := strings.TrimSpace(m[1])
+	// Collapse whitespace runs — multi-line titles render badly.
+	t = strings.Join(strings.Fields(t), " ")
+	const cap = 80
+	if len(t) > cap {
+		t = t[:cap-1] + "…"
+	}
+	return t
+}
+
+// mediaType strips ";charset=…" etc. off a Content-Type header.
+func mediaType(ct string) string {
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	return strings.TrimSpace(ct)
+}
+
+func humanBytes(n int) string {
+	switch {
+	case n < 1024:
+		return fmt.Sprintf("%dB", n)
+	case n < 1024*1024:
+		return fmt.Sprintf("%.1fKB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1fMB", float64(n)/(1024*1024))
+	}
 }
 
 var htmlTagRe = regexp.MustCompile(`<[^>]+>`)

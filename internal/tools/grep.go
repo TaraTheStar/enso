@@ -76,10 +76,28 @@ func (t GrepTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	output := strings.Join(results, "\n")
 	if output == "" {
 		output = "no matches found"
+		return Result{LLMOutput: output, FullOutput: output, DisplayOutput: output}, nil
 	}
 	truncated, full := HeadTail(output, 2000)
 
-	return Result{LLMOutput: truncated, FullOutput: full}, nil
+	return Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: grepDisplay(output)}, nil
+}
+
+// grepDisplay summarizes ripgrep / walk output (one `path:line:content`
+// per line) into "N match(es) in M file(s)". Counting is over the full
+// pre-truncation output so the user sees real totals, not the post-cap
+// view.
+func grepDisplay(output string) string {
+	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
+	files := make(map[string]struct{}, len(lines))
+	for _, ln := range lines {
+		if i := strings.IndexByte(ln, ':'); i > 0 {
+			files[ln[:i]] = struct{}{}
+		}
+	}
+	return fmt.Sprintf("%d match%s in %d file%s",
+		len(lines), matchPlural(len(lines)),
+		len(files), plural(len(files)))
 }
 
 func tryRG(ctx context.Context, path, pattern string) *Result {
@@ -107,5 +125,5 @@ func tryRG(ctx context.Context, path, pattern string) *Result {
 		return &Result{LLMOutput: "no matches found", FullOutput: "no matches found"}
 	}
 	truncated, full := HeadTail(output, 2000)
-	return &Result{LLMOutput: truncated, FullOutput: full}
+	return &Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: grepDisplay(output)}
 }

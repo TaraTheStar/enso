@@ -84,6 +84,84 @@ func TestWebFetchTool_HTTPError(t *testing.T) {
 	}
 }
 
+func TestWebFetchTool_DisplayOutput_HTMLWithTitle(t *testing.T) {
+	allowLoopback(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<html><head><title>  Example\n  Domain  </title></head><body>x</body></html>"))
+	}))
+	defer srv.Close()
+
+	res, err := WebFetchTool{}.Run(context.Background(),
+		map[string]any{"url": srv.URL}, newToolAC(t.TempDir()))
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	// Title should be extracted, whitespace collapsed, and shown quoted.
+	if !strings.Contains(res.DisplayOutput, `"Example Domain"`) {
+		t.Errorf("display = %q, want title quoted", res.DisplayOutput)
+	}
+	if !strings.HasPrefix(res.DisplayOutput, "200 · ") {
+		t.Errorf("display = %q, want `200 · …` prefix", res.DisplayOutput)
+	}
+	// LLM output still gets the page text (regression check).
+	if res.LLMOutput == "" {
+		t.Error("LLMOutput empty — model would lose page content")
+	}
+}
+
+func TestWebFetchTool_DisplayOutput_PlainTextNoTitle(t *testing.T) {
+	allowLoopback(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("hello"))
+	}))
+	defer srv.Close()
+
+	res, _ := WebFetchTool{}.Run(context.Background(),
+		map[string]any{"url": srv.URL}, newToolAC(t.TempDir()))
+	// No title to extract — display falls back to media type.
+	if !strings.Contains(res.DisplayOutput, "text/plain") {
+		t.Errorf("display = %q, want text/plain", res.DisplayOutput)
+	}
+	if !strings.Contains(res.DisplayOutput, "5B") {
+		t.Errorf("display = %q, want byte count `5B`", res.DisplayOutput)
+	}
+}
+
+func TestExtractTitle(t *testing.T) {
+	cases := map[string]string{
+		"<title>Hi</title>":                                "Hi",
+		"<TITLE>Cap</TITLE>":                               "Cap",
+		"<title id=\"x\">Attr</title>":                     "Attr",
+		"<title>\n  Multi\n  Line\n</title>":               "Multi Line",
+		"<title>" + strings.Repeat("a", 200) + "</title>":  strings.Repeat("a", 79) + "…",
+		"<html>no title</html>":                            "",
+		"<title>First</title> stuff <title>Second</title>": "First", // non-greedy
+	}
+	for in, want := range cases {
+		if got := extractTitle(in); got != want {
+			t.Errorf("extractTitle(%q) = %q want %q", in, got, want)
+		}
+	}
+}
+
+func TestHumanBytes(t *testing.T) {
+	cases := map[int]string{
+		0:           "0B",
+		512:         "512B",
+		1024:        "1.0KB",
+		1536:        "1.5KB",
+		1024 * 100:  "100.0KB",
+		1024 * 1024: "1.0MB",
+	}
+	for in, want := range cases {
+		if got := humanBytes(in); got != want {
+			t.Errorf("humanBytes(%d) = %q want %q", in, got, want)
+		}
+	}
+}
+
 func TestWebFetchTool_RequiresURL(t *testing.T) {
 	ac := newToolAC(t.TempDir())
 	_, err := WebFetchTool{}.Run(context.Background(), map[string]any{}, ac)

@@ -71,5 +71,17 @@ func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	content := sb.String()
 	truncated, full := HeadTail(content, 2000)
 
-	return Result{LLMOutput: truncated, FullOutput: full}, nil
+	// File contents are huge; the call signature already shows the path
+	// (and any range args). Scrollback gets a count instead of pages of
+	// numbered source. The model still receives `truncated` as before.
+	totalLines := len(lines)
+	returned := last - first + 1
+	var display string
+	if first == 1 && last == totalLines {
+		display = fmt.Sprintf("%d line%s", returned, plural(returned))
+	} else {
+		display = fmt.Sprintf("lines %d-%d (of %d)", first, last, totalLines)
+	}
+
+	return Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: display}, nil
 }
