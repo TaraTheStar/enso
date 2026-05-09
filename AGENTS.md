@@ -152,14 +152,19 @@ something feels off:
   unfenced tools were safe (they aren't), and a real fix would need
   per-call nonces around *every* tool result with system-prompt
   awareness — a prompt-engineering project on its own.
-- **Bash deny-rule bypass via prepended command.** A deny like
-  `bash(rm -rf *)` matches `rm -rf /tmp; ls` but NOT `do_evil; rm -rf /`
-  — the pattern doesn't start with `rm -rf`. Allow rules got a
-  metachar gate (see `internal/permissions/allowlist.go`
-  `bashHasUnchainedMetachars`) but deny rules can't be tightened the
-  same way without inverting their failure mode. Closing this needs a
-  real shell parser; in the meantime, hostile-model resilience belongs
-  in `bash.sandbox = "auto"`, not in deny patterns.
+- **Bash deny-rule bypass via command substitution.** Deny rules are
+  now segment-aware: `bash(rm -rf *)` correctly catches `do_evil; rm -rf /`,
+  `cd / && rm -rf *`, `cd / || rm -rf *`, `ls | rm -rf *`, and newline-
+  separated chains by splitting on top-level separators
+  (`internal/permissions/allowlist.go` `bashSplitTopLevel`). The
+  remaining bypasses — `$(rm -rf /)`, backticks, `eval "$cmd"`, here-
+  docs, and anything inside shell control flow — are NOT closed,
+  because closing them properly needs a full shell parser
+  (`mvdan.cc/sh`-class) that we've punted on. **Deny rules are
+  guardrails, not walls.** For adversarial inputs (hostile model,
+  hostile dependency code being reviewed), `bash.sandbox = "auto"` is
+  the boundary — the documented residual bypass classes are caught
+  there because the entire shell session runs inside a container.
 - **Workflow sibling parallelism** is goroutine-correct but not
   load-tested. Three-role pipelines work; large fan-outs (10+
   siblings) with shared output state under mutex are unexplored.

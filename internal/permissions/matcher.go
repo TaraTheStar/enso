@@ -39,11 +39,11 @@ func MatchPath(pattern, path string) bool {
 // in Allowlist.Match — it applies only to allow rules. See
 // bashHasUnchainedMetachars in allowlist.go.
 //
-// Known gap (not closed here): deny rules can still be bypassed by
-// prepending a benign command. `bash(rm -rf *)` deny does NOT match
-// `do_evil; rm -rf /` because the pattern doesn't start with `rm -rf`.
-// Closing that needs a real shell parser; for now, hostile-model
-// resilience belongs in `bash.sandbox = "auto"`, not here.
+// Allowlist.Match also extends bash deny rules with a top-level-segment
+// re-check via bashSplitTopLevel so `bash(rm -rf *)` deny correctly
+// fires on `do_evil; rm -rf /`. The remaining gap (command substitution
+// like `$(rm -rf /)` and backticks) is not closed here — for
+// adversarial inputs `bash.sandbox = "auto"` is the real boundary.
 func MatchCommand(pattern, cmd string) bool {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "*" || pattern == "" {
