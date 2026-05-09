@@ -199,7 +199,8 @@ func (t LSPDefinitionTool) Run(ctx context.Context, args map[string]interface{},
 		b.WriteString("\n")
 	}
 	out := strings.TrimRight(b.String(), "\n")
-	return Result{LLMOutput: out, FullOutput: out}, nil
+	display := fmt.Sprintf("%d location%s", len(locs), plural(len(locs)))
+	return Result{LLMOutput: out, FullOutput: out, DisplayOutput: display}, nil
 }
 
 // --- lsp_references ---
@@ -247,7 +248,8 @@ func (t LSPReferencesTool) Run(ctx context.Context, args map[string]interface{},
 		b.WriteString("\n")
 	}
 	out := strings.TrimRight(b.String(), "\n")
-	return Result{LLMOutput: out, FullOutput: out}, nil
+	display := fmt.Sprintf("%d reference%s", len(locs), plural(len(locs)))
+	return Result{LLMOutput: out, FullOutput: out, DisplayOutput: display}, nil
 }
 
 // --- lsp_diagnostics ---
@@ -280,6 +282,39 @@ func (t LSPDiagnosticsTool) Run(ctx context.Context, args map[string]interface{}
 	if len(diags) == 0 {
 		return Result{LLMOutput: "(no diagnostics — the file is clean, or the server hasn't analysed it yet; allow a moment after didOpen and retry if you suspect this is the latter)"}, nil
 	}
+	// Severity counts let the user see "5 errors, 3 warnings" at a
+	// glance instead of scrolling 8 diagnostic lines. The model still
+	// gets the full list via LLMOutput.
+	var nErr, nWarn, nInfo, nHint int
+	for _, d := range diags {
+		switch d.Severity {
+		case 1:
+			nErr++
+		case 2:
+			nWarn++
+		case 3:
+			nInfo++
+		case 4:
+			nHint++
+		}
+	}
+	var parts []string
+	if nErr > 0 {
+		parts = append(parts, fmt.Sprintf("%d error%s", nErr, plural(nErr)))
+	}
+	if nWarn > 0 {
+		parts = append(parts, fmt.Sprintf("%d warning%s", nWarn, plural(nWarn)))
+	}
+	if nInfo > 0 {
+		parts = append(parts, fmt.Sprintf("%d info", nInfo))
+	}
+	if nHint > 0 {
+		parts = append(parts, fmt.Sprintf("%d hint%s", nHint, plural(nHint)))
+	}
+	display := strings.Join(parts, ", ")
+	if display == "" {
+		display = fmt.Sprintf("%d diagnostic%s", len(diags), plural(len(diags)))
+	}
 	var b strings.Builder
 	for _, d := range diags {
 		sev := severityName(d.Severity)
@@ -300,7 +335,7 @@ func (t LSPDiagnosticsTool) Run(ctx context.Context, args map[string]interface{}
 		b.WriteString("\n")
 	}
 	out := strings.TrimRight(b.String(), "\n")
-	return Result{LLMOutput: out, FullOutput: out}, nil
+	return Result{LLMOutput: out, FullOutput: out, DisplayOutput: display}, nil
 }
 
 func severityName(s int) string {

@@ -130,6 +130,12 @@ func (c *conversation) HandleEvent(ev bus.Event) []blocks.Block {
 		}
 		if denied, _ := d["denied"].(bool); denied {
 			t.Output = "(denied)"
+		} else if display := getString(d, "display"); display != "" {
+			// Tool offered a terse summary for scrollback (e.g.
+			// web_fetch returns "200 · 4.2KB · \"Title\"" instead of
+			// dumping stripped HTML). The model still sees the full
+			// LLMOutput; this is purely a display override.
+			t.Output = display
 		} else if result := getString(d, "result"); result != "" {
 			t.Output = result
 		}

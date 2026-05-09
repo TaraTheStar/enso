@@ -61,6 +61,47 @@ func TestReadTool_LineRange(t *testing.T) {
 	}
 }
 
+func TestReadTool_DisplayOutput_FullFile(t *testing.T) {
+	tmp := t.TempDir()
+	// Trailing newline → strings.Split yields 4 elements ("a","b","c","").
+	mustWriteFile(t, filepath.Join(tmp, "f.txt"), "a\nb\nc\n")
+	ac := newToolAC(tmp)
+	res, _ := ReadTool{}.Run(context.Background(), map[string]any{"path": "f.txt"}, ac)
+	if res.DisplayOutput != "4 lines" {
+		t.Errorf("display = %q, want `4 lines`", res.DisplayOutput)
+	}
+}
+
+func TestReadTool_DisplayOutput_SingleLineFile(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "f.txt"), "only")
+	ac := newToolAC(tmp)
+	res, _ := ReadTool{}.Run(context.Background(), map[string]any{"path": "f.txt"}, ac)
+	// Singular form for a one-line file.
+	if res.DisplayOutput != "1 line" {
+		t.Errorf("display = %q, want `1 line`", res.DisplayOutput)
+	}
+}
+
+func TestReadTool_DisplayOutput_LineRange(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "f.txt"), "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+	ac := newToolAC(tmp)
+	res, _ := ReadTool{}.Run(context.Background(), map[string]any{
+		"path":       "f.txt",
+		"first_line": float64(3),
+		"last_line":  float64(7),
+	}, ac)
+	// File has 11 lines (10 + trailing-newline empty); range form shows
+	// "lines A-B (of TOTAL)".
+	if !strings.Contains(res.DisplayOutput, "lines 3-7") {
+		t.Errorf("display = %q, want `lines 3-7 …`", res.DisplayOutput)
+	}
+	if !strings.Contains(res.DisplayOutput, "(of 11)") {
+		t.Errorf("display = %q, want `(of 11)`", res.DisplayOutput)
+	}
+}
+
 func TestReadTool_MissingFile(t *testing.T) {
 	tmp := t.TempDir()
 	ac := newToolAC(tmp)

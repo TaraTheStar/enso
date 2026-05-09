@@ -65,5 +65,16 @@ func (t GlobTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	output := sb.String()
 	truncated, full := HeadTail(output, 2000)
 
-	return Result{LLMOutput: truncated, FullOutput: full}, nil
+	display := fmt.Sprintf("%d match%s", len(matches), matchPlural(len(matches)))
+
+	return Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: display}, nil
+}
+
+// matchPlural returns "es" for n != 1 — "match" / "matches", not "matchs".
+// Lives here for use by other tools (grep) that count matches too.
+func matchPlural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "es"
 }
