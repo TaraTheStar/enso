@@ -179,3 +179,19 @@ func (t *Transcripts) Get(agentID string) []llm.Message {
 	defer t.mu.Unlock()
 	return t.m[agentID]
 }
+
+// IDs returns the agent IDs of every stored transcript. Order is
+// undefined (Go map iteration). Used by the /transcript slash
+// command to enumerate available transcripts.
+func (t *Transcripts) IDs() []string {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]string, 0, len(t.m))
+	for k := range t.m {
+		out = append(out, k)
+	}
+	return out
+}

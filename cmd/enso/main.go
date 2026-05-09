@@ -19,7 +19,7 @@ import (
 	"github.com/TaraTheStar/enso/internal/daemon"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/session"
-	"github.com/TaraTheStar/enso/internal/tui"
+	"github.com/TaraTheStar/enso/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -85,8 +85,8 @@ var (
 	flagTrustProject bool
 )
 
-func tuiOptions() tui.Options {
-	return tui.Options{
+func uiOptions() ui.Options {
+	return ui.Options{
 		Yolo:      flagYolo,
 		Session:   flagSession,
 		Ephemeral: flagEphemeral,
@@ -122,7 +122,7 @@ var rootCmd = &cobra.Command{
 	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Default to tui subcommand
-		return tui.Run(tuiOptions())
+		return ui.Run(uiOptions())
 	},
 }
 
@@ -140,7 +140,7 @@ var tuiCmd = &cobra.Command{
 		if _, err := loadOrWelcome(cwd); err != nil {
 			return err
 		}
-		return tui.Run(tuiOptions())
+		return ui.Run(uiOptions())
 	},
 }
 
@@ -228,7 +228,7 @@ var attachCmd = &cobra.Command{
 		if len(args) == 0 {
 			return pickAndAttach()
 		}
-		return tui.RunAttached(args[0])
+		return ui.RunAttached(args[0])
 	},
 }
 

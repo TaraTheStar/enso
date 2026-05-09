@@ -5,23 +5,29 @@ weight: 1
 
 # TUI
 
-The default `enso` command launches a tview-based terminal UI: a chat
-pane, an input area at the bottom, an optional agents pane on the
-right, and a status bar.
+The default `enso` command launches a scrollback-native Bubble Tea
+UI: completed messages live in your real terminal scrollback (so
+highlight + middle-click copy works exactly like in any tmux pane),
+with a small live region at the bottom for the streaming message,
+status line, and input. `Ctrl-A` summons a full-screen alt-screen
+session inspector for at-a-glance state.
 
 ## Keybindings
 
 | Key                          | Action                                                                |
 | ---------------------------- | --------------------------------------------------------------------- |
-| `Enter`                      | Submit the current input.                                             |
-| `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | Newline. `Ctrl+J` is the cross-terminal-reliable one.       |
-| `Ctrl+C`                     | Cancel the current turn (no-op when idle).                            |
-| `Ctrl+D`                     | Quit (cancels in-flight turn first).                                  |
-| `Ctrl+A`                     | Toggle the right-side agents pane.                                    |
-| `Ctrl+T`                     | Toggle visibility of completed reasoning blocks.                      |
-| `Ctrl+R`                     | Open the recent-sessions overlay (Enter switches via `syscall.Exec`). |
+| `Enter`                      | Submit the current input (or run a `/`-prefixed command).             |
+| `Ctrl+C` / `Ctrl+D`          | Quit.                                                                 |
+| `Ctrl+A`                     | Open the alt-screen session inspector overlay; Esc returns.           |
+| `←` / `→` / `Home` / `End`   | Cursor movement in the input.                                         |
+| `Ctrl+←` / `Ctrl+→`          | Word back / forward.                                                  |
 | `@` (at token start)         | Open the file picker — type to filter, Enter inserts the path.        |
-| `Esc`                        | Close any modal (= **Deny** on a permission prompt).                  |
+| `y` / `n` / `a` / `t`        | Permission prompt: yes / no / always (persist) / turn-scoped.         |
+| `Esc`                        | Close any active overlay (file picker, inspector). On a permission prompt, Esc denies. |
+
+When `[ui] editor_mode = "vim"` is set in config, the input runs the
+single-line vim subset: `Esc` enters NORMAL, `i` / `a` / `A` re-enter
+INSERT, `h l 0 $ w b x` for navigation and edit.
 
 ## Slash commands
 

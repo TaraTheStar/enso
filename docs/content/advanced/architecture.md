@@ -15,8 +15,10 @@ Inside one process the **agent goroutine** runs the chat→tool loop
 (`internal/agent`), publishes typed events on a fan-out **bus**
 (`internal/bus`), and persists state synchronously through a **session
 writer** (`internal/session`) before the UI sees anything
-(persist-before-render invariant). The **TUI** (`internal/tui` over
-`tview`/`tcell`) subscribes for rendering, the **permissions checker**
+(persist-before-render invariant). The **UI** (`internal/ui` —
+framework-agnostic surface — over `internal/ui/bubble` running Bubble
+Tea inline so completed messages live in the terminal's real
+scrollback) subscribes for rendering, the **permissions checker**
 (`internal/permissions`) gates tool calls with three-tier patterns,
 **MCP** servers (`internal/mcp` via `mark3labs/mcp-go`) plug their
 tools into the same registry as built-ins (`internal/tools`),
@@ -67,7 +69,12 @@ internal/
                 /0003_messages_agent_id.sql
   slash/                         slash command registry + skill loader
   tools/                         built-in tools + Registry + Transcripts
-  tui/                           tview-based UI
+  ui/                            framework-agnostic UI surface
+    blocks/                      shared chat block model
+    theme/                       palette + theme.toml loader
+    status/                      status-line template engine
+    find/                        substring/regex search engine
+    bubble/                      Bubble Tea backend (scrollback-native + alt-screen overlays)
   workflow/                      parse + parallel topo runner
 
 examples/
