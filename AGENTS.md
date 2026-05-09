@@ -37,12 +37,12 @@ go test ./...
 - **Go version**: target `1.23+`. Keep `go.mod` aligned.
 - **Module path**: `github.com/TaraTheStar/enso`.
 - **No CGO**: every dependency must build with `CGO_ENABLED=0`. SQLite uses `modernc.org/sqlite` (pure Go), not `mattn/go-sqlite3`.
-- **Package layout**: one package per directory. Don't reach into `internal/tui` from anything except `cmd/enso`.
+- **Package layout**: one package per directory. The UI lives behind `internal/ui/`; nothing outside `internal/ui/bubble/` should import the Bubble Tea / Lipgloss libraries directly. Domain code talks to `internal/ui` (or `internal/bus` for events) only.
 - **Imports**: stdlib first, then third-party, then internal — separated by blank lines. `gofmt` sorts.
 - **Errors**: wrap with `fmt.Errorf("doing X: %w", err)`. Don't `panic` outside `cmd/enso/main.go`. Return errors up; the agent loop is the recovery point.
 - **Logging**: `log/slog` only. Default text handler writing to `~/.enso/enso.log` (set up in `cmd/enso/main.go:initLogging`). Add structured fields (`slog.String("session", id)`) instead of formatting strings. Stderr is never written to from inside the TUI — it'd corrupt the screen.
 - **Concurrency**: prefer `context.Context` for cancellation. No naked goroutines without a way to stop them. Channels for events; mutexes only when channels would be awkward.
-- **Tests**: table-driven where it fits. The gnarly bits already have tests; add tests for new gnarly logic but don't bother testing thin glue or tview wiring.
+- **Tests**: table-driven where it fits. The gnarly bits already have tests; add tests for new gnarly logic but don't bother testing thin glue or Bubble Tea View output.
 - **Comments**: write very few. Identifiers carry the meaning. A comment is for explaining a non-obvious *why* — a hidden constraint, a workaround for an upstream bug, an invariant. If removing it wouldn't confuse a reader, don't write it.
 
 ## File-creation discipline
@@ -58,7 +58,7 @@ go test ./...
 - **Don't add backwards-compatibility shims.** Just change the code.
 - **Don't `git push` or commit** unless explicitly asked. Stage and report what's ready, let the human commit.
 - **Don't run destructive commands** (`rm -rf`, `git reset --hard`, etc.) without confirmation.
-- **Don't pull additional dependencies** without surfacing the choice first. Current deps are in `go.mod`. The load-bearing ones are `tview`/`tcell` (TUI), `spf13/cobra` (CLI), `mark3labs/mcp-go` (MCP client), `modernc.org/sqlite` (no-CGO SQLite), `bmatcuk/doublestar` (path patterns), `pelletier/go-toml/v2` (config), `adrg/frontmatter` (workflow parsing).
+- **Don't pull additional dependencies** without surfacing the choice first. Current deps are in `go.mod`. The load-bearing ones are `charmbracelet/bubbletea` + `charmbracelet/lipgloss` (scrollback-native TUI), `spf13/cobra` (CLI), `mark3labs/mcp-go` (MCP client), `modernc.org/sqlite` (no-CGO SQLite), `bmatcuk/doublestar` (path patterns), `pelletier/go-toml/v2` (config), `adrg/frontmatter` (workflow parsing).
 
 ## Known model-side quirks
 
@@ -168,13 +168,13 @@ something feels off:
 - **Workflow sibling parallelism** is goroutine-correct but not
   load-tested. Three-role pipelines work; large fan-outs (10+
   siblings) with shared output state under mutex are unexplored.
-- **Slow-consumer drops on streaming deltas.** The chat events
-  subscriber coalesces deltas into 16ms (~60fps) batches before
-  redrawing — that should keep `bus: slow consumer` warnings at bay
-  even on >100 t/s streams. If you see them in `~/.enso/enso.log`,
-  the renderer is back-pressured for some other reason; bump the
-  subscriber buffer or shorten the flush interval in
-  `internal/tui/app.go`.
+- **Slow-consumer drops on streaming deltas.** The bus → tea.Msg
+  forwarder coalesces deltas into 16ms (~60fps) batches before
+  sending to the program — that should keep `bus: slow consumer`
+  warnings at bay even on >100 t/s streams. If you see them in
+  `~/.enso/enso.log`, the renderer is back-pressured for some other
+  reason; bump the subscriber buffer or shorten the flush interval
+  in `internal/ui/bubble/run.go`.
 ## Reference
 
 - `README.md` — user-facing quickstart + feature overview (also covers the layered config search paths).
