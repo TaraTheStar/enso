@@ -12,17 +12,20 @@ import (
 )
 
 // TestStreamingAccumulates: AssistantDelta payloads accumulate in the
-// in-flight block; nothing graduates to scrollback yet.
+// in-flight block; nothing graduates to scrollback yet. (The first
+// delta does return a Cmd — the spinner tick that drives the bottom
+// indicator — but no Println, which we verify indirectly by checking
+// nothing landed in conversation history.)
 func TestStreamingAccumulates(t *testing.T) {
 	m := &model{}
 	for _, chunk := range []string{"hello ", "world", "!"} {
-		out, cmd := m.handleBusEvent(bus.Event{Type: bus.EventAssistantDelta, Payload: chunk})
+		out, _ := m.handleBusEvent(bus.Event{Type: bus.EventAssistantDelta, Payload: chunk})
 		if out != m {
 			t.Fatalf("model identity changed unexpectedly")
 		}
-		if cmd != nil {
-			t.Fatalf("delta should not return a Cmd (no scrollback write yet)")
-		}
+	}
+	if h := m.conv.History(); len(h) != 0 {
+		t.Fatalf("nothing should have graduated yet; got %d history entries", len(h))
 	}
 	a, ok := m.conv.Live().(*blocks.Assistant)
 	if !ok {
