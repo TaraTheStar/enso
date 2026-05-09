@@ -13,9 +13,10 @@ import (
 )
 
 var (
-	flagInitPrint bool
-	flagInitForce bool
-	flagInitPath  string
+	flagInitPrint  bool
+	flagInitForce  bool
+	flagInitPath   string
+	flagInitWizard bool
 )
 
 var configCmd = &cobra.Command{
@@ -49,10 +50,23 @@ var configInitCmd = &cobra.Command{
 		// Config file can hold api_key — clamp parent dir mode in case
 		// it predates the 0700 tightening.
 		_ = os.Chmod(filepath.Dir(path), 0o700)
-		if err := os.WriteFile(path, []byte(config.DefaultTOML()), 0o600); err != nil {
+
+		// --wizard runs the interactive prompt flow, building the
+		// config from the user's preset choice instead of writing the
+		// embedded default verbatim. Same path-resolution + file-mode
+		// guarantees as the default-write branch above.
+		body := config.DefaultTOML()
+		if flagInitWizard {
+			_, w, err := config.RunWizard(os.Stdin, os.Stdout)
+			if err != nil {
+				return fmt.Errorf("wizard: %w", err)
+			}
+			body = w
+		}
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			return fmt.Errorf("write %s: %w", path, err)
 		}
-		fmt.Printf("wrote default config to %s\n", path)
+		fmt.Printf("wrote config to %s\n", path)
 		return nil
 	},
 }
@@ -82,6 +96,7 @@ func init() {
 	configInitCmd.Flags().BoolVarP(&flagInitPrint, "print", "p", false, "print the default config to stdout instead of writing a file")
 	configInitCmd.Flags().BoolVarP(&flagInitForce, "force", "f", false, "overwrite if the destination already exists")
 	configInitCmd.Flags().StringVar(&flagInitPath, "path", "", "destination path (defaults to $XDG_CONFIG_HOME/enso/config.toml)")
+	configInitCmd.Flags().BoolVarP(&flagInitWizard, "wizard", "w", false, "interactive prompt: pick a provider preset, model, and (optional) API key")
 	configCmd.AddCommand(configInitCmd, configShowCmd)
 	rootCmd.AddCommand(configCmd)
 }
