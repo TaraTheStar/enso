@@ -46,6 +46,22 @@ func permTick() tea.Cmd {
 	})
 }
 
+// spinTickMsg drives the contextual live-status spinner above the input.
+// While any block is live (reasoning, assistant streaming, tool running)
+// the tick fires every spinFrameMs so the spinner glyph advances and the
+// "(Ns)" elapsed counter stays current — even when the underlying event
+// stream is sparse (e.g. a model that emits one reasoning delta every
+// few seconds).
+type spinTickMsg struct{}
+
+const spinFrameMs = 150
+
+func spinTick() tea.Cmd {
+	return tea.Tick(spinFrameMs*time.Millisecond, func(time.Time) tea.Msg {
+		return spinTickMsg{}
+	})
+}
+
 // model is the Bubble Tea model for the live region. Past blocks live
 // in terminal scrollback (graduated via tea.Println on completion) and
 // aren't held here. The most recent in-flight block lives in conv.
@@ -106,6 +122,27 @@ type model struct {
 	statusLine string     // single-line status (tool name, etc.); empty when idle
 	input      inputState // user-typed input + cursor + vim state
 
+	// liveStarted timestamps when the current live block began. Used by
+	// the bottom contextual indicator to render its "(Ns)" elapsed
+	// counter. Reset to zero whenever the live block clears or
+	// transitions to a different type. Tools and reasoning blocks carry
+	// their own start times too, but assistant streaming has none —
+	// liveStarted serves uniformly for all three.
+	liveStarted time.Time
+	// spinning is true while a spinTick is in flight. Prevents stacking
+	// duplicate tick chains when multiple events arrive between frames.
+	spinning bool
+
+	// busy tracks "the agent has accepted a user message and is working
+	// on a turn", but no live block exists yet (or hasn't yet reopened
+	// between tool-call rounds). Without this, the gap between Enter
+	// and the first delta — common on cold starts, model switches, and
+	// slow reasoning models — shows nothing but the model name and
+	// looks frozen. Cleared on EventAgentIdle / EventCancelled /
+	// EventError.
+	busy      bool
+	busySince time.Time
+
 	width, height int
 	quitting      bool
 }
@@ -139,6 +176,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if t, ok := m.conv.Live().(*blocks.Tool); ok && t.ID == msg.toolID && t.Running() {
 			return m, elapsedTick(msg.toolID)
 		}
+		return m, nil
+
+	case spinTickMsg:
+		// Reschedule while anything is live OR while we're waiting for
+		// the agent to respond, so the spinner glyph and elapsed
+		// counter keep advancing; otherwise let the tick chain die so
+		// we're not waking up while idle.
+		if m.conv.Live() != nil || m.busy {
+			return m, spinTick()
+		}
+		m.spinning = false
 		return m, nil
 
 	case permTickMsg:
@@ -281,7 +329,18 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// append to conversation history so /find and replay see it.
 		ub := &blocks.User{Text: text}
 		m.conv.Append(ub)
-		return m, tea.Println(renderBlock(ub))
+
+		// Mark the agent busy and ensure the spinner tick is running so
+		// the "waiting…" indicator's elapsed counter advances during
+		// the gap before the first delta arrives.
+		m.busy = true
+		m.busySince = time.Now()
+		printCmd := tea.Println(renderBlock(ub))
+		if !m.spinning {
+			m.spinning = true
+			return m, tea.Batch(printCmd, spinTick())
+		}
+		return m, printCmd
 
 	case "backspace":
 		m.input.backspace()
@@ -430,6 +489,16 @@ func (m *model) handleBusEvent(ev bus.Event) (tea.Model, tea.Cmd) {
 		m.statusLine = ""
 	}
 
+	// Turn-terminal events clear the "waiting on agent" flag. Tool-call
+	// boundaries don't clear it — between a tool ending and the next
+	// LLM call we're still waiting on the agent and the user should
+	// still see the "waiting…" indicator.
+	switch ev.Type {
+	case bus.EventAgentIdle, bus.EventCancelled, bus.EventError:
+		m.busy = false
+		m.busySince = time.Time{}
+	}
+
 	// Permission prompt: an EventPermissionRequest is the agent
 	// blocking on a tool-call decision. Print the inline prompt; the
 	// next y/n/a/t keystroke (handled in handleKey) sends the
@@ -469,32 +538,83 @@ func (m *model) handleBusEvent(ev bus.Event) (tea.Model, tea.Cmd) {
 		return m, tea.Println(noticeStyle.Render(notice))
 	}
 
+	prevType := liveBlockKind(m.conv.Live())
 	graduate := m.conv.HandleEvent(ev)
+	nowType := liveBlockKind(m.conv.Live())
 
-	// If a Tool block just became live, kick off the elapsed-time
-	// ticker so its badge advances while it runs.
+	// Transition tracking for the bottom contextual indicator: stamp
+	// liveStarted when entering a new live state (or switching kinds),
+	// clear it when going back to idle.
+	if nowType != prevType {
+		if m.conv.Live() != nil {
+			m.liveStarted = time.Now()
+		} else {
+			m.liveStarted = time.Time{}
+		}
+	}
+
+	// Kick off the per-tool elapsed badge tick when a tool becomes
+	// live (the badge inside the tool block, distinct from the bottom
+	// indicator's elapsed counter).
 	var startTick tea.Cmd
 	if t, ok := m.conv.Live().(*blocks.Tool); ok && t.Running() && ev.Type == bus.EventToolCallStart {
 		startTick = elapsedTick(t.ID)
 	}
 
-	if len(graduate) == 0 {
-		return m, startTick
+	// Start the spinner tick if anything is now live (or we're still
+	// waiting on the agent) and no tick is in flight. The tick handler
+	// self-terminates when both conditions clear.
+	var startSpin tea.Cmd
+	if (m.conv.Live() != nil || m.busy) && !m.spinning {
+		m.spinning = true
+		startSpin = spinTick()
 	}
-	var lines []string
-	for _, b := range graduate {
-		if s := renderBlock(b); s != "" {
-			lines = append(lines, s)
+
+	cmds := []tea.Cmd{}
+	if len(graduate) > 0 {
+		var lines []string
+		for _, b := range graduate {
+			if s := renderBlock(b); s != "" {
+				lines = append(lines, s)
+			}
+		}
+		if len(lines) > 0 {
+			cmds = append(cmds, tea.Println(strings.Join(lines, "\n")))
 		}
 	}
-	if len(lines) == 0 {
-		return m, startTick
-	}
-	printCmd := tea.Println(strings.Join(lines, "\n"))
 	if startTick != nil {
-		return m, tea.Batch(printCmd, startTick)
+		cmds = append(cmds, startTick)
 	}
-	return m, printCmd
+	if startSpin != nil {
+		cmds = append(cmds, startSpin)
+	}
+	switch len(cmds) {
+	case 0:
+		return m, nil
+	case 1:
+		return m, cmds[0]
+	default:
+		return m, tea.Batch(cmds...)
+	}
+}
+
+// liveBlockKind returns a stable string identifier for the runtime type
+// of a live block, or "" for nil. Used to detect transitions between
+// live states (reasoning → assistant, tool → idle, etc.) so the bottom
+// indicator can reset its elapsed counter at the right moment.
+func liveBlockKind(b blocks.Block) string {
+	switch b.(type) {
+	case nil:
+		return ""
+	case *blocks.Reasoning:
+		return "reasoning"
+	case *blocks.Assistant:
+		return "assistant"
+	case *blocks.Tool:
+		return "tool"
+	default:
+		return "other"
+	}
 }
 
 // subagentNotice returns a single-line inline annotation for nested
@@ -560,9 +680,30 @@ func (m *model) View() string {
 		}
 	}
 
-	status := m.statusLine
+	// Blank line between the live region and the status indicator so
+	// streaming output and the status line don't visually fuse.
+	sb.WriteByte('\n')
+
+	// Contextual indicator above the input: spinner + label + elapsed
+	// while anything is live (thinking, responding, running a tool);
+	// "waiting…" when the agent is working but no block is live yet
+	// (gap between submit and first delta, or between tool-call rounds);
+	// model name when fully idle. statusLine remains as a fallback for
+	// any transitional event that set it without a corresponding live
+	// block.
+	// liveIndicator and waitingIndicator return pre-styled strings (the
+	// comet spinner is rendered cell-by-cell in its own colours), so
+	// from this point on we don't re-wrap status in statusStyle —
+	// fallback paths apply statusStyle inline instead.
+	status := liveIndicator(m.conv.Live(), m.liveStarted)
+	if status == "" && m.busy {
+		status = waitingIndicator(m.busySince)
+	}
+	if status == "" && m.statusLine != "" {
+		status = statusStyle.Render(m.statusLine)
+	}
 	if status == "" {
-		status = m.modelName
+		status = statusStyle.Render(m.modelName)
 	}
 	// While a permission prompt with a deadline is pending, surface
 	// the countdown next to the model name so the user can see how
@@ -570,11 +711,13 @@ func (m *model) View() string {
 	if m.perm != nil && m.perm.req != nil && !m.perm.req.Deadline.IsZero() {
 		remaining := time.Until(m.perm.req.Deadline)
 		if remaining > 0 {
-			status = status + "  · auto-deny in " + fmtCountdown(remaining)
+			status = status + statusStyle.Render("  · auto-deny in "+fmtCountdown(remaining))
 		}
 	}
-	sb.WriteString(statusStyle.Render(status))
-	sb.WriteByte('\n')
+	sb.WriteString(status)
+	// Blank line between the status indicator and the input prompt so
+	// the typing area has a bit of breathing room above it.
+	sb.WriteString("\n\n")
 
 	sb.WriteString(m.input.render())
 	return sb.String()
