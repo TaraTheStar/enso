@@ -18,13 +18,21 @@ import (
 //
 // Initialised at run.go startup via newStyles. Tests use defaultStyles.
 var (
-	streamStyle lipgloss.Style
-	statusStyle lipgloss.Style
-	userStyle   lipgloss.Style
-	asstStyle   lipgloss.Style
-	promptStyle lipgloss.Style
-	errorStyle  lipgloss.Style
-	noticeStyle lipgloss.Style
+	streamStyle    lipgloss.Style
+	statusStyle    lipgloss.Style
+	userStyle      lipgloss.Style
+	asstStyle      lipgloss.Style
+	promptStyle    lipgloss.Style
+	errorStyle     lipgloss.Style
+	noticeStyle    lipgloss.Style
+	spinHeadStyle  lipgloss.Style
+	spinTrailStyle lipgloss.Style
+	spinDimStyle   lipgloss.Style
+	diffAddStyle   lipgloss.Style
+	diffDelStyle   lipgloss.Style
+	diffHunkStyle  lipgloss.Style
+	diffFileStyle  lipgloss.Style
+	codeBarStyle   lipgloss.Style
 )
 
 func init() {
@@ -73,4 +81,26 @@ func applyStyles(pal theme.Palette) {
 	errorStyle = lipgloss.NewStyle().Foreground(hex("red"))
 	// Notices use dust/yellow — warnings only, never types.
 	noticeStyle = lipgloss.NewStyle().Foreground(hex("dust"))
+	// Comet-trail spinner cells. Bright head and trail share the
+	// assistant accent (lavender) so the spinner reads as part of the
+	// model's voice; the trail cell is faint so the head visually
+	// leads. The dim background cells use the same comment colour as
+	// the rest of the recede status line so the band doesn't feel like
+	// a foreign element.
+	spinHeadStyle = lipgloss.NewStyle().Foreground(hex("lavender")).Bold(true)
+	spinTrailStyle = lipgloss.NewStyle().Foreground(hex("lavender")).Faint(true)
+	spinDimStyle = lipgloss.NewStyle().Foreground(hex("comment")).Faint(true)
+	// Diff coloring on tool output: sage for additions / red for
+	// deletions matches enso's existing semantic palette (sage =
+	// success, red = error). Hunk and file headers use teal (info)
+	// and a bold neutral so they read as structure, not content.
+	diffAddStyle = lipgloss.NewStyle().Foreground(hex("sage"))
+	diffDelStyle = lipgloss.NewStyle().Foreground(hex("red"))
+	diffHunkStyle = lipgloss.NewStyle().Foreground(hex("teal"))
+	diffFileStyle = lipgloss.NewStyle().Foreground(hex("gray")).Bold(true)
+	// Code-block left bar in assistant text: a light vertical in gray
+	// that recedes against prose but cleanly delimits code from words.
+	// Uses a different glyph from the reasoning bar (▎) so the two
+	// kinds of "structured assistant content" remain visually distinct.
+	codeBarStyle = lipgloss.NewStyle().Foreground(hex("gray"))
 }
