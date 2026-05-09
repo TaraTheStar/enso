@@ -65,6 +65,16 @@ type Agent struct {
 	// the count without racing the agent goroutine's mutations of History.
 	// Updated on every appendMessage and after compaction.
 	estTokens atomic.Int64
+
+	// cumIn / cumOut accumulate input and output tokens across every
+	// chat completion in this session — different from estTokens
+	// (which is the *current* context-window usage). Compaction
+	// shrinks estTokens but never these two; they reflect spend, not
+	// pressure. Heuristic-based (4-char) since OpenAI streaming
+	// usage isn't currently parsed; swapping to server-reported
+	// counts only requires updating the increment site.
+	cumIn  atomic.Int64
+	cumOut atomic.Int64
 }
 
 // pickDefaultProvider validates `requested` against the providers map.
@@ -127,6 +137,17 @@ func (a *Agent) consumeNextTurnTools() []string {
 // EstimateTokens returns the cached token-count estimate for the current
 // history. Safe to call from any goroutine.
 func (a *Agent) EstimateTokens() int { return int(a.estTokens.Load()) }
+
+// CumulativeInputTokens returns the running total of tokens sent to
+// the model across the lifetime of this session (not just the current
+// context window). Atomic so the sidebar's render goroutine can read
+// safely while the agent goroutine increments mid-turn.
+func (a *Agent) CumulativeInputTokens() int64 { return a.cumIn.Load() }
+
+// CumulativeOutputTokens returns the running total of tokens the
+// model has produced (assistant content + tool-call args) across the
+// session. See CumulativeInputTokens for concurrency notes.
+func (a *Agent) CumulativeOutputTokens() int64 { return a.cumOut.Load() }
 
 // Provider returns the agent's active provider. Safe to call from any
 // goroutine. The pointer itself is stable for the duration of one
@@ -557,6 +578,11 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		PresencePenalty: p.Sampler.PresencePenalty,
 	}
 
+	// Cumulative-spend tracking (input side): sample what we're sending
+	// before the call so a mid-stream cancel still counts the cost. We
+	// already paid for the prompt the moment the request hit the wire.
+	a.cumIn.Add(int64(llm.Estimate(req.Messages)))
+
 	events, err := p.Client.Chat(ctx, req)
 	if err != nil {
 		release()
@@ -564,6 +590,7 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	}
 
 	var content strings.Builder
+	var reasoning strings.Builder
 	var toolCalls []llm.ToolCall
 
 	for evt := range events {
@@ -574,7 +601,10 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		case llm.EventReasoningDelta:
 			// Reasoning is shown live but NOT appended to history.Content —
 			// the model is supposed to re-derive its reasoning each turn,
-			// and saving it bloats context.
+			// and saving it bloats context. We DO count it for spend
+			// tracking though: providers bill for reasoning tokens even
+			// when they aren't kept across turns.
+			reasoning.WriteString(evt.Text)
 			a.Bus.Publish(bus.Event{Type: bus.EventReasoningDelta, Payload: evt.Text})
 		case llm.EventToolCallComplete:
 			toolCalls = append(toolCalls, evt.ToolCalls...)
@@ -590,6 +620,15 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	asst := llm.Message{Role: "assistant", Content: content.String()}
 	if len(toolCalls) > 0 {
 		asst.ToolCalls = toolCalls
+	}
+
+	// Cumulative-spend tracking (output side): the assistant message
+	// captures content + tool-call args; reasoning is billed separately
+	// because we discard it from history. Using llm.Estimate for the
+	// asst message keeps the same heuristic the input side uses.
+	a.cumOut.Add(int64(llm.Estimate([]llm.Message{asst})))
+	if reasoning.Len() > 0 {
+		a.cumOut.Add(int64(reasoning.Len() / 4))
 	}
 
 	// An empty assistant message (no content, no tool calls) means the model

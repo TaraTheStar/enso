@@ -108,6 +108,20 @@ type ProviderConfig struct {
 	Concurrency   int           `toml:"concurrency"`
 	APIKey        string        `toml:"api_key"`
 	Sampler       SamplerConfig `toml:"sampler"`
+
+	// InputPricePerMillion and OutputPricePerMillion are dollars per
+	// 1M tokens for the cumulative-spend line in the sidebar. Both
+	// zero (or omitted) means "free / local model" and the cost
+	// segment hides — that's the right default for llama.cpp,
+	// ollama, and other self-hosted endpoints. A typical paid setup
+	// looks like:
+	//
+	//   [providers.openai]
+	//   model = "gpt-4o"
+	//   input_price_per_million  = 2.50
+	//   output_price_per_million = 10.00
+	InputPricePerMillion  float64 `toml:"input_price_per_million"`
+	OutputPricePerMillion float64 `toml:"output_price_per_million"`
 }
 
 // SamplerConfig holds generation parameters.

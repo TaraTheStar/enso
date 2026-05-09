@@ -18,6 +18,12 @@ type Provider struct {
 	ContextWindow int
 	Sampler       config.SamplerConfig
 	Pool          *Pool
+
+	// InputPrice and OutputPrice are dollars per 1M tokens, copied
+	// from ProviderConfig at build time. Zero on both means "free /
+	// local model" and the sidebar hides its cost segment.
+	InputPrice  float64
+	OutputPrice float64
 }
 
 // BuildProviders constructs every Provider in cfg, keyed by its
@@ -48,5 +54,7 @@ func NewProvider(name string, cfg config.ProviderConfig) *Provider {
 		ContextWindow: cfg.ContextWindow,
 		Sampler:       cfg.Sampler,
 		Pool:          NewPool(concurrency),
+		InputPrice:    cfg.InputPricePerMillion,
+		OutputPrice:   cfg.OutputPricePerMillion,
 	}
 }
