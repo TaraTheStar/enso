@@ -80,12 +80,14 @@ type SearchConfig struct {
 
 // SearXNGConfig configures the SearXNG backend.
 type SearXNGConfig struct {
-	Endpoint   string   `toml:"endpoint"`    // e.g. "http://localhost:8888"
-	Categories []string `toml:"categories"`  // optional, e.g. ["general","it"]
-	Engines    []string `toml:"engines"`     // optional, e.g. ["google","duckduckgo"]
-	MaxResults int      `toml:"max_results"` // capped count; 0 → 10
-	APIKey     string   `toml:"api_key"`     // forwarded as Authorization: Bearer; ENSO_-prefixed env-var refs expanded
-	Timeout    int      `toml:"timeout"`     // seconds; 0 → 15
+	Endpoint           string   `toml:"endpoint"`             // e.g. "http://localhost:8888"
+	Categories         []string `toml:"categories"`           // optional, e.g. ["general","it"]
+	Engines            []string `toml:"engines"`              // optional, e.g. ["google","duckduckgo"]
+	MaxResults         int      `toml:"max_results"`          // capped count; 0 → 10
+	APIKey             string   `toml:"api_key"`              // forwarded as Authorization: Bearer; ENSO_-prefixed env-var refs expanded
+	Timeout            int      `toml:"timeout"`              // seconds; 0 → 15
+	CACert             string   `toml:"ca_cert"`              // path to PEM bundle to trust (self-hosted CA); appended to system roots
+	InsecureSkipVerify bool     `toml:"insecure_skip_verify"` // disables TLS verification entirely — only for ad-hoc self-signed setups
 }
 
 // HooksConfig holds the two supported lifecycle commands. Empty
