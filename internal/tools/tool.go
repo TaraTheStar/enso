@@ -24,9 +24,10 @@ type Tool interface {
 
 // Result separates the text fed back to the LLM from the full output stored in the session.
 type Result struct {
-	LLMOutput  string // truncated text sent back to the model
-	FullOutput string // complete output stored in the session
-	Display    any    // rich display data (e.g., diff for permission modal)
+	LLMOutput     string // truncated text sent back to the model
+	FullOutput    string // complete output stored in the session
+	DisplayOutput string // optional terse line(s) for scrollback; falls back to LLMOutput when empty
+	Display       any    // rich display data (e.g., diff for permission modal)
 }
 
 // AgentContext carries request-scoped data for tool execution.
