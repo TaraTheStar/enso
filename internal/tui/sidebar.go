@@ -26,6 +26,8 @@ type SidebarAgent interface {
 	Provider() *llm.Provider
 	EstimateTokens() int
 	ContextWindow() int
+	CumulativeInputTokens() int64
+	CumulativeOutputTokens() int64
 }
 
 // Sidebar renders the right-hand session inspector. Sections, top to
@@ -265,6 +267,24 @@ func (s *Sidebar) renderSession(sb *strings.Builder) {
 		used := s.agent.EstimateTokens()
 		window := s.agent.ContextWindow()
 		fmt.Fprintf(sb, "%s\n", tokenBar(used, window, sidebarBarWidth))
+
+		// Cumulative-spend line: separate from the context-window
+		// bar above (which shrinks after compaction). Tokens count
+		// what was actually sent + received over the session, and
+		// the optional cost segment uses provider pricing if set.
+		cumIn := s.agent.CumulativeInputTokens()
+		cumOut := s.agent.CumulativeOutputTokens()
+		if cumIn > 0 || cumOut > 0 {
+			line := fmt.Sprintf("[comment]%s in · %s out · total %s[-]",
+				compactTokenCount(int(cumIn)),
+				compactTokenCount(int(cumOut)),
+				compactTokenCount(int(cumIn+cumOut)))
+			if p != nil && (p.InputPrice > 0 || p.OutputPrice > 0) {
+				cost := computeCost(cumIn, cumOut, p.InputPrice, p.OutputPrice)
+				line += fmt.Sprintf(" [comment]· %s[-]", formatCost(cost))
+			}
+			fmt.Fprintln(sb, line)
+		}
 	}
 	if s.sessionID != "" {
 		fmt.Fprintf(sb, "[comment]id %s[-]\n", shortID(s.sessionID))
