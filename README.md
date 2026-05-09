@@ -98,6 +98,7 @@ default is written to the user path on first run.
 
 ```bash
 enso config init           # write the default to the user path
+enso config init --wizard  # interactive: pick a provider preset, model, optional API key
 enso config init --print   # dump the default to stdout
 enso config init --force   # overwrite an existing file
 enso config show           # list the search paths and which exist
@@ -231,15 +232,21 @@ The system prompt is built from three tiers:
 
 | Key | Action |
 |---|---|
-| Enter | Submit |
-| Shift-Enter / Alt-Enter | Newline |
-| Ctrl-C | Cancel current turn (idle = no-op) |
-| Ctrl-D | Quit |
-| Ctrl-A | Toggle agents pane |
-| Ctrl-T | Toggle visibility of completed thinking blocks |
+| Enter | Submit (or run a `/`-prefixed slash command) |
+| Ctrl-C / Ctrl-D | Quit (Ctrl-D with non-empty input clears the line first) |
+| Esc | Close modal (= Deny on permission prompt). Double-tap clears the input line. |
+| Ctrl-Space (= Ctrl-@) | Toggle the alt-screen session-inspector overlay |
 | Ctrl-R | Open recent-sessions overlay (Enter switches session — re-execs with `--session <id>`) |
+| Ctrl-A / Home | Move to start of input line |
+| Ctrl-E / End | Move to end of input line |
+| Ctrl-Left / Ctrl-Right | Word back / word forward |
 | `@` (at token start) | Open file picker — type to filter, Enter inserts the path |
-| Esc | Close modal (= Deny on permission prompt) |
+| Permission prompt: `y` / `n` / `a` / `t` | Allow / Deny / Allow + Remember / Allow for this turn only |
+
+When `[ui] editor_mode = "vim"` is set, the input runs a single-line
+vim subset: `Esc` enters NORMAL, `i` / `a` / `A` re-enter INSERT,
+`h l 0 $ w b x` for navigation and edit. Submission stays on `Enter`
+in either mode.
 
 ## Slash commands
 
@@ -247,16 +254,28 @@ The system prompt is built from three tiers:
 |---|---|
 | `/help` | List available commands |
 | `/yolo on\|off` | Toggle auto-allow mode |
-| `/tools` | List registered tools |
-| `/sessions` | List recent sessions (resume with `--session <id>`) |
-| `/grep <pattern>` | Run a one-shot grep against the project |
-| `/permissions` | List & remove project-local permission rules |
+| `/tools` | List registered tools (built-ins + MCP + LSP) |
+| `/info` | Print the active provider, model, session id, cwd, and config search paths |
+| `/sessions` | List recent sessions (resume with `--session <id>`; Ctrl-R is the overlay version) |
+| `/rename [<label>]` | Show or override the session's display label (no arg prints current; `/rename <text>` overrides) |
+| `/export [-o <file>]` | Export this session to markdown (stdout by default) |
+| `/fork` | Branch this session into a new one and print the new id |
+| `/stats [--days N]` | Token / message / tool aggregates across sessions |
+| `/find [-e] <pattern>` | Search this session's transcript (`-e` for regex) |
+| `/grep [--all] [--regex] <pattern>` | Search past sessions in the local store |
+| `/permissions [remove <pattern>]` | List & remove project-local permission rules |
 | `/model [<name>]` | List configured providers, or switch the active one |
 | `/compact` | Force a context-compaction pass |
 | `/init [target]` | Survey the project and write `ENSO.md` (or a chosen filename) |
 | `/agents` | List declarative agent profiles |
 | `/loop <interval> <prompt>` | Re-submit a prompt every interval (≥5s); `/loop off` stops |
-| `/workflow <name>` | Run a declarative workflow |
+| `/workflow <name> <args>` | Run a declarative workflow |
+| `/lsp` | Configured language servers and their state |
+| `/mcp` | Configured MCP servers, state, and tool counts |
+| `/git` | Current branch + working-tree status |
+| `/cost` | Cumulative token totals for this session |
+| `/transcript [<id>]` | List captured subagent transcripts; show one with the id-or-prefix |
+| `/<skill-name> <args>` | Any user-defined skill (project shadows user) |
 | `/quit` | Exit |
 
 ## Sessions
@@ -270,11 +289,13 @@ Use `--ephemeral` to skip persistence.
 
 ## Status
 
-All v1 phases are implemented:
+v2 ships the Bubble Tea TUI migration; the binary is in daily use.
+See [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown.
+Headline features:
 
-- Interactive TUI chat with streaming and tool-calling.
+- Scrollback-native interactive TUI (Bubble Tea v2 + Lipgloss + Glamour for markdown), with streaming, tool-calling, and an alt-screen session-inspector overlay (Ctrl-Space).
 - Sessions + crash resume + auto-compaction at 60% of the context window.
-- Permission allowlist with prompt-on-miss; `--yolo` for unattended runs.
+- Permission allowlist with prompt-on-miss (`y` / `n` / `a` / `t` decisions — turn-scoped grants land in `t`); `--yolo` for unattended runs. Bash deny rules are segment-aware so `bash(rm -rf *)` catches chained variants like `cd / && rm -rf *`.
 - `enso run` non-interactive mode (with `--detach` to submit to a daemon, `--format json` for streaming structured events).
 - `enso export <id>` to dump a session as markdown.
 - `enso stats [--days N]` for token / message / tool aggregates across sessions.
@@ -286,14 +307,19 @@ All v1 phases are implemented:
 - `[lsp.<name>]` config to surface `lsp_hover`/`lsp_definition`/`lsp_references`/`lsp_diagnostics` tools (any language server).
 - `[git]` config block to opt into commit attribution trailers.
 - `spawn_agent` tool for subagents (depth ≤3, global cap 16).
-- MCP client (stdio + Streamable-HTTP) auto-registers remote tools.
-- Slash commands: `/help`, `/yolo`, `/tools`, `/sessions`, `/grep`, `/permissions`, `/model`, `/compact`, `/init`, `/agents`, `/loop`, `/workflow`, `/quit`, plus user-defined skills.
-- Declarative workflows (planner→coder→reviewer style).
-- `enso daemon` + `enso attach` for long-running detached sessions.
+- MCP client (stdio + Streamable-HTTP) auto-registers remote tools, with sidebar health tracking for failed servers.
+- `web_search` tool (DuckDuckGo by default; SearXNG via `[search.searxng] endpoint`).
+- Auto-derived and manual session labels (`/rename`); LLM connection-state tracking with a background recovery probe.
+- Slash commands listed above (and user-defined skills).
+- Declarative workflows (planner→coder→reviewer style) with parse-time validation.
+- `enso daemon` + `enso attach` for long-running detached sessions, with daemon-side permission timeouts and TUI countdown indicators.
+- Interactive `enso config init --wizard` flow for first-run onboarding.
 
 **Subagents** — `spawn_agent` tool. Depth ≤3, global cap 16; child shares
-parent's provider/bus/permissions. Toggle the right-side agents pane with
-Ctrl-A.
+parent's provider/bus/permissions. Subagent transcripts are captured for
+inspection; list them with `/transcript` and view one with
+`/transcript <id-or-prefix>`. The session-inspector overlay (Ctrl-Space)
+also surfaces in-flight agent state at a glance.
 
 **MCP** — servers (stdio or Streamable-HTTP) are configured under
 `[mcp.<name>]` in `config.toml`. Their tools surface as `mcp__<server>__<tool>`

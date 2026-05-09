@@ -13,6 +13,16 @@ Five minutes from "I cloned the repo" to "the agent is editing my code."
 make build      # → ./bin/enso
 ```
 
+If this is your very first run, you can also write a config
+interactively instead of editing TOML by hand:
+
+```bash
+./bin/enso config init --wizard    # pick a provider preset, model, optional API key
+```
+
+The wizard writes to `$XDG_CONFIG_HOME/enso/config.toml` and clamps
+the file to mode `0600`.
+
 ## 2. Start your model
 
 If you're running `llama.cpp`'s `llama-server`:
@@ -41,8 +51,9 @@ list the .go files in cmd/
 ```
 
 You should see the agent call `glob` and stream back the results. Hit
-**Enter** to send. **Ctrl-C** cancels the current turn. **Ctrl-D**
-quits.
+**Enter** to send. **Ctrl-D** quits (or clears a non-empty input
+line). **Ctrl-Space** opens the alt-screen session inspector;
+**Ctrl-R** opens the recent-sessions overlay.
 
 ## 4. Try a non-interactive run
 
