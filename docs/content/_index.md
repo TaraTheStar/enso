@@ -51,8 +51,11 @@ agent can't escape the project directory.
 
 ## Project status
 
-v1 is shipped, plus a substantial post-v1 surface (multi-provider,
-hooks, session search, and more). The binary is in daily use;
+v2 is shipped — the TUI was migrated from `tview` onto Bubble Tea v2
++ Lipgloss + Glamour for scrollback-native rendering. The binary is
+in daily use; per-release notes live in
+[`CHANGELOG.md`](https://github.com/TaraTheStar/enso/blob/main/CHANGELOG.md),
 soak-test risks are documented in the [architecture page]({{< relref
-"advanced/architecture.md" >}}). The non-goals — what's intentionally
-not built and why — live in `AGENTS.md` at the repo root.
+"advanced/architecture.md" >}}), and the non-goals — what's
+intentionally not built and why — live in `AGENTS.md` at the repo
+root.

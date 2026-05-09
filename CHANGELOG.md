@@ -4,9 +4,138 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-05-09
 
-## [1.0.0] - TBD
+### Changed
+- TUI upgraded to Bubble Tea v2 with refreshed input handling and
+  improved markdown rendering (semantic block colouring, diff-aware
+  tool-result colouring).
+- Session-inspector overlay now binds to `Ctrl-Space` (or `Ctrl-@`)
+  instead of `Ctrl-A`; `Ctrl-A` is the readline-style "move to start of
+  line" inside the input again.
+- Status line gained a streaming-only `.TokensPerSec` template
+  variable; the default template hides the segment when idle.
+
+## [2.0.0] - 2026-05-09
+
+Major release: the TUI was migrated off `rivo/tview` onto
+`charmbracelet/bubbletea` + `lipgloss`. Completed messages now live in
+your real terminal scrollback (so `tmux` highlight + middle-click copy
+works exactly the way it does in any other pane), with a small live
+region at the bottom for streaming output, the status line, and the
+input. Overlays (file picker, session inspector, permission prompt,
+recent-sessions list) take over the alt-screen only while open.
+
+### Added
+- Scrollback-native chat rendering via Bubble Tea / Lipgloss
+  (`internal/ui/bubble`). The `internal/ui` surface is framework-agnostic;
+  nothing outside `internal/ui/bubble/` imports Bubble Tea directly.
+- Live tool-call status indicators with elapsed-time badges
+  (`thought for 1.2s`, etc.) and live spinner.
+- Semantic chat lanes: yellow bar for user input, plain assistant
+  text, teal bar for tool calls, gray recede for reasoning, red `✘`
+  for errors, teal parentheticals for system notes.
+
+### Changed
+- Default `enso` (and `enso tui`) now run the Bubble Tea backend; the
+  old tview backend has been removed.
+
+## [1.2.0] - 2026-05-09
+
+Substantial post-v1 release focused on resilience, observability, and
+operator ergonomics.
+
+### Added
+- Interactive `enso config init --wizard` flow for first-run
+  onboarding (pick a provider preset, model, and optional API key).
+- Slash commands `/export`, `/stats`, `/fork`, `/find`, `/rename`,
+  `/info`, `/lsp`, `/mcp`, `/git`, `/cost`, `/transcript` for inline
+  access to features previously only reachable from the CLI.
+- `/find` overlay (and `Ctrl-F` in tview) for searching the current
+  session's transcript; substring or `-e` regex.
+- Auto-derived and manual session labels (rendered in the
+  recent-sessions overlay; settable via `/rename <label>`).
+- Live elapsed-time badges on in-flight tool calls.
+- Cumulative token / cost tracking surfaced in the status bar and
+  `/cost`; `.TokensPerSec` template variable for the status line.
+- MCP server health tracking with sidebar error reporting (failed
+  servers and their last error are visible at a glance).
+- LLM connection state tracking with a background recovery probe — the
+  status bar reflects connect / disconnect transitions, and the
+  daemon / TUI keeps re-probing rather than failing the next turn
+  silently.
+- Daemon-side permission timeouts with TUI countdown indicators (the
+  daemon auto-denies after the configured window if no client is
+  attached, and the TUI shows the remaining seconds).
+- Turn-scoped permission grants — the modal now offers a `t` decision
+  ("allow for the rest of this turn") in addition to allow / remember /
+  deny, so a chained tool call doesn't require a second prompt or a
+  permanent rule.
+- Untrusted-content marking in the TUI for tool results that came from
+  external systems (LSP, web_fetch, hostile-code review) so the
+  reviewer can spot prompt-injection vectors faster.
+- Classified error reporting with retry countdowns (transport vs.
+  protocol vs. cancellation each render distinctly).
+- Workflow validation at parse time (cycles, dangling edges, duplicate
+  role names) with clear error messages.
+- Hook observability — `on_file_edit` / `on_session_end` failures and
+  timeouts now surface as inline TUI notices instead of slog-only.
+
+### Changed
+- Bash deny rules are now segment-aware: `bash(rm -rf *)` correctly
+  catches chained variants like `do_evil; rm -rf /`,
+  `cd / && rm -rf *`, `ls | rm -rf *`, and newline-separated chains.
+  Command-substitution / backtick / `eval` bypasses are still open by
+  design — deny rules are guardrails, not walls; use
+  `[bash] sandbox = "auto"` for adversarial isolation.
+- System prompt now injects sandbox state and file-confinement details
+  so the model knows which paths are reachable; sandbox-mode prompts
+  include explicit Do/Don't path examples.
+- Crash recovery overhaul: tool-call backfill is inline (synthetic
+  "interrupted" results are inserted at load time) and shutdown
+  ordering is deterministic — `kill -9` mid-tool-call now resumes
+  cleanly without orphaned tool sequences.
+- Input-discard handling: cancelling a turn flushes any queued user
+  messages on the input channel and surfaces them as
+  `(discarded N queued messages)` instead of replaying them out of
+  order on the next turn.
+- `Ctrl-C` is now gated on activity state — pressing it during a tool
+  call cancels the turn; pressing it idle is a no-op (it no longer
+  silently exits the app or no-ops mid-stream).
+- The tview built-in undo/redo path is no longer intercepted by ensō's
+  key handler.
+
+### Fixed
+- Several edge cases around bash patterns where prepending an allowed
+  command segment (`do_evil; git status`) bypassed deny rules.
+- Hook timeouts no longer leak goroutines on slow user scripts.
+
+### Security
+- Segment-aware bash deny rules close the most-common deny-rule
+  bypass class. The remaining classes (command substitution, eval,
+  here-docs) are documented as out-of-scope; sandbox mode is the
+  recommended boundary for hostile-input sessions.
+
+## [1.1.1] - 2026-05-07
+
+### Fixed
+- `Ctrl-C` handling moved up to the application level so it no longer
+  exits ensō by accident when the focused widget happened to ignore
+  the keypress.
+
+## [1.1.0] - 2026-05-07
+
+### Added
+- `web_search` tool with two backends: DuckDuckGo's HTML endpoint by
+  default (no signup, works anywhere with internet) and SearXNG when
+  `[search.searxng] endpoint` is set. Backend selectable via
+  `[search] provider` (`""` auto / `"searxng"` / `"duckduckgo"` /
+  `"none"`).
+- GitHub Actions release workflow that builds reproducible
+  cross-platform binaries (Linux, macOS, Windows × amd64/arm64) on tag
+  push and attaches them to the GitHub release.
+
+## [1.0.0] - 2026-05-07
 
 First public release.
 
@@ -35,5 +164,9 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
-[Unreleased]: https://github.com/TaraTheStar/enso/compare/v1.0.0...HEAD
+[2.1.0]: https://github.com/TaraTheStar/enso/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/TaraTheStar/enso/compare/v1.2.0...v2.0.0
+[1.2.0]: https://github.com/TaraTheStar/enso/compare/v1.1.1...v1.2.0
+[1.1.1]: https://github.com/TaraTheStar/enso/compare/v1.1.0...v1.1.1
+[1.1.0]: https://github.com/TaraTheStar/enso/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/TaraTheStar/enso/releases/tag/v1.0.0
