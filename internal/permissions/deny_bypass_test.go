@@ -134,11 +134,11 @@ func TestBashSplitTopLevel(t *testing.T) {
 		{"a & b", []string{"a", "b"}},
 		{"a;b;c", []string{"a", "b", "c"}},
 		{"a\nb", []string{"a", "b"}},
-		{"  ;  ; foo  ;", []string{"foo"}},                      // empty segments dropped
-		{`echo "a; b"`, []string{`echo "a; b"`}},                // double-quoted separator stays
-		{`echo 'x && y'`, []string{`echo 'x && y'`}},            // single-quoted ditto
-		{"a && b; c | d", []string{"a", "b", "c", "d"}},         // mixed chain
-		{"a&&b||c", []string{"a", "b", "c"}},                    // no spaces around chains
+		{"  ;  ; foo  ;", []string{"foo"}},              // empty segments dropped
+		{`echo "a; b"`, []string{`echo "a; b"`}},        // double-quoted separator stays
+		{`echo 'x && y'`, []string{`echo 'x && y'`}},    // single-quoted ditto
+		{"a && b; c | d", []string{"a", "b", "c", "d"}}, // mixed chain
+		{"a&&b||c", []string{"a", "b", "c"}},            // no spaces around chains
 	}
 	for _, tc := range cases {
 		got := bashSplitTopLevel(tc.in)
