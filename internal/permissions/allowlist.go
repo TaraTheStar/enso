@@ -86,21 +86,38 @@ func NewAllowlist(allow, ask, deny []string) *Allowlist {
 // Bash allow rules carry an extra constraint: any shell metacharacter
 // present in the command must also appear in the pattern. Without that,
 // `bash(git *)` would auto-allow `git status; rm -rf ~` (the `*`
-// happily swallows the chained command). Ask and deny rules don't get
-// this gate — gating ask would weaken the safety prompt; gating deny
-// would let an attacker escape a deny with a single shell metachar.
+// happily swallows the chained command). Ask rules don't get this gate
+// — gating ask would weaken the safety prompt.
+//
+// Bash deny rules get the symmetric extension: if the full-command
+// match misses, every top-level segment (split on `;`, `&&`, `||`, `|`,
+// `&`, newline) is also tested. That closes `do_evil; rm -rf /` evading
+// `bash(rm -rf *)` — the deny still fires on the trailing segment.
+// Residual gap (not closed here): command substitution like
+// `$(rm -rf /)` and backtick equivalents still bypass; for adversarial
+// inputs, `bash.sandbox = "auto"` is the real boundary, not deny rules.
 func (al *Allowlist) Match(tool, arg string) (matched bool, kind Kind) {
 	for _, p := range al.patterns {
 		if p.Tool != "*" && p.Tool != tool {
 			continue
 		}
-		if !matchArg(tool, p.Arg, arg) {
-			continue
+		if matchArg(tool, p.Arg, arg) {
+			if p.Kind == KindAllow && tool == "bash" && bashHasUnchainedMetachars(p.Arg, arg) {
+				continue
+			}
+			return true, p.Kind
 		}
-		if p.Kind == KindAllow && tool == "bash" && bashHasUnchainedMetachars(p.Arg, arg) {
-			continue
+		// Bash deny: re-test against each top-level segment. Allow/ask
+		// stay full-command-match-only because their semantics ("user
+		// explicitly opted into this exact pattern" / "always confirm")
+		// shouldn't fire on a fragment of an unrelated command.
+		if p.Kind == KindDeny && tool == "bash" {
+			for _, seg := range bashSplitTopLevel(arg) {
+				if matchArg(tool, p.Arg, seg) {
+					return true, KindDeny
+				}
+			}
 		}
-		return true, p.Kind
 	}
 	return false, KindAllow
 }
@@ -135,6 +152,59 @@ func bashHasUnchainedMetachars(pattern, cmd string) bool {
 		}
 	}
 	return false
+}
+
+// bashSplitTopLevel returns the top-level command segments of a bash
+// string, splitting on `;`, `&&`, `||`, `|`, `&`, and newlines.
+// Single- and double-quoted runs are honoured so a literal separator
+// inside a string doesn't trigger a split. Subshell extraction is
+// deliberately out of scope (`$(...)` and backticks are NOT recursed
+// into) — this matcher is the cheap separator-split tier; real
+// adversarial isolation belongs in `bash.sandbox = "auto"`.
+//
+// Empty segments are dropped, so trailing or doubled separators
+// don't produce blank entries the caller has to filter.
+func bashSplitTopLevel(cmd string) []string {
+	var segs []string
+	var cur strings.Builder
+	var quote byte
+	flush := func() {
+		seg := strings.TrimSpace(cur.String())
+		if seg != "" {
+			segs = append(segs, seg)
+		}
+		cur.Reset()
+	}
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if quote != 0 {
+			cur.WriteByte(c)
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '\'', '"':
+			quote = c
+			cur.WriteByte(c)
+		case ';', '\n':
+			flush()
+		case '|', '&':
+			// `&&` and `||` are two-byte separators; consume the
+			// second byte. `|` and `&` alone are also separators
+			// (pipe and background), so the single-byte form falls
+			// through to the same flush.
+			if i+1 < len(cmd) && cmd[i+1] == c {
+				i++
+			}
+			flush()
+		default:
+			cur.WriteByte(c)
+		}
+	}
+	flush()
+	return segs
 }
 
 // matchArg dispatches per-tool argument matching:
