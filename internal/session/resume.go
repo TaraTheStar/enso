@@ -106,11 +106,16 @@ func LoadAgentTranscript(s *Store, sessionID, agentID string) ([]llm.Message, er
 	return history, rows.Err()
 }
 
-// backfillInterrupted walks the history; for each assistant message with
-// tool_calls, every call must have a matching tool message somewhere after it.
-// Missing replies get synthetic "interrupted" tool messages appended at the end
-// of history (preserving order). Returns the patched history and whether any
-// interruption was found.
+// backfillInterrupted walks history and inserts synthetic "interrupted"
+// tool messages immediately after each assistant message that has tool_calls
+// without matching tool replies. Inline insertion (rather than tail-append)
+// is required: the OpenAI chat contract demands a tool reply follow its
+// assistant call before any subsequent assistant or user message, and a
+// session that resumed after a crash + accepted a new user message before
+// being persisted again would otherwise put the synth reply at the wrong
+// position on the next reload.
+//
+// Returns the patched history and whether any interruption was found.
 func backfillInterrupted(history []llm.Message) ([]llm.Message, bool) {
 	answered := map[string]bool{}
 	for _, m := range history {
@@ -120,8 +125,9 @@ func backfillInterrupted(history []llm.Message) ([]llm.Message, bool) {
 	}
 
 	interrupted := false
-	patched := append([]llm.Message{}, history...)
+	patched := make([]llm.Message, 0, len(history))
 	for _, m := range history {
+		patched = append(patched, m)
 		if m.Role != "assistant" {
 			continue
 		}
