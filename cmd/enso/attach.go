@@ -13,7 +13,7 @@ import (
 
 	"github.com/TaraTheStar/enso/internal/daemon"
 	"github.com/TaraTheStar/enso/internal/llm"
-	"github.com/TaraTheStar/enso/internal/tui"
+	"github.com/TaraTheStar/enso/internal/ui"
 )
 
 // pickDefaultProviderName mirrors agent.pickDefaultProvider so call
@@ -39,7 +39,7 @@ func pickDefaultProviderName(providers map[string]*llm.Provider, requested strin
 
 // pickAndAttach is the body of `enso attach` with no arguments. It lists
 // sessions on the daemon, lets the user pick one by number, and then
-// hands off to tui.RunAttached. Newest session is option 1.
+// hands off to ui.RunAttached. Newest session is option 1.
 func pickAndAttach() error {
 	c, err := daemon.Dial()
 	if err != nil {
@@ -83,7 +83,7 @@ func pickAndAttach() error {
 	if err != nil || idx < 1 || idx > len(sessions) {
 		return fmt.Errorf("invalid selection %q", line)
 	}
-	return tui.RunAttached(sessions[idx-1].ID)
+	return ui.RunAttached(sessions[idx-1].ID)
 }
 
 func shortID(id string) string {

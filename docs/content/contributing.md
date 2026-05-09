@@ -38,7 +38,7 @@ full package map. Quick orientation:
 | `cmd/enso/`             | CLI entry points + per-subcommand wiring.         |
 | `internal/agent/`       | Chat→tool loop, compaction, sub-agent spawn.      |
 | `internal/tools/`       | Built-in tools and the registry.                  |
-| `internal/tui/`         | tview-based UI; only imported from `cmd/enso`.    |
+| `internal/ui/`          | Framework-agnostic UI surface (Run / RunAttached / Options) plus the `bubble/` Bubble Tea backend. Only imported from `cmd/enso`. |
 | `internal/session/`     | SQLite store; persist-before-render writer.       |
 | `internal/permissions/` | Allowlist + matcher + ignore loader.              |
 | `internal/sandbox/`     | podman/docker manager.                            |
@@ -64,7 +64,7 @@ full package map. Quick orientation:
 - **Tests**: table-driven where it fits. The gnarly bits already have
   tests (see the [test coverage table in architecture]({{< relref
   "advanced/architecture.md" >}})); add tests for new gnarly logic
-  but don't bother testing thin glue or tview wiring.
+  but don't bother testing thin glue or Bubble Tea View output.
 - **Comments**: write very few. Identifiers carry the meaning. A
   comment is for explaining a non-obvious *why* — a hidden constraint,
   a workaround for an upstream bug, an invariant. If removing it

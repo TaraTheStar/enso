@@ -398,10 +398,9 @@ TUI or `enso run --workflow <name> "<args>"` from the CLI. See
 `examples/workflows/build-feature.md` for a planner→coder→reviewer pipeline.
 
 **Theme** — drop a `~/.enso/theme.toml` to override the default colour
-palette. Each entry is a hex `#rrggbb`, mapped onto tcell's named colours
-which all the chat / modal / overlay code uses (`[yellow]`, `[teal]`,
-`[gray]`, `[red]`, `[green]`, plus `white` / `black` for high-contrast
-modal buttons):
+palette. Each entry is a hex `#rrggbb`, mapped onto the named colours
+the chat / overlay code uses (`yellow`, `teal`, `gray`, `red`, `green`,
+plus the accent names `mauve`, `lavender`, `comment`, `dust`, `sage`):
 
 ```toml
 [colors]
