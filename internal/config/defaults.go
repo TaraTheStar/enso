@@ -129,4 +129,6 @@ attribution_name = "enso"
 # max_results = 10
 # api_key     = "$ENSO_SEARXNG_KEY"   # optional
 # timeout     = 15                     # seconds
+# ca_cert     = "/etc/ssl/my-ca.pem"   # trust a self-hosted CA (appended to system roots)
+# insecure_skip_verify = false         # last-resort: skip TLS verification for ad-hoc self-signed
 `

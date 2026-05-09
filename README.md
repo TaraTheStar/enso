@@ -174,6 +174,8 @@ engines     = []              # ["google", "duckduckgo", ...] — empty leaves S
 max_results = 10              # ceiling; the model can ask for fewer
 api_key     = ""              # optional — sent as Authorization: Bearer; "$ENSO_*" refs expanded
 timeout     = 15              # seconds
+ca_cert     = ""              # PEM bundle to trust (self-hosted CA); appended to system roots
+insecure_skip_verify = false  # disable TLS verification — last-resort escape hatch
 ```
 
 Patterns are `tool(arg-pattern)`. Per-tool matching:

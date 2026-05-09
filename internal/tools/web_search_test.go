@@ -4,10 +4,14 @@ package tools
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -122,6 +126,93 @@ func TestWebSearch_SearXNG_EmptyResults(t *testing.T) {
 	res, _ := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	if !strings.Contains(res.LLMOutput, "no results") {
 		t.Errorf("expected 'no results', got %q", res.LLMOutput)
+	}
+}
+
+func TestWebSearch_SearXNG_TLS_DefaultRejectsSelfSigned(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[]}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{Endpoint: srv.URL}}
+	r := NewRegistry()
+	RegisterSearch(r, cfg)
+	res, _ := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	// No CA configured, server uses an untrusted cert — call should error,
+	// and the formatted output should mention the failure (not just be silent).
+	if !strings.Contains(strings.ToLower(res.LLMOutput), "certificate") &&
+		!strings.Contains(strings.ToLower(res.LLMOutput), "tls") &&
+		!strings.Contains(strings.ToLower(res.LLMOutput), "x509") {
+		t.Errorf("expected TLS error in output, got %q", res.LLMOutput)
+	}
+}
+
+func TestWebSearch_SearXNG_TLS_InsecureSkipVerify(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"title":"ok","url":"https://e/1","content":"c"}]}`))
+	}))
+	defer srv.Close()
+
+	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{
+		Endpoint:           srv.URL,
+		InsecureSkipVerify: true,
+	}}
+	r := NewRegistry()
+	RegisterSearch(r, cfg)
+	res, err := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(res.LLMOutput, "ok") || !strings.Contains(res.LLMOutput, "https://e/1") {
+		t.Errorf("expected result in output, got %q", res.LLMOutput)
+	}
+}
+
+func TestWebSearch_SearXNG_TLS_CACert(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"title":"ok","url":"https://e/1","content":"c"}]}`))
+	}))
+	defer srv.Close()
+
+	// Write the test server's cert to a PEM file and point ca_cert at it.
+	cert := srv.Certificate()
+	pemPath := filepath.Join(t.TempDir(), "ca.pem")
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+	if err := os.WriteFile(pemPath, pemBytes, 0o600); err != nil {
+		t.Fatalf("write pem: %v", err)
+	}
+	// Sanity: cert must parse back as x509.
+	if _, err := x509.ParseCertificate(cert.Raw); err != nil {
+		t.Fatalf("cert parse: %v", err)
+	}
+
+	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{
+		Endpoint: srv.URL,
+		CACert:   pemPath,
+	}}
+	r := NewRegistry()
+	RegisterSearch(r, cfg)
+	res, err := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(res.LLMOutput, "ok") {
+		t.Errorf("expected result in output, got %q", res.LLMOutput)
+	}
+}
+
+func TestWebSearch_SearXNG_TLS_BadCACertFallsBack(t *testing.T) {
+	// Bad ca_cert path shouldn't crash startup — backend should still
+	// register and try to call (will fail at call time, but cleanly).
+	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{
+		Endpoint: "https://127.0.0.1:1",
+		CACert:   "/nonexistent/path/ca.pem",
+	}}
+	r := NewRegistry()
+	RegisterSearch(r, cfg)
+	if r.Get("web_search") == nil {
+		t.Fatal("web_search should still register on bad ca_cert")
 	}
 }
 

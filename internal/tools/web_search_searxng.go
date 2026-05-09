@@ -4,11 +4,14 @@ package tools
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -32,13 +35,48 @@ func newSearXNGBackend(cfg config.SearchConfig) *searxngBackend {
 	if timeout <= 0 {
 		timeout = defaultSearchTimeout
 	}
+	client := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+	if tr, err := searxngTransport(cfg.SearXNG); err != nil {
+		// Bad ca_cert path/contents shouldn't crash startup — fall back
+		// to the default transport and surface the error on first call
+		// via TLS failure. Log once so it's not silent.
+		fmt.Fprintf(os.Stderr, "enso: searxng TLS config: %v (falling back to default trust)\n", err)
+	} else if tr != nil {
+		client.Transport = tr
+	}
 	return &searxngBackend{
 		endpoint:   strings.TrimRight(cfg.SearXNG.Endpoint, "/"),
 		categories: strings.Join(cfg.SearXNG.Categories, ","),
 		engines:    strings.Join(cfg.SearXNG.Engines, ","),
 		apiKey:     cfg.SearXNG.APIKey,
-		client:     &http.Client{Timeout: time.Duration(timeout) * time.Second},
+		client:     client,
 	}
+}
+
+// searxngTransport returns a custom http.Transport when the user has
+// configured a ca_cert or insecure_skip_verify; nil means "use the
+// default". ca_cert is appended to the system roots, not replacing
+// them, so public CAs still verify.
+func searxngTransport(cfg config.SearXNGConfig) (*http.Transport, error) {
+	if cfg.CACert == "" && !cfg.InsecureSkipVerify {
+		return nil, nil
+	}
+	tlsCfg := &tls.Config{InsecureSkipVerify: cfg.InsecureSkipVerify} //nolint:gosec // opt-in via config
+	if cfg.CACert != "" {
+		pem, err := os.ReadFile(cfg.CACert)
+		if err != nil {
+			return nil, fmt.Errorf("read ca_cert %q: %w", cfg.CACert, err)
+		}
+		pool, err := x509.SystemCertPool()
+		if err != nil || pool == nil {
+			pool = x509.NewCertPool()
+		}
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("ca_cert %q: no PEM certificates found", cfg.CACert)
+		}
+		tlsCfg.RootCAs = pool
+	}
+	return &http.Transport{TLSClientConfig: tlsCfg}, nil
 }
 
 func (b *searxngBackend) Name() string { return "searxng" }
