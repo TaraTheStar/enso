@@ -148,11 +148,11 @@ func TestExtractTitle(t *testing.T) {
 
 func TestHumanBytes(t *testing.T) {
 	cases := map[int]string{
-		0:          "0B",
-		512:        "512B",
-		1024:       "1.0KB",
-		1536:       "1.5KB",
-		1024 * 100: "100.0KB",
+		0:           "0B",
+		512:         "512B",
+		1024:        "1.0KB",
+		1536:        "1.5KB",
+		1024 * 100:  "100.0KB",
 		1024 * 1024: "1.0MB",
 	}
 	for in, want := range cases {

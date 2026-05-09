@@ -48,10 +48,10 @@ func TestGrepTool_DisplayOutput(t *testing.T) {
 
 func TestGrepDisplay(t *testing.T) {
 	cases := map[string]string{
-		"/a.txt:1:hello":                          "1 match in 1 file",
-		"/a.txt:1:hello\n/a.txt:5:world":          "2 matches in 1 file",
-		"/a.txt:1:hello\n/b.txt:1:hello":          "2 matches in 2 files",
-		"/a.txt:1:x\n/a.txt:2:y\n/b.txt:1:z\n":    "3 matches in 2 files",
+		"/a.txt:1:hello":                       "1 match in 1 file",
+		"/a.txt:1:hello\n/a.txt:5:world":       "2 matches in 1 file",
+		"/a.txt:1:hello\n/b.txt:1:hello":       "2 matches in 2 files",
+		"/a.txt:1:x\n/a.txt:2:y\n/b.txt:1:z\n": "3 matches in 2 files",
 	}
 	for in, want := range cases {
 		if got := grepDisplay(in); got != want {
