@@ -129,6 +129,8 @@ engines     = []               # ["google", "duckduckgo", ...]
 max_results = 10               # ceiling; the model can ask for fewer
 api_key     = ""               # optional — sent as Authorization: Bearer
 timeout     = 15               # seconds
+ca_cert     = ""               # path to PEM bundle to trust (self-hosted CA)
+insecure_skip_verify = false   # disable TLS verification — last-resort escape hatch
 ```
 
 The `web_search` tool is registered by default. With no configuration it
@@ -148,6 +150,14 @@ attribution.
 `api_key` accepts `$ENSO_*` env-var references (same gated expansion as
 `providers.*.api_key`). Only ENSO\_-prefixed names expand; anything else
 collapses to empty.
+
+For self-hosted SearXNG behind a private CA, set `ca_cert` to a PEM
+bundle. It's *appended* to the system roots, so public CAs still
+verify normally. If `ca_cert` fails to load (bad path, no PEM blocks)
+the backend logs once to stderr and falls back to default trust — it
+won't crash startup. `insecure_skip_verify = true` disables TLS
+verification entirely; reach for it only when you can't get the CA on
+disk, and prefer `ca_cert` for anything long-lived.
 
 Permission patterns match against the query string:
 
