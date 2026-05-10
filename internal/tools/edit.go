@@ -86,6 +86,10 @@ func (t EditTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 		LLMOutput:  fmt.Sprintf("edited %s (%d replacement%s)\n---\n%s", abs, count, plural(count), unified),
 		FullOutput: fmt.Sprintf("edited %s\n---\n%s", abs, updated),
 		Display:    unified,
+		Meta: ResultMeta{
+			PathsWritten: []string{abs},
+			CacheKey:     "edit:" + abs,
+		},
 	}, nil
 }
 

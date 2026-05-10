@@ -30,6 +30,137 @@ type Config struct {
 	WebFetch    WebFetchConfig            `toml:"web_fetch"`
 	Search      SearchConfig              `toml:"search"`
 	Daemon      DaemonConfig              `toml:"daemon"`
+	Context     ContextPruneConfig        `toml:"context_prune"`
+}
+
+// ContextPruneConfig controls how aggressively old tool-result
+// messages are stubbed and how compaction treats designated content.
+// Tuned at workload level — the defaults are conservative for typical
+// agentic-coding sessions but not all workloads.
+//
+// Disable by setting `enabled = false`; the agent then falls back to
+// pre-pruning behaviour (full retention, compaction at 60% only).
+type ContextPruneConfig struct {
+	// Enabled gates the entire prune subsystem. Default true. Set
+	// false to revert to pre-pruning behaviour (verbatim tool results
+	// retained until compaction fires).
+	Enabled *bool `toml:"enabled"`
+
+	// StaleAfter is the global default user-turn threshold beyond
+	// which a tool result is replaced by a short stub. Per-tool
+	// overrides in ToolRetention take precedence. 0 → 5.
+	StaleAfter int `toml:"stale_after"`
+
+	// ToolRetention overrides StaleAfter per tool name. Sensible
+	// defaults are applied when a tool isn't listed:
+	//   read: 8, bash: 3, grep: 2, glob: 2, edit: 1, write: 1
+	// Anything else falls through to StaleAfter.
+	ToolRetention map[string]int `toml:"tool_retention"`
+
+	// PinnedPaths is matched as a suffix against absolute paths in
+	// `read` results — "PLAN.md" matches "/abs/.../PLAN.md" and
+	// "/work/PLAN.md" (sandbox path). Reads of pinned paths are not
+	// stubbed and survive compaction verbatim.
+	PinnedPaths []string `toml:"pinned_paths"`
+
+	// OutputCaps controls per-tool LLMOutput line caps. Zero =
+	// in-tree default (2000 for back-compat).
+	OutputCaps OutputCapsConfig `toml:"output_caps"`
+
+	// SmartTruncate toggles relevance-based truncation (B2). When
+	// true, outputs exceeding the cap try to keep lines matching the
+	// most recent user message; falls back to head/tail otherwise.
+	// Default false.
+	SmartTruncate bool `toml:"smart_truncate"`
+}
+
+// OutputCapsConfig holds per-tool LLMOutput line caps.
+type OutputCapsConfig struct {
+	Default int            `toml:"default"`
+	PerTool map[string]int `toml:"-"`
+	// Per-named-tool fields are folded into PerTool by Resolve().
+	// We keep an explicit field per tool here so the TOML surface
+	// reads naturally:
+	//   [context_prune.output_caps]
+	//   default = 500
+	//   bash    = 500
+	//   read    = 1000
+	Bash     int `toml:"bash"`
+	Read     int `toml:"read"`
+	Grep     int `toml:"grep"`
+	Glob     int `toml:"glob"`
+	WebFetch int `toml:"web_fetch"`
+}
+
+// Resolve normalises the Config into deterministic defaults the
+// agent can hand to AgentContext. Centralising this here keeps the
+// agent free of TOML-shaped concerns.
+//
+// Lookup precedence at use-time (implemented in Agent.staleAfterFor):
+//
+//  1. user-explicit per-tool override (ToolRetention entry)
+//  2. user-explicit global StaleAfter (when > 0)
+//  3. in-code per-tool default (read=8, bash=3, grep/glob=2, edit/write=1)
+//  4. fallback (5)
+//
+// Resolve() does NOT pre-mix the in-code per-tool defaults into
+// ToolRetention — that would shadow a user-set StaleAfter. The
+// in-code defaults live in agent.inCodeDefaultRetention and are
+// consulted only when neither the per-tool nor the global override
+// is set.
+func (c ContextPruneConfig) Resolve() ResolvedPruneConfig {
+	out := ResolvedPruneConfig{
+		Enabled:           true,
+		StaleAfter:        c.StaleAfter,
+		PinnedPaths:       c.PinnedPaths,
+		SmartTruncate:     c.SmartTruncate,
+		ToolRetention:     map[string]int{},
+		OutputCapDefault:  2000,
+		OutputCapsPerTool: map[string]int{},
+	}
+	if c.Enabled != nil {
+		out.Enabled = *c.Enabled
+	}
+	for k, v := range c.ToolRetention {
+		if v > 0 {
+			out.ToolRetention[k] = v
+		}
+	}
+	if c.OutputCaps.Default > 0 {
+		out.OutputCapDefault = c.OutputCaps.Default
+	}
+	if c.OutputCaps.Bash > 0 {
+		out.OutputCapsPerTool["bash"] = c.OutputCaps.Bash
+	}
+	if c.OutputCaps.Read > 0 {
+		out.OutputCapsPerTool["read"] = c.OutputCaps.Read
+	}
+	if c.OutputCaps.Grep > 0 {
+		out.OutputCapsPerTool["grep"] = c.OutputCaps.Grep
+	}
+	if c.OutputCaps.Glob > 0 {
+		out.OutputCapsPerTool["glob"] = c.OutputCaps.Glob
+	}
+	if c.OutputCaps.WebFetch > 0 {
+		out.OutputCapsPerTool["web_fetch"] = c.OutputCaps.WebFetch
+	}
+	for k, v := range c.OutputCaps.PerTool {
+		if v > 0 {
+			out.OutputCapsPerTool[k] = v
+		}
+	}
+	return out
+}
+
+// ResolvedPruneConfig is the post-defaulting shape the agent uses.
+type ResolvedPruneConfig struct {
+	Enabled           bool
+	StaleAfter        int
+	ToolRetention     map[string]int
+	PinnedPaths       []string
+	SmartTruncate     bool
+	OutputCapDefault  int
+	OutputCapsPerTool map[string]int
 }
 
 // DaemonConfig holds settings that only apply when running enso under

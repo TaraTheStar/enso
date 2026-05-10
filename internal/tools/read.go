@@ -69,7 +69,8 @@ func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	}
 
 	content := sb.String()
-	truncated, full := HeadTail(content, 2000)
+	cap := ac.OutputCaps.CapFor("read")
+	truncated, full := capTruncate(content, cap, ac.RecentUserHint)
 
 	// File contents are huge; the call signature already shows the path
 	// (and any range args). Scrollback gets a count instead of pages of
@@ -83,5 +84,14 @@ func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 		display = fmt.Sprintf("lines %d-%d (of %d)", first, last, totalLines)
 	}
 
-	return Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: display}, nil
+	cacheKey := fmt.Sprintf("read:%s:%d-%d", abs, first, last)
+	return Result{
+		LLMOutput:     truncated,
+		FullOutput:    full,
+		DisplayOutput: display,
+		Meta: ResultMeta{
+			PathsRead: []string{abs},
+			CacheKey:  cacheKey,
+		},
+	}, nil
 }

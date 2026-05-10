@@ -95,12 +95,17 @@ func (t WebFetchTool) Run(ctx context.Context, args map[string]interface{}, ac *
 		content = stripHTML(content)
 	}
 
-	truncated, full := HeadTail(content, webFetchSummaryCap)
+	cap := webFetchSummaryCap
+	if c := ac.OutputCaps.CapFor("web_fetch"); c > 0 {
+		cap = c
+	}
+	truncated, full := capTruncate(content, cap, ac.RecentUserHint)
 
 	return Result{
 		LLMOutput:     truncated,
 		FullOutput:    full,
 		DisplayOutput: webFetchDisplay(resp.StatusCode, len(data), ct, title),
+		Meta:          ResultMeta{CacheKey: "web_fetch:" + raw},
 	}, nil
 }
 

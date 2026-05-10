@@ -47,8 +47,9 @@ func (t GlobTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 		return Result{}, fmt.Errorf("glob: %w", err)
 	}
 
+	cacheKey := "glob:" + pattern + ":" + root
 	if len(matches) == 0 {
-		return Result{LLMOutput: "no matches found", FullOutput: "no matches found"}, nil
+		return Result{LLMOutput: "no matches found", FullOutput: "no matches found", Meta: ResultMeta{CacheKey: cacheKey}}, nil
 	}
 
 	for i, m := range matches {
@@ -63,11 +64,12 @@ func (t GlobTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	}
 
 	output := sb.String()
-	truncated, full := HeadTail(output, 2000)
+	cap := ac.OutputCaps.CapFor("glob")
+	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
 
 	display := fmt.Sprintf("%d match%s", len(matches), matchPlural(len(matches)))
 
-	return Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: display}, nil
+	return Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: display, Meta: ResultMeta{CacheKey: cacheKey}}, nil
 }
 
 // matchPlural returns "es" for n != 1 — "match" / "matches", not "matchs".

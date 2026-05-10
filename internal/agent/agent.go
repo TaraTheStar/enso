@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/hooks"
 	"github.com/TaraTheStar/enso/internal/instructions"
 	"github.com/TaraTheStar/enso/internal/llm"
@@ -75,6 +76,27 @@ type Agent struct {
 	// counts only requires updating the increment site.
 	cumIn  atomic.Int64
 	cumOut atomic.Int64
+
+	// pruneCfg drives the stale-tool-stubbing + dedup + post-edit
+	// invalidation machinery in prune.go. Resolved once at New().
+	pruneCfg config.ResolvedPruneConfig
+
+	// toolMeta sidecars History — keyed by message index (the History
+	// slot of each `role: "tool"` message). Holds the bookkeeping
+	// pruning needs that we can't (or shouldn't) round-trip through
+	// llm.Message itself: source toolName, dedup CacheKey, written
+	// paths, the user-turn count at append time, whether the message
+	// is currently a stub, whether the message is pinned (C1).
+	//
+	// Indices shift on compaction; rebuildToolMeta() rewrites the map
+	// after compaction trims History.
+	toolMeta map[int]*toolMessageMeta
+
+	// userTurnCounter increments once per user-message append. It is
+	// the basis for "how many turns ago was this tool message
+	// added." Distinct from AgentContext.TurnCount, which resets per
+	// user message and counts inner-loop iterations.
+	userTurnCounter int
 }
 
 // pickDefaultProvider validates `requested` against the providers map.
@@ -291,6 +313,11 @@ type Config struct {
 	// tool can permit specific local services (e.g. a llama.cpp server)
 	// past the loopback/private-IP block. Empty = strict default.
 	WebFetchAllowHosts []string
+
+	// PruneCfg controls the context-pruning subsystem (stale tool
+	// stubbing, dedup, post-edit invalidation, compaction pinning).
+	// Zero value = defaults via config.ContextPruneConfig.Resolve().
+	PruneCfg config.ResolvedPruneConfig
 }
 
 // New creates an Agent with a system prompt built from the three-tier loader.
@@ -344,6 +371,13 @@ func New(cfg Config) (*Agent, error) {
 
 	defaultProvider := cfg.Providers[defaultName]
 
+	pruneCfg := cfg.PruneCfg
+	// Treat zero-value as "use defaults" — Resolve() on an empty
+	// ContextPruneConfig produces the in-code defaults.
+	if pruneCfg.StaleAfter == 0 && pruneCfg.OutputCapDefault == 0 {
+		pruneCfg = (config.ContextPruneConfig{}).Resolve()
+	}
+
 	ac := &tools.AgentContext{
 		Cwd:                cfg.Cwd,
 		SessionID:          cfg.SessionID,
@@ -367,6 +401,10 @@ func New(cfg Config) (*Agent, error) {
 		RestrictedRoots:    cfg.RestrictedRoots,
 		FileEditHook:       fileEditHookOf(cfg.Hooks),
 		WebFetchAllowHosts: cfg.WebFetchAllowHosts,
+		OutputCaps: tools.DefaultOutputCaps{
+			Default: pruneCfg.OutputCapDefault,
+			PerTool: pruneCfg.OutputCapsPerTool,
+		},
 	}
 
 	a := &Agent{
@@ -380,6 +418,8 @@ func New(cfg Config) (*Agent, error) {
 		Writer:          cfg.Writer,
 		MaxTurns:        maxTurns,
 		Hooks:           cfg.Hooks,
+		pruneCfg:        pruneCfg,
+		toolMeta:        map[int]*toolMessageMeta{},
 	}
 	a.refreshEstimate()
 	return a, nil
@@ -390,7 +430,7 @@ func New(cfg Config) (*Agent, error) {
 // Used by the spawn_agent tool to drive a child agent. The supplied ctx is
 // honoured as the turn context — cancelling it interrupts the run.
 func (a *Agent) RunOneShot(ctx context.Context, prompt string) (string, error) {
-	a.appendMessage(llm.Message{Role: "user", Content: prompt})
+	a.appendUserMessage(prompt)
 	a.AgentCtx.TurnCount = 0
 
 	a.runUntilQuiescent(ctx)
@@ -479,9 +519,10 @@ func (a *Agent) Run(ctx context.Context, inputCh <-chan string) error {
 				a.Perms.ResetTurnAllows()
 			}
 
-			a.appendMessage(llm.Message{Role: "user", Content: prompt})
+			a.appendUserMessage(prompt)
 			a.Bus.Publish(bus.Event{Type: bus.EventUserMessage, Payload: prompt})
 			a.AgentCtx.TurnCount = 0
+			a.AgentCtx.RecentUserHint = prompt
 
 			a.runUntilQuiescent(turnCtx)
 
@@ -583,6 +624,24 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	// already paid for the prompt the moment the request hit the wire.
 	a.cumIn.Add(int64(llm.Estimate(req.Messages)))
 
+	// D2: log a per-turn prefix-size breakdown so the user (and
+	// /prune debugging) can see exactly how much each category is
+	// contributing to the total prompt. Goes through slog at debug
+	// level — lands in ~/.enso/debug.log when --debug is on, no-ops
+	// otherwise.
+	if a.AgentCtx.Logger != nil {
+		bd := a.PrefixBreakdown()
+		a.AgentCtx.Logger.Debug("prefix breakdown",
+			"total", bd.Total,
+			"system", bd.System,
+			"pinned", bd.Pinned,
+			"tool_active", bd.ToolActive,
+			"tool_stubbed", bd.ToolStubbed,
+			"conversation", bd.Conversation,
+			"messages", len(req.Messages),
+		)
+	}
+
 	events, err := p.Client.Chat(ctx, req)
 	if err != nil {
 		release()
@@ -655,16 +714,25 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	}
 
 	for _, tc := range toolCalls {
-		out := a.executeToolCall(ctx, registry, tc)
-		a.appendMessage(llm.Message{
+		out, meta := a.executeToolCall(ctx, registry, tc)
+		a.appendToolMessage(llm.Message{
 			Role:       "tool",
 			Name:       tc.Function.Name,
 			ToolCallID: tc.ID,
 			Content:    out,
-		})
+		}, meta)
 	}
 
 	return true, nil
+}
+
+// appendUserMessage appends a user-role message and bumps the
+// session-wide user-turn counter the prune subsystem keys off of.
+// All user messages should land here (not appendMessage directly) so
+// turn-age accounting stays consistent.
+func (a *Agent) appendUserMessage(content string) {
+	a.userTurnCounter++
+	a.appendMessage(llm.Message{Role: "user", Content: content})
 }
 
 // appendMessage persists the message (if a Writer is configured) before
@@ -684,16 +752,21 @@ func (a *Agent) appendMessage(msg llm.Message) {
 // it. `registry` is the (possibly filtered) registry for this turn — if
 // the model called a tool not in it, we return "unknown tool" so the
 // model gets fed back a clear error.
-func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, tc llm.ToolCall) string {
+//
+// Returns (LLMOutput, Meta). Meta carries the side-channel fields the
+// prune subsystem reads (PathsRead/PathsWritten/CacheKey); on error
+// paths Meta is the zero value, which the prune layer treats as "no
+// pruning hints."
+func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, tc llm.ToolCall) (string, tools.ResultMeta) {
 	tool := registry.Get(tc.Function.Name)
 	if tool == nil {
-		return fmt.Sprintf("error: unknown tool %q", tc.Function.Name)
+		return fmt.Sprintf("error: unknown tool %q", tc.Function.Name), tools.ResultMeta{}
 	}
 
 	var args map[string]interface{}
 	if tc.Function.Arguments != "" {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return fmt.Sprintf("error: parse arguments: %v", err)
+			return fmt.Sprintf("error: parse arguments: %v", err), tools.ResultMeta{}
 		}
 	}
 	if args == nil {
@@ -702,7 +775,7 @@ func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, t
 
 	decision, err := a.Perms.Check(tc.Function.Name, args, a.Bus)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err)
+		return fmt.Sprintf("error: %v", err), tools.ResultMeta{}
 	}
 	if decision == permissions.Prompt {
 		decision = a.requestPrompt(ctx, tc.Function.Name, args)
@@ -720,7 +793,7 @@ func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, t
 				a.AgentCtx.Logger.Error("session: append tool_call (denied)", "err", err)
 			}
 		}
-		return "permission denied by user"
+		return "permission denied by user", tools.ResultMeta{}
 	}
 
 	a.Bus.Publish(bus.Event{
@@ -760,9 +833,9 @@ func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, t
 	}
 
 	if runErr != nil {
-		return fmt.Sprintf("error: %v", runErr)
+		return fmt.Sprintf("error: %v", runErr), tools.ResultMeta{}
 	}
-	return result.LLMOutput
+	return result.LLMOutput, result.Meta
 }
 
 // requestPrompt publishes a permission request and blocks for the user's reply

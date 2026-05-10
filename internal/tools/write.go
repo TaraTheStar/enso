@@ -59,5 +59,9 @@ func (t WriteTool) Run(ctx context.Context, args map[string]interface{}, ac *Age
 	return Result{
 		LLMOutput:  fmt.Sprintf("wrote %d bytes to %s", len(content), abs),
 		FullOutput: fmt.Sprintf("wrote %d bytes to %s\n---\n%s", len(content), abs, content),
+		Meta: ResultMeta{
+			PathsWritten: []string{abs},
+			CacheKey:     "write:" + abs,
+		},
 	}, nil
 }
