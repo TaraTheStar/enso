@@ -198,6 +198,7 @@ func Run(opts Options) error {
 		RestrictedRoots:       restrictedRoots,
 		Hooks:                 hooksInst,
 		WebFetchAllowHosts:    cfg.WebFetch.AllowHosts,
+		PruneCfg:              cfg.Context.Resolve(),
 	}
 	if sandboxMgr != nil {
 		agentCfg.Sandbox = sandboxMgr

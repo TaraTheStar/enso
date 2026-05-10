@@ -61,20 +61,24 @@ func runBashHost(ctx context.Context, cmdStr string, ac *AgentContext) (Result, 
 
 	runErr := cmd.Run()
 
+	cap := ac.OutputCaps.CapFor("bash")
+	cacheKey := bashCacheKey(cmdStr)
+
 	if runErr != nil {
 		output := stderrBuf.String()
 		if output == "" {
 			output = runErr.Error()
 		}
-		truncated, full := HeadTail(output, 2000)
+		truncated, full := capTruncate(output, cap, ac.RecentUserHint)
 		return Result{
 			LLMOutput:  fmt.Sprintf("exit %d\n%s", cmd.ProcessState.ExitCode(), truncated),
 			FullOutput: fmt.Sprintf("exit %d\nstdout: %s\nstderr: %s", cmd.ProcessState.ExitCode(), stdoutBuf.String(), full),
+			Meta:       ResultMeta{CacheKey: cacheKey},
 		}, nil
 	}
 
 	output := stdoutBuf.String()
-	truncated, full := HeadTail(output, 2000)
+	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
 	llm := truncated
 	if llm == "" {
 		// A model can't interpret an empty tool message, and some
@@ -88,6 +92,7 @@ func runBashHost(ctx context.Context, cmdStr string, ac *AgentContext) (Result, 
 		LLMOutput:  llm,
 		FullOutput: full,
 		Display:    strings.TrimSpace(truncated),
+		Meta:       ResultMeta{CacheKey: cacheKey},
 	}, nil
 }
 
@@ -103,7 +108,9 @@ func runBashSandboxed(ctx context.Context, cmdStr string, ac *AgentContext) (Res
 	runErr := ac.Sandbox.Exec(ctx, w, cmdStr)
 
 	output := combined.String()
-	truncated, full := HeadTail(output, 2000)
+	cap := ac.OutputCaps.CapFor("bash")
+	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
+	cacheKey := bashCacheKey(cmdStr)
 
 	if runErr != nil {
 		exit := -1
@@ -113,6 +120,7 @@ func runBashSandboxed(ctx context.Context, cmdStr string, ac *AgentContext) (Res
 		return Result{
 			LLMOutput:  fmt.Sprintf("exit %d (sandbox: %s)\n%s", exit, ac.Sandbox.Runtime(), truncated),
 			FullOutput: fmt.Sprintf("exit %d (sandbox: %s/%s)\n%s", exit, ac.Sandbox.Runtime(), ac.Sandbox.ContainerName(), full),
+			Meta:       ResultMeta{CacheKey: cacheKey},
 		}, nil
 	}
 
@@ -124,7 +132,20 @@ func runBashSandboxed(ctx context.Context, cmdStr string, ac *AgentContext) (Res
 		LLMOutput:  llm,
 		FullOutput: full,
 		Display:    strings.TrimSpace(truncated),
+		Meta:       ResultMeta{CacheKey: cacheKey},
 	}, nil
+}
+
+// bashCacheKey normalises a shell command into a dedup key. Long
+// commands are clipped to keep the key sane; cosmetic whitespace is
+// collapsed so `git status` and `git  status` dedup correctly.
+func bashCacheKey(cmd string) string {
+	const max = 200
+	c := strings.Join(strings.Fields(cmd), " ")
+	if len(c) > max {
+		c = c[:max]
+	}
+	return "bash:" + c
 }
 
 // progressWriter is an io.Writer that mirrors writes into a backing buffer

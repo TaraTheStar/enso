@@ -43,7 +43,7 @@ func (t GrepTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 		searchPath = abs
 	}
 
-	if result := tryRG(ctx, searchPath, pattern); result != nil {
+	if result := tryRG(ctx, searchPath, pattern, ac); result != nil {
 		return *result, nil
 	}
 
@@ -74,13 +74,15 @@ func (t GrepTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	}
 
 	output := strings.Join(results, "\n")
+	cacheKey := "grep:" + pattern + ":" + searchPath
 	if output == "" {
 		output = "no matches found"
-		return Result{LLMOutput: output, FullOutput: output, DisplayOutput: output}, nil
+		return Result{LLMOutput: output, FullOutput: output, DisplayOutput: output, Meta: ResultMeta{CacheKey: cacheKey}}, nil
 	}
-	truncated, full := HeadTail(output, 2000)
+	cap := ac.OutputCaps.CapFor("grep")
+	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
 
-	return Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: grepDisplay(output)}, nil
+	return Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: grepDisplay(output), Meta: ResultMeta{CacheKey: cacheKey}}, nil
 }
 
 // grepDisplay summarizes ripgrep / walk output (one `path:line:content`
@@ -100,7 +102,7 @@ func grepDisplay(output string) string {
 		len(files), plural(len(files)))
 }
 
-func tryRG(ctx context.Context, path, pattern string) *Result {
+func tryRG(ctx context.Context, path, pattern string, ac *AgentContext) *Result {
 	// `--` separates flags from positionals so a pattern like `-foo` isn't
 	// parsed as a flag by ripgrep.
 	cmd := exec.CommandContext(ctx, "rg", "--color", "never", "--line-number", "--", pattern, path)
@@ -110,20 +112,22 @@ func tryRG(ctx context.Context, path, pattern string) *Result {
 	}
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
+	cacheKey := "grep:" + pattern + ":" + path
 	if err := cmd.Run(); err != nil {
 		if _, ok := err.(*exec.Error); ok {
 			return nil
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
-			return &Result{LLMOutput: "no matches found", FullOutput: "no matches found"}
+			return &Result{LLMOutput: "no matches found", FullOutput: "no matches found", Meta: ResultMeta{CacheKey: cacheKey}}
 		}
-		return &Result{LLMOutput: fmt.Sprintf("rg error: %v", err), FullOutput: fmt.Sprintf("rg error: %v", err)}
+		return &Result{LLMOutput: fmt.Sprintf("rg error: %v", err), FullOutput: fmt.Sprintf("rg error: %v", err), Meta: ResultMeta{CacheKey: cacheKey}}
 	}
 
 	output := stdout.String()
 	if output == "" {
-		return &Result{LLMOutput: "no matches found", FullOutput: "no matches found"}
+		return &Result{LLMOutput: "no matches found", FullOutput: "no matches found", Meta: ResultMeta{CacheKey: cacheKey}}
 	}
-	truncated, full := HeadTail(output, 2000)
-	return &Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: grepDisplay(output)}
+	cap := ac.OutputCaps.CapFor("grep")
+	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
+	return &Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: grepDisplay(output), Meta: ResultMeta{CacheKey: cacheKey}}
 }

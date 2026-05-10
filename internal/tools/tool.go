@@ -28,6 +28,30 @@ type Result struct {
 	FullOutput    string // complete output stored in the session
 	DisplayOutput string // optional terse line(s) for scrollback; falls back to LLMOutput when empty
 	Display       any    // rich display data (e.g., diff for permission modal)
+	Meta          ResultMeta
+}
+
+// ResultMeta carries side-channel metadata used by the agent's
+// context-pruning machinery. Tools opt into pruning behaviours by
+// populating these fields; zero values are safe (no pruning effect).
+type ResultMeta struct {
+	// PathsRead is the set of absolute file paths whose contents this
+	// tool surfaced to the model. The pruner uses this to invalidate
+	// stale read results after a write/edit touches the same path
+	// (A4), and to decide whether the message references a "pinned"
+	// path that should survive stubbing/compaction (C1).
+	PathsRead []string
+
+	// PathsWritten is the set of absolute file paths this tool
+	// modified. Drives A4 invalidation: any prior read of a path in
+	// this set is stubbed when the write/edit message is appended.
+	PathsWritten []string
+
+	// CacheKey is a normalized identifier used for same-call dedup
+	// (A3). When two tool messages share a CacheKey, the older is
+	// stubbed regardless of the per-tool retention threshold.
+	// Examples: "read:/abs/path:1-200", "bash:git status".
+	CacheKey string
 }
 
 // AgentContext carries request-scoped data for tool execution.
@@ -110,6 +134,38 @@ type AgentContext struct {
 	// (e.g. a local llama.cpp server). Each entry is "host" or
 	// "host:port" — see config.WebFetchConfig.
 	WebFetchAllowHosts []string
+
+	// OutputCaps controls per-tool truncation thresholds applied via
+	// HeadTail. Zero values fall through to DefaultOutputCap, which
+	// itself falls back to 2000 for backward compatibility.
+	OutputCaps DefaultOutputCaps
+
+	// RecentUserHint is the most recent user message text — used by
+	// RelevantTruncate (B2) as a relevance signal when an output
+	// exceeds its cap. Empty disables relevance truncation.
+	RecentUserHint string
+}
+
+// DefaultOutputCaps lets the host pin per-tool LLMOutput line caps
+// without each tool growing its own knob. Read by HeadTail callers
+// inside the tools package; the agent.Config plumbs values through.
+type DefaultOutputCaps struct {
+	Default int            // global default; 0 → 2000
+	PerTool map[string]int // tool name → override
+}
+
+// CapFor returns the cap for `toolName`, falling back to Default and
+// then 2000.
+func (c DefaultOutputCaps) CapFor(toolName string) int {
+	if c.PerTool != nil {
+		if v, ok := c.PerTool[toolName]; ok && v > 0 {
+			return v
+		}
+	}
+	if c.Default > 0 {
+		return c.Default
+	}
+	return 2000
 }
 
 // FileEditHook is the slice of internal/hooks.Hooks the edit/write
