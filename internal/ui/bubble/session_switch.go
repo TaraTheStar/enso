@@ -7,6 +7,7 @@ package bubble
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 	"syscall"
 )
@@ -18,10 +19,32 @@ import (
 // syscall.Exec is a process image replacement.
 func execIntoSession(sessionID string) error {
 	args := buildSwitchArgs(os.Args, sessionID)
-	if err := syscall.Exec(os.Args[0], args, os.Environ()); err != nil {
-		return fmt.Errorf("exec %s: %w", os.Args[0], err)
+	bin, err := resolveSelfPath(os.Args[0])
+	if err != nil {
+		return fmt.Errorf("resolve self path: %w", err)
+	}
+	if err := syscall.Exec(bin, args, os.Environ()); err != nil {
+		return fmt.Errorf("exec %s: %w", bin, err)
 	}
 	return nil // unreachable
+}
+
+// resolveSelfPath returns an absolute path to the currently-running
+// binary suitable for syscall.Exec, which (unlike the shell) does not
+// consult PATH. os.Executable is preferred because it reflects the
+// actual binary even if argv[0] was rewritten; we fall back to
+// exec.LookPath(argv[0]) and finally argv[0] itself.
+func resolveSelfPath(argv0 string) (string, error) {
+	if p, err := os.Executable(); err == nil && p != "" {
+		return p, nil
+	}
+	if p, err := exec.LookPath(argv0); err == nil && p != "" {
+		return p, nil
+	}
+	if argv0 == "" {
+		return "", fmt.Errorf("empty argv[0] and os.Executable unavailable")
+	}
+	return argv0, nil
 }
 
 // buildSwitchArgs returns argv for the re-exec: original args with
