@@ -173,6 +173,7 @@ func runOnce(promptArgs []string) error {
 		RestrictedRoots:       restrictedRoots,
 		Hooks:                 hooks.New(cfg.Hooks.OnFileEdit, cfg.Hooks.OnSessionEnd),
 		WebFetchAllowHosts:    cfg.WebFetch.AllowHosts,
+		PruneCfg:              cfg.Context.Resolve(),
 	}
 	// Avoid the typed-nil-into-interface trap: assign Sandbox only when
 	// a manager actually exists. Otherwise the interface is non-nil but
