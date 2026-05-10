@@ -117,28 +117,78 @@ func (a *Agent) forceCompact(ctx context.Context, reason string) (bool, error) {
 		return false, nil
 	}
 
+	// C1: separate the older block into "pinned-survives" and
+	// "summarisable" portions. Pinned messages (e.g. read of PLAN.md
+	// when PLAN.md is in pruneCfg.PinnedPaths) are preserved
+	// verbatim and re-inserted after the summary so their content
+	// stays available across compactions. The summariser sees only
+	// the non-pinned remainder, which keeps the summary focused.
 	older := a.History[oldStart:oldEnd]
-	if len(older) == 0 {
+	var pinnedOlder, summarisable []llm.Message
+	pinnedMeta := map[*llm.Message]*toolMessageMeta{}
+	for i, msg := range older {
+		absIdx := oldStart + i
+		if tm := a.toolMeta[absIdx]; tm != nil && tm.pinned {
+			pinnedOlder = append(pinnedOlder, msg)
+			// Track the meta entry so rebuildToolMeta can re-key
+			// it once History is rewritten. Map keys by *Message
+			// pointer in the post-rewrite History — set later.
+			pinnedMeta[&pinnedOlder[len(pinnedOlder)-1]] = tm
+			continue
+		}
+		summarisable = append(summarisable, msg)
+	}
+
+	if len(summarisable) == 0 && len(pinnedOlder) == 0 {
 		return false, nil
 	}
 
 	beforeTokens := llm.Estimate(a.History)
 
-	summary, err := a.summariseHistory(ctx, older)
-	if err != nil {
-		return false, fmt.Errorf("summarise: %w", err)
+	var summary string
+	if len(summarisable) > 0 {
+		s, err := a.summariseHistory(ctx, summarisable)
+		if err != nil {
+			return false, fmt.Errorf("summarise: %w", err)
+		}
+		summary = s
 	}
 
-	synth := llm.Message{
-		Role:    "assistant",
-		Content: "[compacted summary of earlier conversation]\n\n" + summary,
+	// Rebuild History as: [system...] + [pinnedOlder...] + [synth?] + [recent...]
+	// Pinned messages go *before* the summary so the model sees their
+	// content first, then a summary of the rest. The summary message
+	// itself is omitted entirely when nothing was summarisable.
+	rebuilt := append([]llm.Message{}, a.History[:systemIdx+1]...)
+	rebuilt = append(rebuilt, pinnedOlder...)
+	if summary != "" {
+		synth := llm.Message{
+			Role:    "assistant",
+			Content: "[compacted summary of earlier conversation]\n\n" + summary,
+		}
+		rebuilt = append(rebuilt, synth)
+	}
+	// Track the post-rewrite address of each pinned message so the
+	// toolMeta map can be rebuilt against the new index space.
+	preserve := map[*llm.Message]*toolMessageMeta{}
+	pinnedStart := systemIdx + 1
+	for i := range pinnedOlder {
+		// rebuilt[pinnedStart+i] is the post-rewrite address.
+		if tm, ok := pinnedMeta[&pinnedOlder[i]]; ok {
+			preserve[&rebuilt[pinnedStart+i]] = tm
+		}
+	}
+	// Recent messages (oldEnd..) — preserve their toolMeta entries too.
+	recentStart := len(rebuilt)
+	rebuilt = append(rebuilt, a.History[oldEnd:]...)
+	for i := oldEnd; i < len(a.History); i++ {
+		if tm := a.toolMeta[i]; tm != nil {
+			newIdx := recentStart + (i - oldEnd)
+			preserve[&rebuilt[newIdx]] = tm
+		}
 	}
 
-	pinned := append([]llm.Message{}, a.History[:systemIdx+1]...)
-	pinned = append(pinned, synth)
-	pinned = append(pinned, a.History[oldEnd:]...)
-
-	a.History = pinned
+	a.History = rebuilt
+	a.rebuildToolMeta(preserve)
 	a.refreshEstimate()
 	afterTokens := llm.Estimate(a.History)
 

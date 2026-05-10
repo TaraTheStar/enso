@@ -58,6 +58,78 @@ func registerBuiltins(reg *slash.Registry, sc *slashCtx) {
 	reg.Register(&gitCmd{sc: sc})
 	reg.Register(&costCmd{sc: sc})
 	reg.Register(&transcriptCmd{sc: sc})
+	reg.Register(&contextCmd{sc: sc})
+	reg.Register(&pruneCmd{sc: sc})
+}
+
+// /context — per-category breakdown of the current prompt prefix.
+//
+// Surfaces what's actually being sent to the model on the next turn,
+// split into system / pinned / active-tool / stubbed-tool /
+// conversation. Useful for debugging "why is my prompt still 80k after
+// /prune" kinds of questions.
+
+type contextCmd struct{ sc *slashCtx }
+
+func (c *contextCmd) Name() string { return "context" }
+func (c *contextCmd) Description() string {
+	return "show per-category token breakdown of the current prompt prefix"
+}
+func (c *contextCmd) Run(ctx context.Context, args string) error {
+	if c.sc.agt == nil {
+		c.sc.printf("context: no agent")
+		return nil
+	}
+	bd := c.sc.agt.PrefixBreakdown()
+	window := c.sc.agt.ContextWindow()
+
+	c.sc.printf("Current prompt prefix:")
+	c.sc.printf("  system          %s", formatWindow(bd.System))
+	c.sc.printf("  pinned content  %s", formatWindow(bd.Pinned))
+	c.sc.printf("  tool (active)   %s", formatWindow(bd.ToolActive))
+	c.sc.printf("  tool (stubbed)  %s", formatWindow(bd.ToolStubbed))
+	c.sc.printf("  conversation    %s", formatWindow(bd.Conversation))
+	c.sc.printf("  --")
+	if window > 0 {
+		c.sc.printf("  total           %s / %s (%s)",
+			formatWindow(bd.Total), formatWindow(window), percentOf(bd.Total, window))
+	} else {
+		c.sc.printf("  total           %s", formatWindow(bd.Total))
+	}
+	if bd.ToolActive > bd.Conversation*2 && bd.ToolActive > 5000 {
+		c.sc.printf("")
+		c.sc.printf("note: tool output dominates — /prune will stub older tool results, freeing tokens.")
+	}
+	return nil
+}
+
+// /prune — manual trigger for aggressive stale-tool stubbing.
+//
+// Replaces every tool message older than the most recent user-turn
+// with a short stub (preserving tool_call_id pairing for OpenAI-shape
+// API compatibility). Pinned messages are spared.
+
+type pruneCmd struct{ sc *slashCtx }
+
+func (c *pruneCmd) Name() string { return "prune" }
+func (c *pruneCmd) Description() string {
+	return "drop stale tool-result payloads from history (keeps the most recent user-turn intact)"
+}
+func (c *pruneCmd) Run(ctx context.Context, args string) error {
+	if c.sc.agt == nil {
+		c.sc.printf("prune: no agent")
+		return nil
+	}
+	stubbed, before, after := c.sc.agt.ForcePrune()
+	if stubbed == 0 {
+		c.sc.printf("prune: nothing to prune (history at %s tokens)", formatWindow(before))
+		return nil
+	}
+	saved := before - after
+	c.sc.printf("prune: stubbed %d tool message%s · %s → %s tokens (-%s)",
+		stubbed, plural(stubbed),
+		formatWindow(before), formatWindow(after), formatWindow(saved))
+	return nil
 }
 
 // /help

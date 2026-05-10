@@ -131,4 +131,31 @@ attribution_name = "enso"
 # timeout     = 15                     # seconds
 # ca_cert     = "/etc/ssl/my-ca.pem"   # trust a self-hosted CA (appended to system roots)
 # insecure_skip_verify = false         # last-resort: skip TLS verification for ad-hoc self-signed
+
+# Context pruning. Stubs old tool-result payloads in conversation
+# history once they're stale, dedupes repeated reads/commands, and
+# invalidates pre-edit reads of files that were later written. The
+# defaults are conservative; tighten via tool_retention if you run on
+# a hybrid-attention model (Qwen3.6, etc.) that pays full prefix cost
+# every turn.
+#
+# [context_prune]
+# enabled = true                       # set false to revert to verbatim retention
+# stale_after = 5                      # default user-turn threshold for stubbing
+# pinned_paths = ["PLAN.md"]           # suffix-matched against absolute paths;
+#                                      # reads of these survive stubbing + compaction
+# smart_truncate = false               # B2: relevance-based truncation when output exceeds cap
+#
+# [context_prune.tool_retention]
+# read = 8
+# bash = 3
+# grep = 2
+# glob = 2
+# edit = 1
+# write = 1
+#
+# [context_prune.output_caps]
+# default = 2000                       # global cap (lines) for HeadTail
+# bash = 500
+# read = 1000
 `

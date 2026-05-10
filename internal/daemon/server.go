@@ -387,6 +387,7 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 		Hooks:              hooks.New(s.cfg.Hooks.OnFileEdit, s.cfg.Hooks.OnSessionEnd),
 		WebFetchAllowHosts: s.cfg.WebFetch.AllowHosts,
 		RestrictedRoots:    restrictedRoots,
+		PruneCfg:           s.cfg.Context.Resolve(),
 	})
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
