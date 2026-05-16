@@ -9,9 +9,10 @@ import (
 )
 
 // buildMarkdownTheme returns a glamour StyleConfig built from the
-// shared enso palette. Built dynamically so that ~/.enso/theme.toml
-// overrides flow through to assistant-message markdown the same way
-// they flow through every other styled element.
+// shared enso palette. Built dynamically so that
+// $XDG_CONFIG_HOME/enso/theme.toml overrides flow through to
+// assistant-message markdown the same way they flow through every other
+// styled element.
 //
 // Design intent: recede, don't shout. Glamour's default themes
 // (dark, dracula, etc.) wrap headings in coloured backgrounds and

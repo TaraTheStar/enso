@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-// SocketName is the unix socket file under ~/.enso. Resolved fully via
-// SocketPath() in client.go and server.go.
+// SocketName is the unix socket filename under $XDG_RUNTIME_DIR/enso.
+// Resolved fully via SocketPath() in client.go and server.go.
 const SocketName = "daemon.sock"
 
-// PIDFileName is the pid lock under ~/.enso.
+// PIDFileName is the pid lock filename under $XDG_RUNTIME_DIR/enso.
 const PIDFileName = "daemon.pid"
 
 // MessageKind discriminates the wire-format envelope.

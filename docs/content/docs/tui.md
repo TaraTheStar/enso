@@ -112,7 +112,7 @@ Enter inserts the path; Esc dismisses.
 
 ## Theming
 
-Drop a `~/.enso/theme.toml` to override the default color palette:
+Drop a `~/.config/enso/theme.toml` to override the default color palette:
 
 ```toml
 [colors]
@@ -124,4 +124,4 @@ green  = "#a9dc76"
 ```
 
 Each entry is a hex `#rrggbb`. Typos log a warning to
-`~/.enso/enso.log` and fall back to defaults; they never block the TUI.
+`~/.local/state/enso/enso.log` and fall back to defaults; they never block the TUI.

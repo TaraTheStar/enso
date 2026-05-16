@@ -40,7 +40,7 @@ go test ./...
 - **Package layout**: one package per directory. The UI lives behind `internal/ui/`; nothing outside `internal/ui/bubble/` should import the Bubble Tea / Lipgloss libraries directly. Domain code talks to `internal/ui` (or `internal/bus` for events) only.
 - **Imports**: stdlib first, then third-party, then internal — separated by blank lines. `gofmt` sorts.
 - **Errors**: wrap with `fmt.Errorf("doing X: %w", err)`. Don't `panic` outside `cmd/enso/main.go`. Return errors up; the agent loop is the recovery point.
-- **Logging**: `log/slog` only. Default text handler writing to `~/.enso/enso.log` (set up in `cmd/enso/main.go:initLogging`). Add structured fields (`slog.String("session", id)`) instead of formatting strings. Stderr is never written to from inside the TUI — it'd corrupt the screen.
+- **Logging**: `log/slog` only. Default text handler writing to `$XDG_STATE_HOME/enso/enso.log` (set up in `cmd/enso/main.go:initLogging`). Add structured fields (`slog.String("session", id)`) instead of formatting strings. Stderr is never written to from inside the TUI — it'd corrupt the screen.
 - **Concurrency**: prefer `context.Context` for cancellation. No naked goroutines without a way to stop them. Channels for events; mutexes only when channels would be awkward.
 - **Tests**: table-driven where it fits. The gnarly bits already have tests; add tests for new gnarly logic but don't bother testing thin glue or Bubble Tea View output.
 - **Comments**: write very few. Identifiers carry the meaning. A comment is for explaining a non-obvious *why* — a hidden constraint, a workaround for an upstream bug, an invariant. If removing it wouldn't confuse a reader, don't write it.
@@ -132,7 +132,7 @@ something feels off:
   new template breakage will surface as model output going to the
   wrong lane or as HTTP 400 on the *next* turn ("Assistant message
   must contain either 'content' or 'tool_calls'"). Guards log to
-  `~/.enso/enso.log`; check there first.
+  `~/.local/state/enso/enso.log`; check there first.
 - **Tool results are untrusted text — LSP results in particular.**
   `lsp_hover` / `lsp_diagnostics` / `lsp_definition` / `lsp_references`
   ship the language server's response back to the model verbatim as
@@ -172,13 +172,13 @@ something feels off:
   forwarder coalesces deltas into 16ms (~60fps) batches before
   sending to the program — that should keep `bus: slow consumer`
   warnings at bay even on >100 t/s streams. If you see them in
-  `~/.enso/enso.log`, the renderer is back-pressured for some other
+  `~/.local/state/enso/enso.log`, the renderer is back-pressured for some other
   reason; bump the subscriber buffer or shorten the flush interval
   in `internal/ui/bubble/run.go`.
 ## Reference
 
 - `README.md` — user-facing quickstart + feature overview (also covers the layered config search paths).
-- `~/.enso/config.toml` (or layered equivalents — see `README.md` "Configuration") — runtime config.
-- `~/.enso/enso.db` — SQLite session store.
-- `~/.enso/enso.log` — slog output.
-- `~/.enso/debug.log` — raw SSE chunks when `--debug`/`ENSO_DEBUG`.
+- `~/.config/enso/config.toml` (or layered equivalents — see `README.md` "Configuration") — runtime config.
+- `~/.local/share/enso/enso.db` — SQLite session store.
+- `~/.local/state/enso/enso.log` — slog output.
+- `~/.local/state/enso/debug.log` — raw SSE chunks when `--debug`/`ENSO_DEBUG`.

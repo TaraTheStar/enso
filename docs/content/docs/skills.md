@@ -1,12 +1,12 @@
 ---
 title: Skills
-weight: 8
+weight: 9
 ---
 
 # Skills
 
 A *skill* is a user-defined slash command. Drop a frontmatter-headed
-markdown file at `~/.enso/skills/<name>.md` (user) or
+markdown file at `~/.config/enso/skills/<name>.md` (user) or
 `<cwd>/.enso/skills/<name>.md` (project), and `/<name>` becomes a slash
 command in the TUI that injects the rendered body as the next user
 message.
@@ -81,5 +81,5 @@ this whole session to behave as Y."
 ## Example
 
 Shipped at `examples/skills/explain-this.md`. Copy to
-`~/.enso/skills/` or `<project>/.enso/skills/` and try
+`~/.config/enso/skills/` or `<project>/.enso/skills/` and try
 `/explain-this internal/bus`.

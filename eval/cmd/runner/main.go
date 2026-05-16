@@ -114,7 +114,7 @@ func main() {
 		*swapModel = models[1]
 	}
 	if *extraConf == "" {
-		die("--config is required: point at a TOML file with [providers] entries matching --models (typically ~/.enso/config.toml)")
+		die("--config is required: point at a TOML file with [providers] entries matching --models (typically ~/.config/enso/config.toml)")
 	}
 	absConf, err := filepath.Abs(*extraConf)
 	if err != nil {
@@ -208,7 +208,7 @@ func runOne(ensoBin, extraConf, model, swapModel string, t Task, verbose bool) R
 		return res
 	}
 	// HOME is isolated per cell so each run has its own session DB and
-	// cannot see the user's real ~/.enso. The user's full config gets
+	// cannot see the user's real config/data/state dirs. The user's full config gets
 	// installed into the homedir's XDG location so it loads as the
 	// "user" config layer, leaving the highest-priority -c slot free
 	// for the eval's own overrides (sandbox=off, etc).
@@ -323,7 +323,7 @@ func runOne(ensoBin, extraConf, model, swapModel string, t Task, verbose bool) R
 
 // runEnso spawns `enso run` with the given parameters and returns the raw
 // JSON event stream from stdout, plus whatever was written to stderr.
-// HOME is set to homedir so the spawned process gets its own ~/.enso/
+// HOME is set to homedir so the spawned process gets its own XDG dirs
 // (session DB, log) isolated from the user's.
 func runEnso(ensoBin, extraConf, homedir, cwd, provider, sessionID, prompt string, maxTurns int, verbose bool) ([]byte, []byte, error) {
 	args := []string{"run", "--format", "json", "--yolo", "--trust-project", "--provider", provider, "-c", extraConf}

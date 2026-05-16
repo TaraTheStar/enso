@@ -12,10 +12,10 @@ import (
 )
 
 // MemoryTool writes a markdown memory file under <cwd>/.enso/memory/.
-// On the next session start, instructions/loader.go reads every .md file
-// under that directory (and ~/.enso/memory/) and appends them to the
-// system prompt — so saved facts persist across sessions without the
-// user having to repeat them.
+// On the next session start, instructions/loader.go reads every .md
+// file under that directory (and $XDG_DATA_HOME/enso/memory/) and
+// appends them to the system prompt — so saved facts persist across
+// sessions without the user having to repeat them.
 //
 // We deliberately keep the surface tiny: one tool, one scope (project).
 // Listing or deleting memories is a `read` / `bash rm` away.

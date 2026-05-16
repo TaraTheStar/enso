@@ -27,7 +27,7 @@ bash sandbox, mount the host root, etc. enso refuses to load an
 unfamiliar project config until the user explicitly trusts it.
 
 Trust is recorded as a SHA-256 of the file's contents in
-~/.enso/trust.json. If the file is later modified, enso will re-prompt.
+$XDG_STATE_HOME/enso/trust.json. If the file is later modified, enso will re-prompt.
 
   enso trust            # trust ./.enso/config.toml
   enso trust ../foo     # trust ../foo/.enso/config.toml

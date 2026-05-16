@@ -102,7 +102,7 @@ enso config init --wizard  # interactive: pick a provider preset, model, optiona
 enso config init --print   # dump the default to stdout
 enso config init --force   # overwrite an existing file
 enso config show           # list the search paths and which exist
-enso trust                 # trust ./.enso/config.toml (records sha256 in ~/.enso/trust.json)
+enso trust                 # trust ./.enso/config.toml (records sha256 in ~/.local/state/enso/trust.json)
 enso trust --list          # show every trusted entry
 enso trust --revoke        # forget the entry for ./.enso/config.toml
 ```
@@ -223,12 +223,17 @@ for the full story.
 
 ## Project instructions (`ENSO.md` / `AGENTS.md`)
 
-The system prompt is built from three tiers:
+The system prompt is built from layered files, **appended in order**:
 
 1. The default prompt embedded in the binary.
-2. `~/.enso/ENSO.md` (if present) — replaces the default.
+2. `~/.config/enso/ENSO.md` (if present) — appended.
 3. The closest `ENSO.md` walking up from the cwd — appended.
 4. The closest `AGENTS.md` walking up from the cwd — appended.
+
+Any of these files may carry `--- replace: true ---` frontmatter, which
+discards every earlier layer (e.g. a user `ENSO.md` that fully replaces
+the embedded default, or a project file pinning a team-shared canonical
+prompt). Run `/prompt` in the TUI to see the per-layer breakdown.
 
 ## TUI keybindings
 
@@ -282,7 +287,7 @@ in either mode.
 
 ## Sessions
 
-Sessions live in `~/.enso/enso.db` (SQLite, pure-Go via `modernc.org/sqlite`).
+Sessions live in `~/.local/share/enso/enso.db` (SQLite, pure-Go via `modernc.org/sqlite`).
 Every user message, assistant reply, and tool result is persisted before the UI
 sees it — kill the process mid-tool-call and the session resumes with the
 interrupted call surfaced as a synthetic tool result.
@@ -303,7 +308,7 @@ Headline features:
 - `enso stats [--days N]` for token / message / tool aggregates across sessions.
 - `enso fork <id>` to branch an existing session into a fresh one.
 - `--continue` / `--resume <id>` for picking up where you left off.
-- `--worktree` to spin up a fresh git worktree (`~/.enso/worktrees/<repo>-<rand>` on `enso/<rand>`) and run the session there.
+- `--worktree` to spin up a fresh git worktree (`~/.local/state/enso/worktrees/<repo>-<rand>` on `enso/<rand>`) and run the session there.
 - `--agent <name>` to pick a declarative profile (built-in `plan`, plus user / project agents).
 - Multiple `[providers.X]` blocks; `default_provider = "..."` picks the active one and `/model <name>` swaps it mid-session.
 - `[lsp.<name>]` config to surface `lsp_hover`/`lsp_definition`/`lsp_references`/`lsp_diagnostics` tools (any language server).
@@ -386,22 +391,22 @@ go install golang.org/x/tools/gopls@latest
 ```
 
 The first launch in any repo with a committed `.enso/config.toml`
-prompts to trust the file (one-time, recorded in `~/.enso/trust.json`).
+prompts to trust the file (one-time, recorded in `~/.local/state/enso/trust.json`).
 
 **Auto-memory** — call the `memory_save` tool to persist a fact across
 sessions. Files land at `<cwd>/.enso/memory/<slug>.md` (project) and are
 auto-loaded into the system prompt at the start of every future session.
-User-global memories at `~/.enso/memory/<slug>.md` work the same way;
+User-global memories at `~/.local/share/enso/memory/<slug>.md` work the same way;
 project files shadow user files on name collision. Save things that are
 *non-obvious and stable* — preferences, project facts, prior corrections
 ("don't mock the database in integration tests"), not in-progress work
 or anything already in code/git history. Inspect with
-`ls ~/.enso/memory/` or `ls .enso/memory/`; delete with `rm`.
+`ls ~/.local/share/enso/memory/` or `ls .enso/memory/`; delete with `rm`.
 
 **Agents** — declarative profiles select a different system-prompt
 appendix, tool restriction, and sampler for the session. Built-in:
 `plan` (read-only investigation; `bash`/`write`/`edit` removed). Drop a
-frontmatter-headed `~/.enso/agents/<name>.md` or
+frontmatter-headed `~/.config/enso/agents/<name>.md` or
 `./.enso/agents/<name>.md` to add your own; project shadows user, user
 shadows built-in. Frontmatter fields: `name`, `description`,
 `allowed-tools`, `denied-tools`, `temperature`, `top_p`, `top_k`,
@@ -412,20 +417,20 @@ with `/agents`. (Mid-session switching is not yet supported. Per-agent
 with `/model`, per workflow-role with the role's `model:` field, or
 per `spawn_agent` call with the tool's `model` arg.)
 
-**Skills** — drop a frontmatter-headed markdown file at `~/.enso/skills/<name>.md`
+**Skills** — drop a frontmatter-headed markdown file at `~/.config/enso/skills/<name>.md`
 or `./.enso/skills/<name>.md` and `/<name>` becomes a slash command that
 expands the body as the next user message. Frontmatter fields: `name`,
 `description`, `allowed-tools`, `model`. Body is a `text/template` with
 `{{ .Args }}`.
 
 **Workflows** — declarative agent pipelines in
-`~/.enso/workflows/<name>.md` (or project-local `./.enso/workflows/<name>.md`).
+`~/.config/enso/workflows/<name>.md` (or project-local `./.enso/workflows/<name>.md`).
 Frontmatter declares roles + edges; the body has one `## <role>` section per
 agent with a `text/template` prompt. Run via `/workflow <name> <args>` in the
 TUI or `enso run --workflow <name> "<args>"` from the CLI. See
 `examples/workflows/build-feature.md` for a planner→coder→reviewer pipeline.
 
-**Theme** — drop a `~/.enso/theme.toml` to override the default colour
+**Theme** — drop a `~/.config/enso/theme.toml` to override the default colour
 palette. Each entry is a hex `#rrggbb`, mapped onto the named colours
 the chat / overlay code uses (`yellow`, `teal`, `gray`, `red`, `green`,
 plus the accent names `mauve`, `lavender`, `comment`, `dust`, `sage`):
@@ -439,7 +444,7 @@ red    = "#ff6188"
 green  = "#a9dc76"
 ```
 
-A typo in this file logs a warning to `~/.enso/enso.log` and falls back
+A typo in this file logs a warning to `~/.local/state/enso/enso.log` and falls back
 to defaults; it never blocks the TUI.
 
 **Daemon mode** — POSIX-only (Linux/macOS/BSD; Windows users run via WSL).
@@ -451,7 +456,7 @@ managers are out of v1 scope. Use `enso run` or `enso tui` (in-process)
 when you need those tools.
 
 `enso daemon` runs a long-lived agent server on a unix
-socket at `~/.enso/daemon.sock`. Pass `--detach` to fork into the
+socket at `$XDG_RUNTIME_DIR/enso/daemon.sock`. Pass `--detach` to fork into the
 background and return immediately (the parent prints the child PID and
 the socket path; running `--detach` again while a daemon is up just says
 "daemon already running"). `enso run --detach "<prompt>"` submits a

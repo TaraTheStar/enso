@@ -67,9 +67,9 @@ func Run(opts Options) error {
 		return fmt.Errorf("get cwd: %w", err)
 	}
 
-	// Load the user's ~/.enso/theme.toml (if present) and rebuild the
-	// lipgloss styles from the merged palette before any rendering
-	// happens.
+	// Load the user's $XDG_CONFIG_HOME/enso/theme.toml (if present) and
+	// rebuild the lipgloss styles from the merged palette before any
+	// rendering happens.
 	loadAndApplyTheme()
 
 	cfg, err := config.Load(cwd, opts.Config)
@@ -77,9 +77,12 @@ func Run(opts Options) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	providers, err := llm.BuildProviders(cfg.Providers)
+	providers, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
+	}
+	for _, p := range providers {
+		p.IncludeProviders = cfg.Instructions.ProvidersIncluded()
 	}
 	defaultName, err := pickDefaultProvider(providers, cfg.DefaultProvider)
 	if err != nil {
@@ -322,10 +325,11 @@ func Run(opts Options) error {
 
 	registerBuiltins(slashReg, slashContext)
 
-	// Custom skills from ~/.enso/skills and ./.enso/skills. Each skill
-	// renders a templated prompt and (optionally) restricts the next
-	// turn to a subset of tools. The submitter applies the restriction
-	// before pushing the rendered text into inputCh.
+	// Custom skills from $XDG_CONFIG_HOME/enso/skills and
+	// ./.enso/skills. Each skill renders a templated prompt and
+	// (optionally) restricts the next turn to a subset of tools. The
+	// submitter applies the restriction before pushing the rendered
+	// text into inputCh.
 	skillSubmit := func(text string, allowedTools []string) {
 		agt.SetNextTurnTools(allowedTools)
 		go func() {

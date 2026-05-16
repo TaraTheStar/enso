@@ -56,7 +56,7 @@ full package map. Quick orientation:
   `panic` outside `cmd/enso/main.go`. Errors propagate up; the agent
   loop is the recovery point.
 - **Logging**: `log/slog` with structured fields. Default text
-  handler writing to `~/.enso/enso.log`. Stderr is never written
+  handler writing to `$XDG_STATE_HOME/enso/enso.log`. Stderr is never written
   from inside the TUI (it'd corrupt the screen).
 - **Concurrency**: prefer `context.Context` for cancellation. No naked
   goroutines without a way to stop them. Channels for events; mutexes

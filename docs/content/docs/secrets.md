@@ -1,6 +1,6 @@
 ---
 title: Secrets
-weight: 12
+weight: 13
 ---
 
 # Secrets
@@ -24,7 +24,7 @@ Any `$VAR` or `${VAR}` reference inside the fields above is
 expanded against the process environment, **but only for variables
 whose name starts with `ENSO_`**. A reference to anything else
 (e.g. `$AWS_SECRET_ACCESS_KEY`) collapses to the empty string and
-logs one `WARN` to `~/.enso/enso.log`.
+logs one `WARN` to `~/.local/state/enso/enso.log`.
 
 ```toml
 # ~/.config/enso/config.toml — committable; no actual secret in the file.

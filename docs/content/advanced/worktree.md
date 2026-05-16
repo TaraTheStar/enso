@@ -6,7 +6,7 @@ weight: 3
 # Worktree mode
 
 `--worktree` creates a fresh git worktree at
-`~/.enso/worktrees/<repo>-<rand>` on a new `enso/<rand>` branch off
+`~/.local/state/enso/worktrees/<repo>-<rand>` on a new `enso/<rand>` branch off
 your current HEAD, chdirs into it, and runs the session from there.
 The agent operates in the worktree; your main checkout stays
 untouched.
@@ -37,8 +37,8 @@ alongside any other top-level flag.
 ## What it actually does
 
 ```bash
-git worktree add -b enso/abc123 ~/.enso/worktrees/myrepo-abc123
-cd ~/.enso/worktrees/myrepo-abc123
+git worktree add -b enso/abc123 ~/.local/state/enso/worktrees/myrepo-abc123
+cd ~/.local/state/enso/worktrees/myrepo-abc123
 # enso runs from here
 ```
 
@@ -50,7 +50,7 @@ Cleanup is intentional — you might want to keep, merge, or further
 edit. To clean up:
 
 ```bash
-git worktree remove ~/.enso/worktrees/myrepo-abc123
+git worktree remove ~/.local/state/enso/worktrees/myrepo-abc123
 git branch -D enso/abc123
 # or, batch:
 git worktree prune        # removes worktrees whose dirs are gone
