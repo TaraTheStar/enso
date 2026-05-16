@@ -14,8 +14,8 @@ import (
 // styles are the Lipgloss styles the model and run.go use to render
 // the live region and the scrollback-bound message lines. They're
 // resolved from the shared theme palette (internal/ui/theme) so user
-// overrides in ~/.enso/theme.toml apply to bubble exactly as they do
-// to tview.
+// overrides in $XDG_CONFIG_HOME/enso/theme.toml apply to bubble exactly
+// as they do to tview.
 //
 // Initialised at run.go startup via newStyles. Tests use defaultStyles.
 var (
@@ -48,10 +48,10 @@ func init() {
 	applyStyles(theme.Default())
 }
 
-// loadAndApplyTheme reads ~/.enso/theme.toml (or the default path) and
-// re-applies the bubble package's lipgloss styles with the merged
-// palette. Errors loading the theme are logged but non-fatal — a typo
-// in theme.toml shouldn't block the TUI.
+// loadAndApplyTheme reads $XDG_CONFIG_HOME/enso/theme.toml (or the
+// default path) and re-applies the bubble package's lipgloss styles
+// with the merged palette. Errors loading the theme are logged but
+// non-fatal — a typo in theme.toml shouldn't block the TUI.
 func loadAndApplyTheme() {
 	pal := theme.Default()
 	if path, err := theme.DefaultPath(); err == nil {

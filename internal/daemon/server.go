@@ -27,34 +27,59 @@ import (
 	"github.com/TaraTheStar/enso/internal/hooks"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/mcp"
+	"github.com/TaraTheStar/enso/internal/paths"
 	"github.com/TaraTheStar/enso/internal/permissions"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
-// SocketPath returns the absolute path to the daemon's unix socket.
+// SocketPath returns the absolute path to the daemon's unix socket. The
+// parent dir ($XDG_RUNTIME_DIR/enso) is created on first call so callers
+// can bind/listen without separate mkdir plumbing.
 func SocketPath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := paths.RuntimeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".enso", SocketName), nil
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	_ = os.Chmod(dir, 0o700)
+	return filepath.Join(dir, SocketName), nil
 }
 
 // PIDPath returns the absolute path to the daemon's pid lock.
 func PIDPath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := paths.RuntimeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".enso", PIDFileName), nil
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	_ = os.Chmod(dir, 0o700)
+	return filepath.Join(dir, PIDFileName), nil
 }
 
 // Server runs the daemon: accepts connections, manages session goroutines,
 // fans bus events to subscribers.
 type Server struct {
-	cfg        *config.Config
-	provider   *llm.Provider
+	cfg *config.Config
+	// provider is the default provider — used for new-session metadata
+	// (model/name recorded on the session row).
+	provider *llm.Provider
+	// providers is the full configured set, built once at startup and
+	// handed to every session's agent.New. Because the daemon runs all
+	// hosted agent loops in-process, sharing this one map (and thus the
+	// one *llm.Pool per pool) is what makes pools coordinate across
+	// every daemon session / detached / attached client — no IPC: the
+	// shared pointer IS the coordination. Detached/attached clients are
+	// pure RPC front-ends that never run an agent, so they need nothing
+	// extra. (Separate daemon-less processes still don't coordinate —
+	// documented gap; run the daemon if you need cross-process pool
+	// limits.) May be nil in tests that construct Server directly;
+	// sessionProviders falls back to {provider}.
+	providers  map[string]*llm.Provider
 	registry   *tools.Registry
 	store      *session.Store
 	mcpMgr     *mcp.Manager
@@ -152,12 +177,19 @@ func Run(ctx context.Context, explicitConfig string) error {
 	defer listener.Close()
 	defer os.Remove(socketPath)
 
-	// The daemon resolves a single default provider at startup and
-	// uses it for every session it spawns. Per-session selection over
-	// the wire would need a protocol extension; not in scope today.
-	providers, err := llm.BuildProviders(cfg.Providers)
+	// Providers (and their pools) are built once here and shared by
+	// every session the daemon hosts — that shared *llm.Pool is what
+	// coordinates concurrency across all sessions (see Server.providers).
+	// Sessions still DEFAULT to `defaultName`; letting a client pick a
+	// different default per session over the wire would need a protocol
+	// extension and is out of scope, but sub-agents can already route
+	// across the full set via spawn_agent's `model:` arg.
+	providers, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
+	}
+	for _, p := range providers {
+		p.IncludeProviders = cfg.Instructions.ProvidersIncluded()
 	}
 	defaultName, err := pickDefaultProviderName(providers, cfg.DefaultProvider)
 	if err != nil {
@@ -191,6 +223,7 @@ func Run(ctx context.Context, explicitConfig string) error {
 	s := &Server{
 		cfg:          cfg,
 		provider:     provider,
+		providers:    providers,
 		registry:     registry,
 		store:        store,
 		mcpMgr:       mcpMgr,
@@ -349,6 +382,19 @@ func (s *Server) onListSessions(conn net.Conn) error {
 	return WriteMessage(conn, KindSessionList, SessionList{Sessions: out})
 }
 
+// sessionProviders returns the provider map handed to every session's
+// agent. It's the one map built at startup, so the *llm.Pool pointers
+// are shared across all daemon sessions — that pointer identity is the
+// entire cross-session pool-coordination mechanism (no IPC: the daemon
+// runs every hosted agent loop in-process). Falls back to a single-entry
+// map when only `provider` is set (Server constructed directly in tests).
+func (s *Server) sessionProviders() map[string]*llm.Provider {
+	if len(s.providers) > 0 {
+		return s.providers
+	}
+	return map[string]*llm.Provider{s.provider.Name: s.provider}
+}
+
 func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateSessionReq) error {
 	if req.Cwd == "" {
 		req.Cwd = "."
@@ -372,7 +418,7 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 	}
 
 	agt, err := agent.New(agent.Config{
-		Providers:          map[string]*llm.Provider{s.provider.Name: s.provider},
+		Providers:          s.sessionProviders(),
 		DefaultProvider:    s.provider.Name,
 		Bus:                busInst,
 		Registry:           s.registry,

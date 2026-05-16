@@ -27,7 +27,7 @@ the model touching anything.
 
 Drop a frontmatter-headed Markdown file at:
 
-- `~/.enso/agents/<name>.md` — user-global, shared across projects.
+- `~/.config/enso/agents/<name>.md` — user-global, shared across projects.
 - `<cwd>/.enso/agents/<name>.md` — project-scoped, committed or local.
 
 Project shadows user; user shadows built-in. So a project's

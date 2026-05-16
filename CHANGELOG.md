@@ -4,6 +4,57 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-05-09
+
+### Added
+- **Provider pools (`[pools.<name>]`).** Providers behind the same
+  endpoint now share one concurrency semaphore by default (one
+  llama-swap = one pool, zero config), fixing the shared-hardware
+  thrash where parallel calls to co-located models fought over a GPU.
+  Override grouping with a per-provider `pool = "<name>"` and tune a
+  pool with `[pools.<name>]` `concurrency` / `queue_timeout` (default
+  300s; a request waits this long for a slot before erroring). Waiters
+  are granted in FIFO order. Pools coordinate across **every session
+  hosted by one `enso daemon`** (and a standalone process's sub-agents);
+  separate daemon-less processes still don't coordinate — run the daemon
+  if you need that. A `swap_cost` hint plus pool membership
+  are surfaced to the model in the "## Available models" section so it
+  stops ping-ponging between co-located models. The reserved cloud-limit
+  keys `rpm` / `tpm` / `daily_budget` are parsed but not yet enforced
+  (they warn once if set). See the Pools doc.
+- **Auto-rendered "## Available models" prompt section.** When two or
+  more `[providers.*]` are configured, ensō injects a section into the
+  system prompt naming the model it's running as and listing the others
+  with an optional new per-provider `description` hint plus pool
+  membership and `swap-cost`, so the model can route work via
+  `spawn_agent`'s `model:` arg and avoid expensive same-pool swaps.
+  Slotted between the
+  embedded default and `ENSO.md`, so a `replace: true` ENSO.md discards
+  it too. Static for the session (a mid-session `/model` swap doesn't
+  rewrite it). Opt out with `[instructions] include_providers = false`.
+  See the Prompt layering doc.
+
+### Changed
+- **enso now follows the XDG Base Directory layout instead of `~/.enso`.**
+  User-editable files (`ENSO.md`, `agents/`, `skills/`, `workflows/`)
+  live under `$XDG_CONFIG_HOME/enso` (default `~/.config/enso`),
+  app-managed data (`enso.db`, `memory/`) under `$XDG_DATA_HOME/enso`
+  (default `~/.local/share/enso`), logs and `trust.json` under
+  `$XDG_STATE_HOME/enso` (default `~/.local/state/enso`), and the daemon
+  socket/pidfile under `$XDG_RUNTIME_DIR/enso`. Existing `~/.enso`
+  installs must be moved into the new dirs by hand (prompt, agents,
+  skills, workflows → config; `enso.db`, `memory/` → data; `trust.json`,
+  logs → state).
+- **Prompt layering is now append-by-default at every level.**
+  `~/.config/enso/ENSO.md` previously replaced the embedded default
+  system prompt entirely; it now appends to it, matching how project-
+  level `<cwd>/ENSO.md` and `<cwd>/AGENTS.md` have always behaved. To
+  restore the old replace semantics, add `--- replace: true ---`
+  frontmatter at the top of the file. The same frontmatter works on
+  project-level `ENSO.md` / `AGENTS.md` and discards every earlier
+  layer (useful for team-shared canonical prompts). See the Prompt
+  layering doc.
+
 ## [2.1.0] - 2026-05-09
 
 ### Changed

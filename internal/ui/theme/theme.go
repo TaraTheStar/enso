@@ -3,7 +3,7 @@
 // Package theme holds the framework-agnostic colour palette. It
 // produces RGB Colors and a name→Color map; the bubble backend
 // translates these into lipgloss.Color via Color.Hex(). User overrides
-// come from `~/.enso/theme.toml`.
+// come from `$XDG_CONFIG_HOME/enso/theme.toml`.
 package theme
 
 import (
@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/TaraTheStar/enso/internal/paths"
 )
 
 // Color is an RGB triple. Backends render via Hex().
@@ -37,7 +39,7 @@ type Palette map[string]Color
 // Design constraints: pastels at ~25–40% saturation, two distinct
 // purples (mauve = pinker, lavender = bluer/hero), warnings stay on
 // dust (never confused with types), errors are pastel-rose. User themes
-// (~/.enso/theme.toml) still win: this is just the baseline.
+// ($XDG_CONFIG_HOME/enso/theme.toml) still win: this is just the baseline.
 //
 // The palette includes the standard names (yellow/teal/red/gray/green)
 // alongside the accents (mauve/lavender/comment/dust/sage) so generic
@@ -100,13 +102,13 @@ func LoadFromFile(path string) (Palette, error) {
 	return out, nil
 }
 
-// DefaultPath returns ~/.enso/theme.toml.
+// DefaultPath returns $XDG_CONFIG_HOME/enso/theme.toml.
 func DefaultPath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := paths.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".enso", "theme.toml"), nil
+	return filepath.Join(dir, "theme.toml"), nil
 }
 
 // parseHex converts "#rrggbb" or "rrggbb" into a Color. Anything else

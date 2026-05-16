@@ -11,11 +11,24 @@ import (
 	"testing"
 )
 
+// setUserHome points HOME at dir and clears the XDG_* vars so user-scoped
+// config resolves under dir (see internal/paths). CI runners set
+// XDG_CONFIG_HOME, which otherwise takes precedence over HOME and makes
+// these fixtures invisible to the loaders.
+func setUserHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
+}
+
 func TestLoadSkills_BasicFrontmatter(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp) // ~/.enso/skills resolves under tmp
+	setUserHome(t, tmp) // ~/.config/enso/skills resolves under tmp
 
-	mustWriteSkill(t, filepath.Join(tmp, ".enso", "skills", "explain.md"), `---
+	mustWriteSkill(t, filepath.Join(tmp, ".config", "enso", "skills", "explain.md"), `---
 name: explain
 description: explain a file
 allowed-tools: [read, grep]
@@ -53,7 +66,7 @@ allowed-tools: [read]
 ---
 Explain {{ .Args }} like I'm a junior dev.
 `)
-	t.Setenv("HOME", tmp+"/empty-home") // no user skills
+	setUserHome(t, tmp+"/empty-home") // no user skills
 	skills, err := loadDir(tmp)
 	if err != nil {
 		t.Fatalf("loadDir: %v", err)
@@ -104,10 +117,10 @@ hi
 
 func TestLoadSkills_ProjectShadowsUser(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
+	setUserHome(t, tmp)
 
-	// User skill: ~/.enso/skills/explain.md → "user" body
-	mustWriteSkill(t, filepath.Join(tmp, ".enso", "skills", "explain.md"), `---
+	// User skill: ~/.config/enso/skills/explain.md → "user" body
+	mustWriteSkill(t, filepath.Join(tmp, ".config", "enso", "skills", "explain.md"), `---
 name: explain
 description: USER VERSION
 ---
@@ -156,7 +169,7 @@ hi
 
 func TestLoadSkills_MissingDirIsNotAnError(t *testing.T) {
 	tmp := t.TempDir()
-	t.Setenv("HOME", tmp+"/no-such-home")
+	setUserHome(t, tmp+"/no-such-home")
 	cwd := filepath.Join(tmp, "no-such-cwd")
 
 	skills, err := LoadSkills(cwd)

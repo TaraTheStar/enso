@@ -97,7 +97,54 @@ type Agent struct {
 	// added." Distinct from AgentContext.TurnCount, which resets per
 	// user message and counts inner-loop iterations.
 	userTurnCounter int
+
+	// providerCtx is the input to the auto-rendered "## Available
+	// models" prompt section, captured at New() so /prompt can show the
+	// same layered breakdown the agent was built with. nil when the
+	// section is suppressed (opt-out or <2 providers).
+	//
+	// Static for the session: the system prompt is built once into
+	// History[0] and sent verbatim (compaction preserves it), so a
+	// mid-session /model swap does NOT rewrite the "running as" line.
+	// Live-updating it would need a second prompt-construction path that
+	// drifts from New(), or in-band sentinel markers — both
+	// disproportionate to one cosmetic self-ID line. The provider *list*
+	// (the actual routing value) is always correct; only "running as"
+	// goes stale until next session. The clean fix, if ever needed, is
+	// architectural: regenerate the system message per turn.
+	providerCtx *instructions.ProviderContext
 }
+
+// providerContext builds the *instructions.ProviderContext for the
+// auto-rendered "## Available models" section. Returns nil when the
+// section is suppressed: fewer than two endpoints, or the user opted out
+// via [instructions] include_providers=false (the resolved flag is
+// mirrored onto every Provider, so sub-agents inherit it for free).
+func providerContext(providers map[string]*llm.Provider, active string) *instructions.ProviderContext {
+	if len(providers) < 2 {
+		return nil
+	}
+	if p, ok := providers[active]; ok && !p.IncludeProviders {
+		return nil
+	}
+	infos := make([]instructions.ProviderInfo, 0, len(providers))
+	for _, p := range providers {
+		infos = append(infos, instructions.ProviderInfo{
+			Name:          p.Name,
+			Model:         p.Model,
+			ContextWindow: p.ContextWindow,
+			Description:   p.Description,
+			Pool:          p.PoolName,
+			SwapCost:      p.PoolSwapCost,
+		})
+	}
+	return &instructions.ProviderContext{Active: active, Providers: infos}
+}
+
+// ProviderCtx returns the provider context the system prompt was built
+// with (nil when the auto-section is suppressed). Used by /prompt to
+// reproduce the exact layered breakdown.
+func (a *Agent) ProviderCtx() *instructions.ProviderContext { return a.providerCtx }
 
 // pickDefaultProvider validates `requested` against the providers map.
 // If `requested` is non-empty and missing, that's an error. If empty,
@@ -348,9 +395,11 @@ func New(cfg Config) (*Agent, error) {
 		globalAgents = &atomic.Int64{}
 	}
 
+	provCtx := providerContext(cfg.Providers, defaultName)
+
 	history := cfg.History
 	if len(history) == 0 {
-		systemPrompt, err := instructions.BuildSystemPrompt(cfg.Cwd)
+		systemPrompt, err := instructions.BuildSystemPrompt(cfg.Cwd, provCtx)
 		if err != nil {
 			return nil, fmt.Errorf("build system prompt: %w", err)
 		}
@@ -420,6 +469,7 @@ func New(cfg Config) (*Agent, error) {
 		Hooks:           cfg.Hooks,
 		pruneCfg:        pruneCfg,
 		toolMeta:        map[int]*toolMessageMeta{},
+		providerCtx:     provCtx,
 	}
 	a.refreshEstimate()
 	return a, nil
@@ -627,8 +677,8 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	// D2: log a per-turn prefix-size breakdown so the user (and
 	// /prune debugging) can see exactly how much each category is
 	// contributing to the total prompt. Goes through slog at debug
-	// level — lands in ~/.enso/debug.log when --debug is on, no-ops
-	// otherwise.
+	// level — lands in $XDG_STATE_HOME/enso/debug.log when --debug is
+	// on, no-ops otherwise.
 	if a.AgentCtx.Logger != nil {
 		bd := a.PrefixBreakdown()
 		a.AgentCtx.Logger.Debug("prefix breakdown",

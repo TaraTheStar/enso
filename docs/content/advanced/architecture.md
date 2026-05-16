@@ -56,7 +56,7 @@ internal/
   daemon/                        unix-socket server/client + protocol (POSIX)
   embed/                         //go:embed default_enso.md (system prompt)
   hooks/                         on_file_edit / on_session_end shell hooks
-  instructions/                  three-tier system prompt loader + auto-memory
+  instructions/                  layered system prompt loader (append/replace) + auto-memory
   llm/                           OpenAI-compatible streaming client
   lsp/                           LSP client (JSON-RPC + lifecycle + manager)
   mcp/                           MCP client + tools.Tool adapter
@@ -130,7 +130,7 @@ Honest "watch for it" items, not blockers:
   but new template variants surface as model output going to the
   wrong lane or HTTP 400 on the *next* turn ("Assistant message must
   contain either 'content' or 'tool_calls'!"). Check
-  `~/.enso/enso.log` first.
+  `~/.local/state/enso/enso.log` first.
 - **Workflow sibling parallelism** is goroutine-correct but not
   load-tested at large fan-outs. Three-role pipelines work; 10+
   siblings with shared output state under mutex are unexplored.

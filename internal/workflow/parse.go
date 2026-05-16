@@ -12,6 +12,8 @@ import (
 	"text/template"
 
 	"github.com/adrg/frontmatter"
+
+	"github.com/TaraTheStar/enso/internal/paths"
 )
 
 // Workflow is a parsed declarative agent workflow.
@@ -61,14 +63,14 @@ func LoadFile(path string) (*Workflow, error) {
 
 // LoadByName resolves a workflow by name. Search order:
 //  1. ./.enso/workflows/<name>.md (project)
-//  2. ~/.enso/workflows/<name>.md (user)
+//  2. $XDG_CONFIG_HOME/enso/workflows/<name>.md (user)
 func LoadByName(cwd, name string) (*Workflow, error) {
 	candidates := []string{}
 	if cwd != "" {
 		candidates = append(candidates, filepath.Join(cwd, ".enso", "workflows", name+".md"))
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		candidates = append(candidates, filepath.Join(home, ".enso", "workflows", name+".md"))
+	if dir, err := paths.ConfigDir(); err == nil {
+		candidates = append(candidates, filepath.Join(dir, "workflows", name+".md"))
 	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {

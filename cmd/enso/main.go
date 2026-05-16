@@ -18,15 +18,16 @@ import (
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/daemon"
 	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/paths"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 // initLogging routes slog away from stderr (which would corrupt the TUI) to
-// ~/.enso/enso.log. Level is INFO by default, DEBUG when --debug or
-// ENSO_DEBUG is set. When debug is on, also opens ~/.enso/debug.log for
-// raw SSE chunk dumps via llm.SetDebug.
+// $XDG_STATE_HOME/enso/enso.log. Level is INFO by default, DEBUG when
+// --debug or ENSO_DEBUG is set. When debug is on, also opens
+// $XDG_STATE_HOME/enso/debug.log for raw SSE chunk dumps via llm.SetDebug.
 func initLogging() {
 	envDebug := os.Getenv("ENSO_DEBUG")
 	envOn := envDebug != "" && envDebug != "0" && !strings.EqualFold(envDebug, "false")
@@ -38,12 +39,10 @@ func initLogging() {
 	}
 
 	var w io.Writer = io.Discard
-	if home, err := os.UserHomeDir(); err == nil {
-		dir := filepath.Join(home, ".enso")
-		// 0700: ~/.enso/ holds the daemon socket, session DB, trust
-		// store, and debug log. Restricting to owner is the primary
-		// defence against a same-host attacker connecting to the socket
-		// or reading session contents.
+	if dir, err := paths.StateDir(); err == nil {
+		// 0700: state dir holds logs that may contain prompt content.
+		// Restricting to owner is the primary defence against a
+		// same-host attacker reading session traces.
 		if err := os.MkdirAll(dir, 0o700); err == nil {
 			// MkdirAll won't tighten an existing dir; clamp on startup
 			// so installs pre-dating the 0700 tightening get upgraded.
@@ -58,8 +57,9 @@ func initLogging() {
 	if debugOn {
 		path := envDebug
 		if !envOn || envDebug == "1" || strings.EqualFold(envDebug, "true") {
-			home, _ := os.UserHomeDir()
-			path = filepath.Join(home, ".enso", "debug.log")
+			if dir, err := paths.StateDir(); err == nil {
+				path = filepath.Join(dir, "debug.log")
+			}
 		}
 		if err := llm.SetDebug(path); err != nil {
 			slog.Warn("debug log", "err", err)
@@ -237,18 +237,18 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagSession, "session", "", "resume the session with this id (default: new session)")
 	rootCmd.PersistentFlags().StringVar(&flagResume, "resume", "", "alias for --session: resume the session with this id")
 	rootCmd.PersistentFlags().BoolVar(&flagContinue, "continue", false, "resume the most recently updated session")
-	rootCmd.PersistentFlags().BoolVar(&flagEphemeral, "ephemeral", false, "do not persist this session to ~/.enso/enso.db")
+	rootCmd.PersistentFlags().BoolVar(&flagEphemeral, "ephemeral", false, "do not persist this session to $XDG_DATA_HOME/enso/enso.db")
 	rootCmd.PersistentFlags().IntVar(&flagMaxTurns, "max-turns", 0, "stop after this many tool/chat turns per user message (0 = default 50)")
 	rootCmd.PersistentFlags().StringVarP(&flagConfig, "config", "c", "", "additional config file to layer on top of /etc, user, and project defaults")
-	rootCmd.PersistentFlags().BoolVar(&flagDebug, "debug", false, "log raw SSE chunks and request bodies to ~/.enso/debug.log; bumps slog level to DEBUG")
-	rootCmd.PersistentFlags().StringVar(&flagAgent, "agent", "", "select a declarative agent profile by name (built-in: \"plan\"; user/project: ~/.enso/agents/<name>.md or ./.enso/agents/<name>.md)")
-	rootCmd.PersistentFlags().BoolVar(&flagWorktree, "worktree", false, "create a fresh git worktree at ~/.enso/worktrees/<repo>-<rand> on a new branch and run from there (requires git)")
+	rootCmd.PersistentFlags().BoolVar(&flagDebug, "debug", false, "log raw SSE chunks and request bodies to $XDG_STATE_HOME/enso/debug.log; bumps slog level to DEBUG")
+	rootCmd.PersistentFlags().StringVar(&flagAgent, "agent", "", "select a declarative agent profile by name (built-in: \"plan\"; user/project: $XDG_CONFIG_HOME/enso/agents/<name>.md or ./.enso/agents/<name>.md)")
+	rootCmd.PersistentFlags().BoolVar(&flagWorktree, "worktree", false, "create a fresh git worktree at $XDG_STATE_HOME/enso/worktrees/<repo>-<rand> on a new branch and run from there (requires git)")
 	rootCmd.PersistentFlags().BoolVar(&flagTrustProject, "trust-project", false, "skip the project-config trust prompt this run (also: ENSO_TRUST_PROJECT=1)")
-	runCmd.Flags().StringVar(&flagWorkflow, "workflow", "", "run a declarative workflow by name (looks in ./.enso/workflows/<name>.md and ~/.enso/workflows/<name>.md)")
+	runCmd.Flags().StringVar(&flagWorkflow, "workflow", "", "run a declarative workflow by name (looks in ./.enso/workflows/<name>.md and $XDG_CONFIG_HOME/enso/workflows/<name>.md)")
 	runCmd.Flags().StringVar(&flagProvider, "provider", "", "use this provider for this run (overrides default_provider; takes effect on resumes too)")
 	runCmd.Flags().BoolVar(&flagDetach, "detach", false, "submit the prompt to a running daemon and return the session id (requires `enso daemon` to be running)")
 	runCmd.Flags().StringVar(&flagFormat, "format", "text", "output format: text (default, human-readable) or json (newline-delimited bus events)")
-	daemonCmd.Flags().BoolVar(&flagDaemonDetach, "detach", false, "fork into the background and exit immediately; child writes to ~/.enso/enso.log")
+	daemonCmd.Flags().BoolVar(&flagDaemonDetach, "detach", false, "fork into the background and exit immediately; child writes to $XDG_STATE_HOME/enso/enso.log")
 	exportCmd.Flags().StringVarP(&flagExportOut, "out", "o", "", "write markdown to this path instead of stdout")
 	statsCmd.Flags().IntVar(&flagStatsDays, "days", 0, "only count sessions updated within the last N days (0 = all)")
 	sandboxCmd.AddCommand(sandboxListCmd, sandboxStopCmd, sandboxRmCmd, sandboxPruneCmd)

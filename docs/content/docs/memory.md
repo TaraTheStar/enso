@@ -1,6 +1,6 @@
 ---
 title: Memory
-weight: 7
+weight: 8
 ---
 
 # Auto-memory
@@ -17,7 +17,7 @@ Two things, working together:
    content; ensō writes a markdown file at
    `<cwd>/.enso/memory/<slug>.md`.
 2. **The instruction loader**. At session start, every `*.md` under
-   `~/.enso/memory/` (user) and `<cwd>/.enso/memory/` (project) is
+   `~/.local/share/enso/memory/` (user) and `<cwd>/.enso/memory/` (project) is
    concatenated and appended to the system prompt under a `## Auto-memory`
    header. Project files shadow user files on name collision.
 
@@ -74,7 +74,7 @@ matters at load time.
 ## Inspecting memories
 
 ```bash
-ls ~/.enso/memory/                   # user-global
+ls ~/.local/share/enso/memory/                   # user-global
 ls .enso/memory/                     # project
 cat .enso/memory/db-test-policy.md
 ```
@@ -91,7 +91,7 @@ Project memories (`<cwd>/.enso/memory/`) describe project-specific
 facts and travel with the repo if you commit them. They're the right
 place for "this project does X."
 
-User memories (`~/.enso/memory/`) describe you and travel across
+User memories (`~/.local/share/enso/memory/`) describe you and travel across
 projects. Right for "I'm a senior Go dev — frame frontend
 explanations in terms of Go analogues" or "I prefer terse output."
 
