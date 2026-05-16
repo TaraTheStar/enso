@@ -63,7 +63,7 @@ func TestExpandEnsoEnv_LiteralPassthrough(t *testing.T) {
 // only once (dedupe). Hard to assert log-output directly without
 // plumbing a custom slog handler, so just exercise the path and rely
 // on the dedupe map logic; if the dedupe regresses, the warning flood
-// would be visible in `~/.enso/enso.log` during real use.
+// would be visible in `~/.local/state/enso/enso.log` during real use.
 func TestExpandEnsoEnv_WarnDedupeDoesNotCrash(t *testing.T) {
 	for range 5 {
 		_ = ExpandEnsoEnv("$SOME_OTHER_VAR")

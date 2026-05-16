@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 
 	_ "modernc.org/sqlite"
+
+	"github.com/TaraTheStar/enso/internal/paths"
 )
 
 // Store wraps the SQLite database for sessions.
@@ -17,15 +19,15 @@ type Store struct {
 	Path string
 }
 
-// Open returns a Store backed by ~/.enso/enso.db (created if absent), with
-// migrations applied.
+// Open returns a Store backed by $XDG_DATA_HOME/enso/enso.db (created if
+// absent), with migrations applied.
 func Open() (*Store, error) {
-	dir, err := ensoDir()
+	dir, err := paths.DataDir()
 	if err != nil {
 		return nil, err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create enso dir: %w", err)
+		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 	// MkdirAll only sets mode on creation; clamp it on every Open so an
 	// install pre-dating the 0700 tightening gets upgraded.
@@ -58,13 +60,4 @@ func (s *Store) Close() error {
 		return nil
 	}
 	return s.DB.Close()
-}
-
-// ensoDir returns ~/.enso, creating it if needed.
-func ensoDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
-	}
-	return filepath.Join(home, ".enso"), nil
 }

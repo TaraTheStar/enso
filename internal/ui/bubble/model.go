@@ -155,7 +155,7 @@ type model struct {
 
 // Lipgloss styles live in styles.go and are resolved from the shared
 // theme palette (internal/ui/theme). run.go calls loadAndApplyTheme()
-// at startup so the user's ~/.enso/theme.toml overrides are picked up.
+// at startup so the user's $XDG_CONFIG_HOME/enso/theme.toml overrides are picked up.
 
 // Init runs once on program start. Nothing to schedule — bus events
 // arrive via forwardBus's program.Send.

@@ -304,7 +304,7 @@ func URIToPath(uri string) string {
 }
 
 // lspStderrTap forwards LSP stderr lines to slog so they end up in
-// ~/.enso/enso.log instead of corrupting the TUI on stderr.
+// $XDG_STATE_HOME/enso/enso.log instead of corrupting the TUI on stderr.
 type lspStderrTap struct {
 	name string
 	buf  []byte

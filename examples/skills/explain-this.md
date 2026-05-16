@@ -27,6 +27,6 @@ shape:
 Do not modify anything. If you can't find the target, say so plainly
 and ask the user to clarify rather than guessing.
 
-Save this skill at `~/.enso/skills/explain-this.md` (or
+Save this skill at `~/.config/enso/skills/explain-this.md` (or
 `<project>/.enso/skills/explain-this.md` for project-local) and invoke
 with `/explain-this <thing>` in the TUI.

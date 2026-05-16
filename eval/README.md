@@ -33,7 +33,7 @@ models, large reasoning is fine, large *visible* output usually isn't.
 make build
 go run ./eval/cmd/runner \
   --enso ./bin/enso \
-  --config ~/.enso/config.toml \
+  --config ~/.config/enso/config.toml \
   --models gemma4-31b,qwen3.6-27b,gemma4-26b-a4b,qwen3.6-35b-a3b \
   --output eval/results/run.csv
 ```
@@ -52,7 +52,7 @@ clear error rather than silently falling back.
 ### Isolation
 
 Each cell gets its own tempdir for `HOME` (so the spawned `enso run` writes
-its session DB into `<tempdir>/.enso/enso.db`, not yours) and its own
+its session DB into `<tempdir>/.local/share/enso/enso.db`, not yours) and its own
 working directory seeded from the task's `fixtures/`. On pass, both are
 deleted. On fail, both are kept and their paths logged so you can poke at
 what the model produced.

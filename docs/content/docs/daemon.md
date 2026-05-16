@@ -1,12 +1,12 @@
 ---
 title: Daemon
-weight: 11
+weight: 12
 ---
 
 # Daemon mode
 
 `enso daemon` runs a long-lived agent server on a unix socket
-(`~/.enso/daemon.sock`). `enso run --detach` submits a
+(`$XDG_RUNTIME_DIR/enso/daemon.sock`). `enso run --detach` submits a
 fire-and-forget prompt to it and exits with the new session id.
 `enso attach <id>` opens an interactive TUI driven by the live event
 stream.
@@ -34,7 +34,7 @@ enso daemon
 # …or detached:
 enso daemon --detach
 # → prints child PID and socket path; returns immediately.
-# → child writes to ~/.enso/enso.log.
+# → child writes to ~/.local/state/enso/enso.log.
 
 # Submit a prompt — yolo by default (no UI to prompt).
 session_id=$(enso run --detach "summarise README.md")
@@ -62,7 +62,7 @@ Only one daemon runs at a time. `enso daemon --detach` against an
 already-running daemon prints "daemon already running" and exits
 without starting a second.
 
-`~/.enso/daemon.pid` holds the running daemon's PID; it's cleaned up
+`$XDG_RUNTIME_DIR/enso/daemon.pid` holds the running daemon's PID; it's cleaned up
 on graceful exit. A stale PID file from a crashed daemon is detected
 and replaced.
 
@@ -82,16 +82,16 @@ the **Non-goals** section of `AGENTS.md` for the design context.
 
 ```bash
 # What's the daemon doing?
-tail -f ~/.enso/enso.log
+tail -f ~/.local/state/enso/enso.log
 
 # Is the socket reachable?
-ls -la ~/.enso/daemon.sock
+ls -la $XDG_RUNTIME_DIR/enso/daemon.sock
 # → srwxr-xr-x ...   (s = socket)
 
 # Kill a stuck daemon.
-cat ~/.enso/daemon.pid | xargs kill
-rm -f ~/.enso/daemon.{sock,pid}
+cat $XDG_RUNTIME_DIR/enso/daemon.pid | xargs kill
+rm -f $XDG_RUNTIME_DIR/enso/daemon.{sock,pid}
 ```
 
-The daemon's PID file and socket are both under `~/.enso/`. If you
+The daemon's PID file and socket are both under `$XDG_RUNTIME_DIR/enso/`. If you
 ever need to nuke and restart, those two files are everything.

@@ -60,9 +60,12 @@ func runOnce(promptArgs []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	providers, err := llm.BuildProviders(cfg.Providers)
+	providers, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
+	}
+	for _, p := range providers {
+		p.IncludeProviders = cfg.Instructions.ProvidersIncluded()
 	}
 	requested := cfg.DefaultProvider
 	if flagProvider != "" {
@@ -448,9 +451,12 @@ func runWorkflow(name string, argParts []string) error {
 		}
 		return fmt.Errorf("load config: %w", err)
 	}
-	wfProviders, err := llm.BuildProviders(cfg.Providers)
+	wfProviders, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
+	}
+	for _, p := range wfProviders {
+		p.IncludeProviders = cfg.Instructions.ProvidersIncluded()
 	}
 	wfDefault, err := pickDefaultProviderName(wfProviders, cfg.DefaultProvider)
 	if err != nil {

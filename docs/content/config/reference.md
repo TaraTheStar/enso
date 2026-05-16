@@ -54,6 +54,7 @@ duplicate the block with a different `model` field.
 [providers.local]
 endpoint        = "http://localhost:8080/v1"
 model           = "qwen3.6-35b-a3b"
+description     = "fast MoE, big context"   # optional capability hint
 context_window  = 32768
 concurrency     = 1
 api_key         = ""               # optional, sent as Bearer
@@ -70,10 +71,85 @@ presence_penalty = 1.5
 | ---------------- | --------------------------- | -------------------------------------------------------------------------- |
 | `endpoint`       | required                    | OpenAI-compatible base URL (e.g. `http://localhost:8080/v1`).              |
 | `model`          | required                    | Model id sent to the endpoint.                                             |
+| `description`    | `""`                        | Short capability hint. When ≥2 providers are configured it's rendered into the auto "## Available models" prompt section so the model can route across endpoints (see `[instructions]`). |
 | `context_window` | 32768                       | Used for compaction triggers and the status-bar tokens display.            |
-| `concurrency`    | 1                           | Max in-flight chat completions. Higher = parallel sub-agent calls.         |
+| `concurrency`    | 1                           | Max in-flight chat completions when this provider is alone in its pool. Ignored once it shares a pool — set `[pools.<name>].concurrency` instead. |
+| `pool`           | auto (by endpoint)          | Pool this provider belongs to. Unset = auto-grouped with every provider sharing its `endpoint`. See `[pools.<name>]`. |
 | `api_key`        | `""`                        | Sent as `Authorization: Bearer <key>` if non-empty. Supports `$ENSO_FOO` / `${ENSO_FOO}` env-var indirection — see [Secrets]({{< relref "../docs/secrets.md" >}}). |
 | `sampler.*`      | various                     | Sampler knobs. Sent in every completion request.                           |
+
+## `[instructions]`
+
+Tunes how the system prompt is assembled.
+
+```toml
+[instructions]
+include_providers = true   # default; set false to suppress the section
+```
+
+When **two or more** `[providers.*]` are configured, ensō injects an
+auto-rendered `## Available models` section into the system prompt
+(between the embedded default and your `ENSO.md`). It names the model
+the agent is running as and lists the others with their `description`,
+pool membership and `swap-cost`, so the model can delegate via
+`spawn_agent`'s `model:` arg (and avoid expensive same-pool swaps) or
+you can `/model <name>`. When two providers share a pool the section
+adds a one-line note that switching between pool-mates is costly. A
+`replace: true` ENSO.md discards it along with the
+default (see [prompt layering]({{< relref "../docs/prompt-layering.md" >}})).
+
+The section is **static for the session** — a mid-session `/model`
+swap does not rewrite the "running as" line; the provider list itself
+never changes. Single-provider configs never see the section. Set
+`include_providers = false` to suppress it everywhere (including
+sub-agents) — useful if the ~80 tokens/turn matters to you.
+
+| Field               | Default | Description                                                       |
+| ------------------- | ------- | ----------------------------------------------------------------- |
+| `include_providers` | `true`  | Auto "## Available models" section. `false` suppresses it entirely. Self-suppresses below 2 providers regardless. |
+
+## `[pools.<name>]`
+
+A pool bounds concurrency across **every provider assigned to it** —
+the shared-hardware unit (e.g. one llama-swap behind one GPU). By
+default providers are grouped by `endpoint` (one endpoint = one pool,
+zero config), so parallel calls to two models on the same llama-swap
+serialise instead of thrashing the GPU. Override grouping with a
+per-provider `pool = "<name>"`.
+
+```toml
+[providers.qwen-fast]
+endpoint = "http://latchkey:4000/v1"
+model    = "qwen3.6-27b"
+pool     = "latchkey-3090"   # explicit; otherwise auto-<host>-<port>
+
+[providers.qwen-deep]
+endpoint = "http://latchkey:4000/v1"
+model    = "minimax-m2.7"
+pool     = "latchkey-3090"   # shares one semaphore with qwen-fast
+
+[pools.latchkey-3090]
+concurrency   = 1            # one in-flight request across ALL members
+queue_timeout = "300s"       # wait this long for a slot, then error
+swap_cost     = "high"       # hint (rendered into the model prompt later)
+```
+
+| Field           | Default | Description                                                                 |
+| --------------- | ------- | --------------------------------------------------------------------------- |
+| `concurrency`   | 1       | Max in-flight requests across all members. A lone auto pool instead inherits its single provider's `concurrency`. |
+| `queue_timeout` | `300s`  | Go duration. A request blocked on a full pool errors after this; invalid/unset → 300s. Ctrl-C cancels sooner. |
+| `swap_cost`     | `""`    | Hint (`low`/`high`/…) shown next to the pool in the model's "## Available models" section, so it avoids costly same-pool model swaps. |
+| `rpm` / `tpm` / `daily_budget` | unset | **Reserved** for cloud rate-limit-aware scheduling. Parsed but not enforced; setting one logs a one-time warning. |
+
+Waiters are granted slots in FIFO arrival order. Coordination scope:
+**every session hosted by one `enso daemon` shares its pools** — all
+detached/attached sessions and their sub-agents contend on the same
+semaphores, because the daemon runs every agent loop in-process. Within
+a single standalone `enso` process the agent and its sub-agents also
+share pools. The remaining gap: two *separate* standalone processes
+(no daemon) on the same host don't coordinate and can thrash shared
+hardware — run `enso daemon` and attach if you need cross-process
+coordination.
 
 ## `[permissions]`
 
@@ -227,7 +303,7 @@ status_line = "{{.Mode}} | {{.Model}} | {{.TokensFmt}}"
 ```
 
 See [TUI]({{< relref "../docs/tui.md" >}}) and themes (drop a
-`~/.enso/theme.toml`).
+`~/.config/enso/theme.toml`).
 
 ## `[hooks]`
 
@@ -279,23 +355,29 @@ See [LSP]({{< relref "../docs/lsp.md" >}}) for examples per language.
 
 ## State directories
 
-| Path                                | Purpose                                                       |
-| ----------------------------------- | ------------------------------------------------------------- |
-| `~/.enso/enso.db`                   | SQLite session store.                                         |
-| `~/.enso/enso.log`                  | slog text output (info+).                                     |
-| `~/.enso/debug.log`                 | Raw SSE chunks and request bodies when `--debug`.             |
-| `~/.enso/daemon.sock` / `daemon.pid`| Daemon socket and PID file (POSIX only).                      |
-| `~/.enso/skills/`                   | User-defined slash commands.                                  |
-| `~/.enso/agents/`                   | User-defined agent profiles.                                  |
-| `~/.enso/workflows/`                | User-defined workflow pipelines.                              |
-| `~/.enso/memory/`                   | User-global auto-memory files.                                |
-| `~/.enso/worktrees/`                | Auto-created git worktrees from `--worktree`.                 |
-| `~/.enso/theme.toml`                | TUI palette overrides.                                        |
-| `<cwd>/.enso/config.toml`           | Project-committed config.                                     |
-| `<cwd>/.enso/config.local.toml`     | Project-local config (gitignored).                            |
-| `<cwd>/.enso/skills/`               | Project-scoped skills.                                        |
-| `<cwd>/.enso/agents/`               | Project-scoped agents.                                        |
-| `<cwd>/.enso/workflows/`            | Project-scoped workflows.                                     |
-| `<cwd>/.enso/memory/`               | Project-scoped memories. The `memory_save` tool writes here.  |
-| `<cwd>/.ensoignore`                 | First-class ignore file (gitignore-style).                    |
-| `<cwd>/ENSO.md` and `<cwd>/AGENTS.md` | Per-project system-prompt extensions, walked up from cwd.   |
+ensō follows the XDG Base Directory layout. Each helper honours the
+matching `XDG_*` env var first and falls back to the path shown.
+
+| Path                                                 | Purpose                                                       |
+| ---------------------------------------------------- | ------------------------------------------------------------- |
+| `~/.config/enso/config.toml`                         | User config (see search-path order above).                    |
+| `~/.config/enso/ENSO.md`                             | User-wide system-prompt layer (appended; `replace: true` to override). |
+| `~/.config/enso/theme.toml`                          | TUI palette overrides.                                        |
+| `~/.config/enso/skills/`                             | User-defined slash commands.                                  |
+| `~/.config/enso/agents/`                             | User-defined agent profiles.                                  |
+| `~/.config/enso/workflows/`                          | User-defined workflow pipelines.                              |
+| `~/.local/share/enso/enso.db`                        | SQLite session store.                                         |
+| `~/.local/share/enso/memory/`                        | User-global auto-memory files.                                |
+| `~/.local/state/enso/enso.log`                       | slog text output (info+).                                     |
+| `~/.local/state/enso/debug.log`                      | Raw SSE chunks and request bodies when `--debug`.             |
+| `~/.local/state/enso/trust.json`                     | Trust-store hashes for project `.enso/config.toml`.           |
+| `~/.local/state/enso/worktrees/`                     | Auto-created git worktrees from `--worktree`.                 |
+| `$XDG_RUNTIME_DIR/enso/daemon.sock` / `daemon.pid`   | Daemon socket and PID file (POSIX only).                      |
+| `<cwd>/.enso/config.toml`                            | Project-committed config.                                     |
+| `<cwd>/.enso/config.local.toml`                      | Project-local config (gitignored).                            |
+| `<cwd>/.enso/skills/`                                | Project-scoped skills.                                        |
+| `<cwd>/.enso/agents/`                                | Project-scoped agents.                                        |
+| `<cwd>/.enso/workflows/`                             | Project-scoped workflows.                                     |
+| `<cwd>/.enso/memory/`                                | Project-scoped memories. The `memory_save` tool writes here.  |
+| `<cwd>/.ensoignore`                                  | First-class ignore file (gitignore-style).                    |
+| `<cwd>/ENSO.md` and `<cwd>/AGENTS.md`                | Per-project system-prompt extensions, walked up from cwd.     |

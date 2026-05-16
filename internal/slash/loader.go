@@ -12,6 +12,8 @@ import (
 	"text/template"
 
 	"github.com/adrg/frontmatter"
+
+	"github.com/TaraTheStar/enso/internal/paths"
 )
 
 // Skill is a user-defined slash command loaded from disk. Frontmatter fields
@@ -64,14 +66,13 @@ func (s *Skill) SetSubmitter(submit func(text string, allowedTools []string)) *S
 	return s
 }
 
-// LoadSkills scans the user dir (`~/.enso/skills`) and the project dir
-// (`./.enso/skills`) for `*.md` files and returns parsed Skill values.
-// Project skills shadow user skills on name collision.
+// LoadSkills scans the user dir (`$XDG_CONFIG_HOME/enso/skills`) and the
+// project dir (`./.enso/skills`) for `*.md` files and returns parsed Skill
+// values. Project skills shadow user skills on name collision.
 func LoadSkills(projectCwd string) ([]*Skill, error) {
-	home, _ := os.UserHomeDir()
 	dirs := []string{}
-	if home != "" {
-		dirs = append(dirs, filepath.Join(home, ".enso", "skills"))
+	if dir, err := paths.ConfigDir(); err == nil {
+		dirs = append(dirs, filepath.Join(dir, "skills"))
 	}
 	if projectCwd != "" {
 		dirs = append(dirs, filepath.Join(projectCwd, ".enso", "skills"))

@@ -1,6 +1,6 @@
 ---
 title: Workflows
-weight: 9
+weight: 10
 ---
 
 # Workflows
@@ -13,7 +13,7 @@ critiques the result.
 
 ## File format
 
-`~/.enso/workflows/<name>.md` (user) or `<cwd>/.enso/workflows/<name>.md`
+`~/.config/enso/workflows/<name>.md` (user) or `<cwd>/.enso/workflows/<name>.md`
 (project), frontmatter + body. One `## <role>` section per agent.
 
 ```markdown

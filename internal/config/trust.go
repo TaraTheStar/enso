@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/TaraTheStar/enso/internal/paths"
 )
 
 // Trust gates loading of project-tier config files. The threat model is
@@ -43,13 +45,13 @@ type trustStore struct {
 
 const trustVersion = 1
 
-// trustStorePath returns ~/.enso/trust.json.
+// trustStorePath returns $XDG_STATE_HOME/enso/trust.json.
 func trustStorePath() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := paths.StateDir()
 	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".enso", "trust.json"), nil
+	return filepath.Join(dir, "trust.json"), nil
 }
 
 func loadTrustStore() (*trustStore, error) {

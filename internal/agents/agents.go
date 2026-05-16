@@ -8,7 +8,7 @@
 // Specs come from two places:
 //
 //  1. Built-ins compiled into the binary (currently `default` and `plan`).
-//  2. Markdown files at `~/.enso/agents/<name>.md` (user) and
+//  2. Markdown files at `$XDG_CONFIG_HOME/enso/agents/<name>.md` (user) and
 //     `<cwd>/.enso/agents/<name>.md` (project). Project shadows user; user
 //     shadows built-in on name collision.
 //
@@ -24,6 +24,8 @@ import (
 	"strings"
 
 	"github.com/adrg/frontmatter"
+
+	"github.com/TaraTheStar/enso/internal/paths"
 )
 
 // Spec is a declarative agent profile. Zero values mean "leave the host's
@@ -92,10 +94,9 @@ func LoadAll(projectCwd string) ([]*Spec, error) {
 		byName[b.Name] = b
 	}
 
-	home, _ := os.UserHomeDir()
 	dirs := []string{}
-	if home != "" {
-		dirs = append(dirs, filepath.Join(home, ".enso", "agents"))
+	if dir, err := paths.ConfigDir(); err == nil {
+		dirs = append(dirs, filepath.Join(dir, "agents"))
 	}
 	if projectCwd != "" {
 		dirs = append(dirs, filepath.Join(projectCwd, ".enso", "agents"))

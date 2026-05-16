@@ -41,7 +41,7 @@ If you've configured a different backend, point your config there. See
 ```
 
 The first time ensō runs, it writes a default config to
-`~/.config/enso/config.toml` and creates `~/.enso/enso.db` for session
+`~/.config/enso/config.toml` and creates `~/.local/share/enso/enso.db` for session
 storage. The TUI boots, talks to your model, and you can start typing.
 
 Try something simple:
