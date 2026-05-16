@@ -12,6 +12,19 @@ import (
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
+// setUserHome points HOME at dir and clears the XDG_* vars so user-scoped
+// config resolves under dir (see internal/paths). CI runners set
+// XDG_CONFIG_HOME, which otherwise takes precedence over HOME and makes
+// these fixtures invisible to the loaders.
+func setUserHome(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("HOME", dir)
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("XDG_STATE_HOME", "")
+	t.Setenv("XDG_RUNTIME_DIR", "")
+}
+
 func TestBuiltinPlanAgent(t *testing.T) {
 	specs := Builtins()
 	var plan *Spec
@@ -41,9 +54,9 @@ func TestBuiltinPlanAgent(t *testing.T) {
 func TestLoadAllProjectShadowsUser(t *testing.T) {
 	// Two file dirs: a fake "user" dir under HOME, and a project dir.
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	setUserHome(t, home)
 
-	userDir := filepath.Join(home, ".enso", "agents")
+	userDir := filepath.Join(home, ".config", "enso", "agents")
 	if err := os.MkdirAll(userDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -10,15 +10,18 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/TaraTheStar/enso/internal/paths"
 )
 
 // setupWorktree creates a fresh git worktree and chdirs into it. Called
 // from PersistentPreRunE when --worktree is set, so every subsequent
 // step (config load, session creation, agent setup) sees the new cwd.
 //
-// The worktree path is `~/.enso/worktrees/<repo-basename>-<rand>` and
-// the branch name is `enso/<rand>` rooted at the current HEAD. Errors
-// out if the cwd isn't inside a git repo.
+// The worktree path is
+// `$XDG_STATE_HOME/enso/worktrees/<repo-basename>-<rand>` and the branch
+// name is `enso/<rand>` rooted at the current HEAD. Errors out if the
+// cwd isn't inside a git repo.
 //
 // Cleanup is intentionally NOT automated. The user runs
 // `git worktree remove <path>` (or `git worktree prune`) when done. This
@@ -70,15 +73,15 @@ func findGitRoot(start string) (string, error) {
 	}
 }
 
-// worktreeRootDir picks `~/.enso/worktrees/<repo>-<short>` and ensures
-// the parent directory exists. The path itself must NOT exist when
-// `git worktree add` is called.
+// worktreeRootDir picks `$XDG_STATE_HOME/enso/worktrees/<repo>-<short>`
+// and ensures the parent directory exists. The path itself must NOT
+// exist when `git worktree add` is called.
 func worktreeRootDir(repoRoot, short string) (string, error) {
-	home, err := os.UserHomeDir()
+	state, err := paths.StateDir()
 	if err != nil {
-		return "", fmt.Errorf("worktree: home: %w", err)
+		return "", fmt.Errorf("worktree: state dir: %w", err)
 	}
-	parent := filepath.Join(home, ".enso", "worktrees")
+	parent := filepath.Join(state, "worktrees")
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return "", fmt.Errorf("worktree: mkdir %s: %w", parent, err)
 	}

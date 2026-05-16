@@ -5,10 +5,17 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"sync"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/TaraTheStar/enso/internal/paths"
 )
 
 // Config is the top-level configuration structure.
@@ -19,18 +26,232 @@ type Config struct {
 	// [providers.X] section in the file (TOML scoping).
 	DefaultProvider string `toml:"default_provider"`
 
-	Providers   map[string]ProviderConfig `toml:"providers"`
-	MCP         map[string]MCPConfig      `toml:"mcp"`
-	Permissions PermConfig                `toml:"permissions"`
-	UI          UIConfig                  `toml:"ui"`
-	Git         GitConfig                 `toml:"git"`
-	LSP         map[string]LSPConfig      `toml:"lsp"`
-	Bash        BashConfig                `toml:"bash"`
-	Hooks       HooksConfig               `toml:"hooks"`
-	WebFetch    WebFetchConfig            `toml:"web_fetch"`
-	Search      SearchConfig              `toml:"search"`
-	Daemon      DaemonConfig              `toml:"daemon"`
-	Context     ContextPruneConfig        `toml:"context_prune"`
+	Providers    map[string]ProviderConfig `toml:"providers"`
+	MCP          map[string]MCPConfig      `toml:"mcp"`
+	Permissions  PermConfig                `toml:"permissions"`
+	UI           UIConfig                  `toml:"ui"`
+	Git          GitConfig                 `toml:"git"`
+	LSP          map[string]LSPConfig      `toml:"lsp"`
+	Bash         BashConfig                `toml:"bash"`
+	Hooks        HooksConfig               `toml:"hooks"`
+	WebFetch     WebFetchConfig            `toml:"web_fetch"`
+	Search       SearchConfig              `toml:"search"`
+	Daemon       DaemonConfig              `toml:"daemon"`
+	Context      ContextPruneConfig        `toml:"context_prune"`
+	Instructions InstructionsConfig        `toml:"instructions"`
+	Pools        map[string]PoolConfig     `toml:"pools"`
+}
+
+// PoolConfig is a [pools.<name>] block: a shared-hardware / rate
+// constraint applied across every provider assigned to it. A pool is a
+// set of providers sharing a constraint (e.g. one llama-swap behind one
+// GPU); each provider belongs to exactly one pool and limits apply
+// pool-wide. See ResolvePools for assignment.
+type PoolConfig struct {
+	// Concurrency is the max in-flight requests across ALL members.
+	// < 1 resolves to 1.
+	Concurrency int `toml:"concurrency"`
+	// QueueTimeout is how long a request waits for a slot before
+	// erroring (Go duration string, e.g. "300s"). Empty/invalid →
+	// DefaultQueueTimeout.
+	QueueTimeout string `toml:"queue_timeout"`
+	// SwapCost ("low"/"high"/...) is a hint surfaced to the model in
+	// the auto "## Available models" section (step 5). Parsed now;
+	// not yet rendered.
+	SwapCost string `toml:"swap_cost"`
+
+	// RPM, TPM, DailyBudget are reserved for cloud rate-limit aware
+	// scheduling. Parsed so setting them isn't a config error, but NOT
+	// enforced in v1 — a one-time warning fires if set (see
+	// warnPoolReservedOnce). Reserving the keys now avoids a config
+	// migration when enforcement lands.
+	RPM         int     `toml:"rpm"`
+	TPM         int     `toml:"tpm"`
+	DailyBudget float64 `toml:"daily_budget"`
+}
+
+// DefaultQueueTimeout is the per-pool wait budget when [pools.X]
+// queue_timeout is unset. 300s comfortably covers a local GPU model
+// swap plus a cold cloud call without hanging the agent forever on a
+// permanently stuck backend.
+const DefaultQueueTimeout = 300 * time.Second
+
+// ResolvedPool is the post-defaulting shape llm.BuildProviders consumes
+// to construct one shared *llm.Pool per pool.
+type ResolvedPool struct {
+	Name         string
+	Concurrency  int
+	QueueTimeout time.Duration
+	// SwapCost is the [pools.X] swap_cost hint, "" for auto pools or
+	// when unset. Surfaced to the model in the "## Available models"
+	// section so it learns swap-cost intuition for routing.
+	SwapCost string
+}
+
+// PoolResolution is the output of ResolvePools: which pool each
+// provider belongs to, plus the resolved settings per pool.
+type PoolResolution struct {
+	// Assignment maps provider name → pool name.
+	Assignment map[string]string
+	// Pools maps pool name → resolved settings.
+	Pools map[string]ResolvedPool
+}
+
+var (
+	warnedPoolMu  sync.Mutex
+	warnedPoolKey = map[string]struct{}{}
+)
+
+// warnPoolReservedOnce logs (once per pool+key, process-wide) that a
+// reserved cloud-limit key is parsed but not enforced. Mirrors
+// warnEnvOnce so the 3 entry points + sub-agent rebuilds don't spam.
+func warnPoolReservedOnce(pool, key string) {
+	id := pool + "/" + key
+	warnedPoolMu.Lock()
+	_, seen := warnedPoolKey[id]
+	if !seen {
+		warnedPoolKey[id] = struct{}{}
+	}
+	warnedPoolMu.Unlock()
+	if seen {
+		return
+	}
+	slog.Warn("config: [pools] reserved key parsed but not enforced in v1",
+		"pool", pool, "key", key)
+}
+
+// ResolvePools performs the hybrid pool assignment:
+//
+//   - A provider with `pool = "X"` joins pool X (explicit override).
+//   - Otherwise it auto-groups with every provider sharing its
+//     endpoint, under a derived name `auto-<host>-<port>` (one
+//     llama-swap = one pool, zero config). An unparseable endpoint
+//     falls back to a per-provider pool so it can't accidentally share.
+//
+// Hybrid because it handles both the common case (one llama-swap = one
+// pool, no config) and the edge case (a LiteLLM-style gateway fans one
+// endpoint out to several real backends — the user overrides per
+// provider with `pool =`). Caller-invoked (not done inside Load),
+// mirroring Context.Resolve(): the config struct stays a plain decode
+// target and the derived shape is computed on demand.
+//
+// A pool with exactly one member inherits that provider's
+// `concurrency` (preserves pre-pools behaviour for distinct-endpoint
+// setups); a multi-member auto pool defaults to concurrency 1
+// (serialise shared hardware). A matching [pools.X] block then
+// overrides each setting it actually specifies — a block that tunes
+// only queue_timeout leaves the inherited concurrency intact. Reserved
+// rpm/tpm/daily_budget keys warn once. Deterministic regardless of map
+// iteration order.
+func (c *Config) ResolvePools() PoolResolution {
+	res := PoolResolution{
+		Assignment: map[string]string{},
+		Pools:      map[string]ResolvedPool{},
+	}
+
+	names := make([]string, 0, len(c.Providers))
+	for n := range c.Providers {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	members := map[string][]string{} // pool name → provider names
+	for _, n := range names {
+		pc := c.Providers[n]
+		poolName := pc.Pool
+		if poolName == "" {
+			poolName = autoPoolName(pc.Endpoint, n)
+		}
+		res.Assignment[n] = poolName
+		members[poolName] = append(members[poolName], n)
+	}
+
+	poolNames := make([]string, 0, len(members))
+	for p := range members {
+		poolNames = append(poolNames, p)
+	}
+	sort.Strings(poolNames)
+
+	for _, p := range poolNames {
+		rp := ResolvedPool{Name: p, Concurrency: 1, QueueTimeout: DefaultQueueTimeout}
+		// Baseline: a pool with exactly one member inherits that
+		// provider's own `concurrency` (preserves pre-pools behaviour
+		// for distinct-endpoint setups). This is computed BEFORE the
+		// [pools.X] block so a block that tunes only e.g. queue_timeout
+		// doesn't silently clamp a lone provider's concurrency to 1 —
+		// the block overrides concurrency only when it sets it (>= 1).
+		if len(members[p]) == 1 {
+			if mc := c.Providers[members[p][0]].Concurrency; mc >= 1 {
+				rp.Concurrency = mc
+			}
+		}
+		if pcfg, ok := c.Pools[p]; ok {
+			if pcfg.Concurrency >= 1 {
+				rp.Concurrency = pcfg.Concurrency
+			}
+			if d, err := time.ParseDuration(pcfg.QueueTimeout); pcfg.QueueTimeout != "" && err == nil && d > 0 {
+				rp.QueueTimeout = d
+			}
+			rp.SwapCost = pcfg.SwapCost
+			if pcfg.RPM != 0 {
+				warnPoolReservedOnce(p, "rpm")
+			}
+			if pcfg.TPM != 0 {
+				warnPoolReservedOnce(p, "tpm")
+			}
+			if pcfg.DailyBudget != 0 {
+				warnPoolReservedOnce(p, "daily_budget")
+			}
+		}
+		res.Pools[p] = rp
+	}
+	return res
+}
+
+// autoPoolName derives `auto-<host>-<port>` from a provider endpoint so
+// providers behind the same llama-swap/Ollama share a pool with zero
+// config. Scheme-less endpoints like "localhost:8080" parse with an
+// empty Host (the host lands in Scheme), so we retry them as a network
+// reference ("//host:port") — otherwise two providers on the same
+// scheme-less endpoint would each get their own pool. Falls back to a
+// provider-unique name when the endpoint still can't be parsed
+// (defensive: never silently co-pool unrelated endpoints).
+func autoPoolName(endpoint, provider string) string {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "auto-" + provider
+	}
+	if u.Host == "" {
+		if u2, err2 := url.Parse("//" + endpoint); err2 == nil && u2.Host != "" {
+			u = u2
+		}
+	}
+	if u.Host == "" {
+		return "auto-" + provider
+	}
+	host := u.Hostname()
+	port := u.Port()
+	if port == "" {
+		return "auto-" + host
+	}
+	return "auto-" + host + "-" + port
+}
+
+// InstructionsConfig tunes how the system prompt is assembled.
+type InstructionsConfig struct {
+	// IncludeProviders controls the auto-rendered "## Available models"
+	// section. nil/unset = on whenever ≥2 providers are configured;
+	// an explicit `include_providers = false` suppresses it everywhere
+	// (including sub-agents). Pointer so "unset" is distinguishable
+	// from a deliberate opt-out.
+	IncludeProviders *bool `toml:"include_providers"`
+}
+
+// ProvidersIncluded resolves the include_providers tri-state: unset
+// means on (the auto-section still self-suppresses below 2 providers);
+// only an explicit `false` turns it off.
+func (ic InstructionsConfig) ProvidersIncluded() bool {
+	return ic.IncludeProviders == nil || *ic.IncludeProviders
 }
 
 // ContextPruneConfig controls how aggressively old tool-result
@@ -235,12 +456,20 @@ type HooksConfig struct {
 
 // ProviderConfig holds settings for a single LLM endpoint.
 type ProviderConfig struct {
-	Endpoint      string        `toml:"endpoint"`
-	Model         string        `toml:"model"`
-	ContextWindow int           `toml:"context_window"`
-	Concurrency   int           `toml:"concurrency"`
-	APIKey        string        `toml:"api_key"`
-	Sampler       SamplerConfig `toml:"sampler"`
+	Endpoint string `toml:"endpoint"`
+	Model    string `toml:"model"`
+	// Description is a short capability hint ("deep reasoning, hard
+	// SWE") surfaced in the auto-rendered "## Available models" prompt
+	// section so the model can route across endpoints. Optional.
+	Description   string `toml:"description"`
+	ContextWindow int    `toml:"context_window"`
+	Concurrency   int    `toml:"concurrency"`
+	// Pool overrides which [pools.X] this provider belongs to. Empty =
+	// auto-grouped with every other provider sharing its Endpoint
+	// (one llama-swap = one pool, zero config). See ResolvePools.
+	Pool    string        `toml:"pool"`
+	APIKey  string        `toml:"api_key"`
+	Sampler SamplerConfig `toml:"sampler"`
 
 	// InputPricePerMillion and OutputPricePerMillion are dollars per
 	// 1M tokens for the cumulative-spend line in the sidebar. Both
@@ -567,14 +796,11 @@ func RemoveRule(path, kind, pattern string) (bool, error) {
 // UserConfigPath returns $XDG_CONFIG_HOME/enso/config.toml, falling back to
 // ~/.config/enso/config.toml.
 func UserConfigPath() (string, error) {
-	if dir := os.Getenv("XDG_CONFIG_HOME"); dir != "" {
-		return filepath.Join(dir, "enso", "config.toml"), nil
-	}
-	home, err := os.UserHomeDir()
+	dir, err := paths.ConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("get home dir: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".config", "enso", "config.toml"), nil
+	return filepath.Join(dir, "config.toml"), nil
 }
 
 // DefaultTOML returns the embedded default config as a string. Used by

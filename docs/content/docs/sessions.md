@@ -5,7 +5,7 @@ weight: 2
 
 # Sessions
 
-Every conversation is a *session* — a row in `~/.enso/enso.db` with
+Every conversation is a *session* — a row in `~/.local/share/enso/enso.db` with
 its messages, tool calls, and bus events. Sessions persist
 automatically (use `--ephemeral` to skip), survive crashes, and can be
 resumed, branched, or exported.
@@ -89,7 +89,7 @@ there:
 enso --worktree
 ```
 
-Creates `~/.enso/worktrees/<repo>-<rand>` on a fresh `enso/<rand>`
+Creates `~/.local/state/enso/worktrees/<repo>-<rand>` on a fresh `enso/<rand>`
 branch off your current HEAD, chdirs into it, and runs from there.
 Useful with subagents (run several in parallel without stepping on
 each other) or when you want a sacrificial branch for an
@@ -110,7 +110,7 @@ enso attach "$session_id"                  # later: tail it interactively
 ```
 
 The daemon runs as a separate process with a unix socket at
-`~/.enso/daemon.sock`. `attach` is a TUI variant that reads events
+`$XDG_RUNTIME_DIR/enso/daemon.sock`. `attach` is a TUI variant that reads events
 from the socket and proxies user input + permission decisions back. If
 no client is attached when a permission prompt fires, the daemon
 auto-denies after 60s.

@@ -1,6 +1,6 @@
 ---
 title: MCP servers
-weight: 10
+weight: 11
 ---
 
 # MCP servers

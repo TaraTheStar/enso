@@ -17,6 +17,7 @@ import (
 	"github.com/TaraTheStar/enso/internal/agents"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/internal/instructions"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/mcp"
 	"github.com/TaraTheStar/enso/internal/permissions"
@@ -59,7 +60,125 @@ func registerBuiltins(reg *slash.Registry, sc *slashCtx) {
 	reg.Register(&costCmd{sc: sc})
 	reg.Register(&transcriptCmd{sc: sc})
 	reg.Register(&contextCmd{sc: sc})
+	reg.Register(&promptCmd{sc: sc})
 	reg.Register(&pruneCmd{sc: sc})
+}
+
+// /prompt — show the per-layer breakdown of the assembled system prompt.
+//
+// The prompt is composed from layered files (default → user ENSO.md →
+// project ENSO.md → project AGENTS.md → memories), each of which can
+// carry `--- replace: true ---` frontmatter to discard everything
+// earlier. Without /prompt, a misconfigured frontmatter is hard to
+// debug because the model sees the result, not the breakdown.
+//
+// Usage:
+//   /prompt          summary with the first ~10 lines of each layer
+//   /prompt --full   every layer's full body
+
+type promptCmd struct{ sc *slashCtx }
+
+func (c *promptCmd) Name() string { return "prompt" }
+func (c *promptCmd) Description() string {
+	return "show the per-layer breakdown of the assembled system prompt (--full for full bodies)"
+}
+func (c *promptCmd) Run(ctx context.Context, args string) error {
+	full := false
+	switch strings.TrimSpace(args) {
+	case "":
+	case "--full", "full":
+		full = true
+	default:
+		c.sc.printf("prompt: usage /prompt [--full]")
+		return nil
+	}
+
+	var pc *instructions.ProviderContext
+	if c.sc.agt != nil {
+		pc = c.sc.agt.ProviderCtx()
+	}
+	layers, err := instructions.BuildSystemPromptLayered(c.sc.cwd, pc)
+	if err != nil {
+		c.sc.printf("prompt: %v", err)
+		return nil
+	}
+
+	totalChars := 0
+	for _, l := range layers {
+		if l.Discarded {
+			continue
+		}
+		totalChars += len(l.Body)
+	}
+
+	for i, l := range layers {
+		badges := []string{}
+		if l.Replace {
+			badges = append(badges, "REPLACE")
+		}
+		if l.Discarded {
+			if cause := discardedBy(layers, i); cause != "" {
+				badges = append(badges, fmt.Sprintf("discarded by %s", cause))
+			} else {
+				badges = append(badges, "discarded")
+			}
+		}
+		badgeStr := ""
+		if len(badges) > 0 {
+			badgeStr = " [" + strings.Join(badges, ", ") + "]"
+		}
+		c.sc.printf("─── %s · %d chars · ~%d tokens%s ───", l.Name, len(l.Body), len(l.Body)/4, badgeStr)
+		c.sc.printf("%s", layerBody(l.Body, full))
+		c.sc.printf("")
+	}
+
+	c.sc.printf("(active total: %d chars, ~%d tokens)", totalChars, totalChars/4)
+	return nil
+}
+
+// discardedBy returns the name of the layer whose Replace=true caused
+// layers[idx] to be discarded — i.e. the closest later layer with
+// Replace=true. Returns "" when no such layer is found (shouldn't happen
+// in practice, but the loop in BuildSystemPromptLayered could in theory
+// mark Discarded=true without a follower; defensive).
+func discardedBy(layers []instructions.Layer, idx int) string {
+	for i := idx + 1; i < len(layers); i++ {
+		if layers[i].Replace {
+			return layers[i].Name
+		}
+	}
+	return ""
+}
+
+// layerBody returns body verbatim when full=true; otherwise truncates
+// to the first 10 non-empty lines or 600 chars (whichever comes first)
+// with a trailing ellipsis when truncated. Empty bodies render as
+// "(empty)" for clarity.
+func layerBody(body string, full bool) string {
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return "(empty)"
+	}
+	if full {
+		return body
+	}
+	const maxLines = 10
+	const maxChars = 600
+	lines := strings.SplitN(body, "\n", maxLines+1)
+	truncated := false
+	if len(lines) > maxLines {
+		lines = lines[:maxLines]
+		truncated = true
+	}
+	out := strings.Join(lines, "\n")
+	if len(out) > maxChars {
+		out = out[:maxChars]
+		truncated = true
+	}
+	if truncated {
+		out += "\n… (truncated; /prompt --full for the rest)"
+	}
+	return out
 }
 
 // /context — per-category breakdown of the current prompt prefix.
@@ -374,7 +493,7 @@ type agentsCmd struct{ sc *slashCtx }
 
 func (c *agentsCmd) Name() string { return "agents" }
 func (c *agentsCmd) Description() string {
-	return "list available declarative agents (built-in, ~/.enso/agents/, ./.enso/agents/)"
+	return "list available declarative agents (built-in, $XDG_CONFIG_HOME/enso/agents/, ./.enso/agents/)"
 }
 func (c *agentsCmd) Run(ctx context.Context, args string) error {
 	specs, err := agents.LoadAll(c.sc.cwd)

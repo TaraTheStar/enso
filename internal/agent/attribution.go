@@ -19,7 +19,7 @@ func additionalDirsNote(dirs []string) string {
 	for _, d := range dirs {
 		fmt.Fprintf(&b, "- %s\n", d)
 	}
-	b.WriteString("\nThese paths are explicitly trusted by the user; reads/edits there are expected. Permission rules in `~/.enso/config.toml` still gate destructive operations.")
+	b.WriteString("\nThese paths are explicitly trusted by the user; reads/edits there are expected. Permission rules in `~/.config/enso/config.toml` still gate destructive operations.")
 	return b.String()
 }
 

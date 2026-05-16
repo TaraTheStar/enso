@@ -22,7 +22,7 @@ import (
 // detached process and exits the parent. The child gets its own session
 // (Setsid) so closing the controlling terminal doesn't kill it; stdio is
 // redirected to /dev/null since slog already routes warnings to
-// ~/.enso/enso.log.
+// $XDG_STATE_HOME/enso/enso.log.
 //
 // If a daemon is already running we say so and return cleanly — the
 // pidfile lock would otherwise reject the new child silently (its stderr

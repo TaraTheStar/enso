@@ -10,9 +10,10 @@ import (
 	"github.com/TaraTheStar/enso/internal/session"
 )
 
-// runExport reads a session by id from ~/.enso/enso.db and writes a markdown
-// transcript to stdout (or --out path). The actual rendering lives in
-// session.WriteMarkdown so the TUI's /export slash command can share it.
+// runExport reads a session by id from $XDG_DATA_HOME/enso/enso.db and
+// writes a markdown transcript to stdout (or --out path). The actual
+// rendering lives in session.WriteMarkdown so the TUI's /export slash
+// command can share it.
 func runExport(id, outPath string) error {
 	store, err := session.Open()
 	if err != nil {
