@@ -70,9 +70,10 @@ install one of:
 - **[docker](https://docs.docker.com/engine/install/)** — works equally
   well; runs as the docker daemon's user.
 
-Then set `[bash] sandbox = "auto"` in your config. ensō auto-detects
-which is available; if you want to pin one, use `"podman"` or
-`"docker"`. Details in the [sandbox page]({{< relref "docs/sandbox.md" >}}).
+Then set `[backend] type = "podman"` in your config. ensō's container
+runtime defaults to auto-detect (podman, falling back to docker); pin
+one with `[backend] runtime = "podman"` or `"docker"`. Details in the
+[sandbox page]({{< relref "docs/sandbox.md" >}}).
 
 ## Optional: language servers
 

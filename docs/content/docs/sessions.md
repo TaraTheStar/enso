@@ -124,4 +124,5 @@ auto-denies after 60s.
   multiple projects, the most recent wins regardless of where you run
   enso. Use `enso stats` or the sessions overlay to pick by project.
 - The daemon path is POSIX-only and doesn't currently expose `lsp_*`
-  tools or `[bash] sandbox`. Use the in-process path for those.
+  tools or an isolating `[backend] type`. Use the in-process path for
+  those.

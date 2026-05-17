@@ -192,6 +192,11 @@ type IsolationSpec struct {
 	// Runtime selects an OCI runtime hardening option (e.g. "runsc"
 	// for gVisor on the podman backend). Empty = backend default.
 	Runtime string `json:"runtime,omitempty"`
+
+	// Kind names the isolation substrate for the honest # Environment
+	// note: "" / "container" (podman) vs "vm" (lima). Not a behavioral
+	// switch — purely how the worker describes its box to the model.
+	Kind string `json:"kind,omitempty"`
 }
 
 // ---------------------------------------------------------------------

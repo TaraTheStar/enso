@@ -70,9 +70,9 @@ and replaced.
 
 The daemon path **does not currently expose**:
 
-- `[bash] sandbox` — per-session cwd would need a multi-manager
-  indirection that's not in v1 scope. Use `enso run` (in-process)
-  if you need the sandbox.
+- an isolating `[backend] type` — per-session cwd would need a
+  multi-manager indirection that's not in v1 scope. Use `enso run`
+  if you need isolation.
 - `lsp_*` tools — same per-session cwd issue.
 
 These are intentional v1 scope decisions, not deferred bugs. See

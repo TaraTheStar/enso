@@ -361,17 +361,17 @@ type Managed struct {
 	Image   string
 }
 
-// FromConfig translates the user-facing TOML shape into the sandbox
-// package's Config and reports whether sandboxing is enabled. Returns
-// `enabled=false` when `[bash] sandbox` is empty or "off".
+// FromConfig builds the Config for the LEGACY per-project container
+// driven by `enso sandbox stop/rm` ONLY — the agent runtime uses the
+// Backend seam, not this. It is "enabled" exactly when the configured
+// backend is podman; the container CLI follows [backend] runtime.
 func FromConfig(cfg *config.Config) (Config, bool) {
-	mode := cfg.Bash.Sandbox
-	if mode == "" || mode == "off" {
+	if cfg.ResolveBackend() != config.BackendPodman {
 		return Config{}, false
 	}
 	opts := cfg.Bash.Sb
 	return Config{
-		Runtime:      Runtime(mode),
+		Runtime:      Runtime(cfg.PodmanRuntime()),
 		Image:        opts.Image,
 		Init:         opts.Init,
 		Network:      opts.Network,

@@ -124,11 +124,11 @@ secrets/**
 
 ## 8. Turn on the sandbox (recommended)
 
-For real work, run bash inside a per-project container:
+For real work, run the agent inside a per-project container:
 
 ```toml
-[bash]
-sandbox = "auto"
+[backend]
+type = "podman"
 
 [bash.sandbox_options]
 image = "alpine:latest"

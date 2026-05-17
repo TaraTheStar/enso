@@ -5,11 +5,13 @@ weight: 4
 
 # Sandbox
 
-By default the `bash` tool runs as your user on the host. With
-`[bash] sandbox = "auto"` (or `"podman"` / `"docker"`), every `bash`
-call instead runs inside a per-project container with the project cwd
-bind-mounted at `/work`. The agent's shell can't see `~`, `~/.ssh`,
-sibling repos, or anything else outside the project.
+By default (`[backend] type = "local"`) the agent runs as your user
+on the host. With `[backend] type = "podman"` (or `"lima"`) the
+**whole agent** — model loop and every tool — runs inside a
+per-project container or VM, with the project mounted at its **real
+path** (not `/work`; there is one filesystem namespace by
+construction). It can't see `~`, `~/.ssh`, sibling repos, or anything
+else outside the project.
 
 The sandbox is **off by default**. Turn it on per project (or
 globally in your user config) when you want the safety.
@@ -43,10 +45,11 @@ files in `.ensoignore` + network = "none".
 ## Configuration
 
 ```toml
-[bash]
-sandbox = "auto"          # "off" | "auto" | "podman" | "docker"
+[backend]
+type    = "podman"        # "local" (default) | "podman" | "lima"
+# runtime = "auto"        # type=podman only: "auto" | "podman" | "docker"
 
-[bash.sandbox_options]
+[bash.sandbox_options]     # used when type = "podman"
 image        = "alpine:latest"
 init         = ["apk add --no-cache git curl jq make"]
 network      = ""         # "" inherits runtime default; "none" = offline
@@ -57,8 +60,20 @@ env          = []
 # workdir_mount = "/work"
 ```
 
-`sandbox = "auto"` prefers podman (rootless, no daemon) and falls
-back to docker. To pin one explicitly use `"podman"` or `"docker"`.
+`[backend] type` is the **single** backend selector — `"local"` (no
+isolation, the default), `"podman"` (container), or `"lima"`
+(full-VM). An empty or unrecognized value falls safe to `"local"`.
+
+With `type = "podman"`, `[backend] runtime` chooses the container CLI:
+`"auto"` (default) prefers podman (rootless, no daemon) and falls back
+to docker; pin one with `"podman"` or `"docker"`.
+
+> **Migration (breaking):** `[bash] sandbox` has been **removed** — it
+> no longer selects anything and the key is ignored. Delete it and set
+> `[backend] type` (`"podman"` or `"lima"`) plus, if needed,
+> `[backend] runtime`. If you were relying on `sandbox =
+> "podman"`/`"auto"` for isolation, you are running with **no
+> isolation** until you set `[backend] type`. See the CHANGELOG.
 
 ## Per-project containers
 
@@ -151,6 +166,50 @@ root-owned. Set `uid = "1000:1000"` (or whichever your UID is) in
 On macOS Docker Desktop: handles UID translation automatically; no
 config needed.
 
+## Workspace overlay
+
+```toml
+[bash.sandbox_options]
+workspace = "overlay"
+```
+
+With `workspace = "overlay"` the project is cloned (`cp
+--reflink=auto`, near-free on CoW filesystems) **before** the agent
+runs into two trees: a pristine `base/` baseline and a `merged/` the
+agent works in (bind-mounted at the project's real path inside the
+box, so the real tree is untouched while it runs).
+
+At task end ensō does a **three-way compare**: `base→merged` is
+exactly what the agent did; `base→project` is anything that changed
+on the host meanwhile. Files only the agent touched apply cleanly;
+files **both** sides changed are *conflicts*.
+
+- **Interactive** (TUI / `enso` at a terminal): the agent's unified
+  diff is shown (conflicts listed), then a prompt — `[c]ommit`
+  (apply the non-conflicting changes per file; conflicts are left for
+  you to merge and the copy is kept), `[d]iscard`, `[k]eep`, `[v]iew`
+  the full diff, or — when there are conflicts — `[f]orce-all` (apply
+  the agent's version even over host edits, requires typing
+  `overwrite`). Bare Enter is **keep** — never a silent commit or
+  destroy. Commit is per-file (create/modify/delete); there is no
+  blanket `rsync --delete`, so files neither side changed (and any
+  unrelated host work) are never touched.
+- **Non-interactive** (`enso run`, daemon): nothing is applied — the
+  copy and baseline are **kept** with a summary of how many changes
+  apply cleanly vs. need a manual merge. Never auto-committed, never
+  destroyed.
+
+Because of the baseline, **concurrent host edits are no longer a
+footgun**: editing the project (or running `git`) while the agent
+runs only creates a conflict on the *specific files both sides
+touched* — your other host work is preserved automatically, and
+conflicts are never clobbered without an explicit `force` +
+`overwrite`. `.git` is excluded from the compare (the overlay syncs
+working-tree files, not git internals, and git churn would otherwise
+dominate). Co-editing the same tree (e.g. hacking on ensō itself) is
+safe, though for a clean diff it's still tidier to commit/stash
+in-progress work first.
+
 ## gVisor hardening
 
 By default the container uses the runtime's normal OCI runtime
@@ -194,6 +253,68 @@ upstream `runsc` (gVisor nightly/release) matching your kernel — e.g.
 on Debian sid the repo `runsc` may be too old; the upstream build
 works. Or unset `hardening` to run without gVisor.
 
+## Lima (VM isolation)
+
+Podman shares the host kernel; gVisor narrows that but still is not a
+separate kernel. For the strongest isolation tier ensō can run the
+whole agent inside a real VM via [Lima](https://lima-vm.io). Select
+it explicitly:
+
+```toml
+[backend]
+type = "lima"             # "local" | "podman" | "lima"
+
+[lima]
+# template     = "default"      # Lima template name, or a path/URL
+# cpus         = 4
+# memory       = "4GiB"
+# disk         = "20GiB"
+# extra_mounts = ["~/.cache/go-build"]   # mounted read-only
+```
+
+Lima is **not** macOS-only (Colima is the separate macOS container
+wrapper, not Lima). It runs on macOS (vz/qemu), Linux (qemu+KVM —
+needs `/dev/kvm`), and Windows (wsl2). Install: macOS
+`brew install lima`; Linux see the
+[Lima install docs](https://lima-vm.io/docs/installation/).
+
+Same seam as the other backends: the worker runs `enso __worker`
+inside the guest, dials no model (inference is host-proxied over the
+`limactl shell` channel), and the project is mounted at its **real
+path** so there is one filesystem namespace. Sealed by default;
+guest-egress allowlisting is a planned follow-up.
+
+**Substrate model — persistent per-project VM.** A cold per-task VM
+boot (image download + tens of seconds) is impractical, so the VM is
+**persistent and keyed per project** (`enso-<base>-<projecthash>`):
+created once, then resumed (`limactl start`) for later tasks. Per-task
+*workspace* isolation is still total — the host-side workspace overlay
+copy is what gets mounted in, at a stable per-project staging path so
+the VM's mount config never changes. The deliberate tradeoff: a
+project's **own sequential tasks share the VM userland** (packages a
+task installed, mutated system state) — bounded to that one project
+(it can never reach another project's VM) and matching the threat
+model (the agent's own mistakes, already project-scoped). The
+safety-max follow-up is a fresh per-task qcow2 snapshot clone.
+
+**Reclaiming VMs.** Because the VM is meant to persist, it is **not**
+garbage-collected automatically (no startup sweep, no teardown
+delete). Remove enso VMs explicitly:
+
+```sh
+enso sandbox prune                 # delete all enso lima VMs
+enso sandbox prune --older-than 168h   # only VMs idle ≥ 7 days
+```
+
+**Fail-safe.** If `limactl` isn't on `PATH`, ensō *refuses to start*
+with an actionable install hint rather than silently downgrading
+isolation — an explicit `type = "lima"` is never quietly weakened.
+
+**Perf note.** First use of a project downloads a cloud image and
+boots a VM (tens of seconds to minutes). Subsequent tasks reuse the
+running/stopped VM and start quickly — that reuse is the whole reason
+for the persistent-substrate design.
+
 ## Failure modes
 
 - **Runtime not installed**: ensō refuses to start with a clear
@@ -208,7 +329,7 @@ works. Or unset `hardening` to run without gVisor.
 
 ## Daemon mode caveat
 
-The daemon path doesn't currently expose `[bash] sandbox`. Each
+The daemon path doesn't currently expose `[backend] type`. Each
 `enso run --detach` can target a different cwd, but the registry is
 shared across sessions and per-session sandboxing isn't in v1 scope.
 Use `enso run` or `enso tui` (in-process) if you need the sandbox.
