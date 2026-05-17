@@ -252,6 +252,7 @@ func init() {
 	exportCmd.Flags().StringVarP(&flagExportOut, "out", "o", "", "write markdown to this path instead of stdout")
 	statsCmd.Flags().IntVar(&flagStatsDays, "days", 0, "only count sessions updated within the last N days (0 = all)")
 	sandboxCmd.AddCommand(sandboxListCmd, sandboxStopCmd, sandboxRmCmd, sandboxPruneCmd)
+	sandboxPruneCmd.Flags().DurationVar(&flagPruneOlderThan, "older-than", 0, "only prune per-task workers at least this old (e.g. 24h); 0 = all")
 	trustCmd.Flags().BoolVar(&flagTrustList, "list", false, "list every trusted project config and exit")
 	trustCmd.Flags().BoolVar(&flagTrustRevoke, "revoke", false, "remove the trust entry for [path] (default cwd) and exit")
 	rootCmd.AddCommand(tuiCmd, runCmd, daemonCmd, attachCmd, exportCmd, statsCmd, forkCmd, sandboxCmd, trustCmd, versionCmd)

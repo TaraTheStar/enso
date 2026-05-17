@@ -10,24 +10,25 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	"sync/atomic"
+
+	"github.com/google/uuid"
 
 	"github.com/TaraTheStar/enso/internal/daemon"
 
 	"github.com/TaraTheStar/enso/internal/agent"
-	"github.com/TaraTheStar/enso/internal/agents"
+	"github.com/TaraTheStar/enso/internal/backend"
+	"github.com/TaraTheStar/enso/internal/backend/host"
+	"github.com/TaraTheStar/enso/internal/backend/podman"
+	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/hooks"
+	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/llm"
-	"github.com/TaraTheStar/enso/internal/lsp"
 	"github.com/TaraTheStar/enso/internal/mcp"
 	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/sandbox"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"
 	"github.com/TaraTheStar/enso/internal/workflow"
@@ -75,131 +76,100 @@ func runOnce(promptArgs []string) error {
 	if err != nil {
 		return err
 	}
-	provider := providers[defaultName]
+	// Exactly one execution path: the agent core always runs as a
+	// Worker behind a Backend (LocalBackend = sandbox off,
+	// PodmanBackend = sandbox on). No in-process branch — that is the
+	// structural fix the whole effort exists for.
+	b, isol, bopts := host.SelectBackend(cfg)
+	return runViaBackend(b, isol, bopts, prompt, cwd, cfg, providers, defaultName)
+}
 
-	denies := append([]string{}, cfg.Permissions.Deny...)
-	if ignore, err := permissions.LoadIgnoreFile(filepath.Join(cwd, ".ensoignore")); err == nil {
-		denies = append(denies, permissions.IgnoreToDenyPatterns(ignore)...)
-	}
-	checker := permissions.NewChecker(cfg.Permissions.Allow, cfg.Permissions.Ask, denies, cfg.Permissions.Mode)
-	if flagYolo {
-		checker.SetYolo(true)
-	}
-
-	registry := tools.BuildDefault()
-	agent.RegisterSpawn(registry)
-	tools.RegisterSearch(registry, cfg.Search)
-
-	mcpMgr := mcp.NewManager()
-	if len(cfg.MCP) > 0 {
-		mcpMgr.Start(context.Background(), cfg.MCP)
-		mcpMgr.RegisterAll(registry)
-	}
-	defer mcpMgr.Close()
-
-	lspMgr := lsp.NewManager(cwd, cfg.LSP)
-	tools.RegisterLSP(registry, lspMgr)
-	defer lspMgr.Close()
-
-	var sandboxMgr *sandbox.Manager
-	if sbCfg, on := sandbox.FromConfig(cfg); on {
-		sandboxMgr, err = sandbox.NewManager(cwd, sbCfg)
+// runViaBackend is the Backend-seam implementation of `enso run`
+// for the default (sandbox-off) path. The host stays thin: it owns the
+// REAL providers (endpoints/keys/pools) and the rendering/permission/
+// signal wiring; the agent core (model loop + tools + session store +
+// mcp/lsp/agents recipe) runs in the worker child process. The host
+// adapter republishes the worker's bus events onto busInst, so the
+// existing renderText/renderJSON/permission goroutines work unchanged.
+//
+// Behavior parity with the old in-process path: same stdout/stderr,
+// same exit code (non-zero on tool error / cancel), same --format json
+// envelope. The only host-visible shift is that the session id is now
+// minted host-side (so the json header can name the run before the
+// worker is ready); the worker, which owns the store, inserts the row
+// under that id.
+func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.Option, prompt, cwd string, cfg *config.Config, providers map[string]*llm.Provider, defaultName string) error {
+	// Workspace overlay: clone the project into a throwaway copy and run
+	// the agent against THAT (bind-mounted at the real path inside the
+	// box). `enso run` is non-interactive, so at task end Resolve keeps
+	// the diverged copy and prints how to apply it — never silently
+	// commits or destroys the agent's work.
+	if pb, ok := b.(*podman.Backend); ok && cfg.Bash.Sb.Workspace == "overlay" {
+		ov, err := workspace.New(context.Background(), cwd)
 		if err != nil {
-			return fmt.Errorf("sandbox: %w", err)
+			return fmt.Errorf("workspace: %w", err)
 		}
-		ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		defer ensureCancel()
-		if err := sandboxMgr.Ensure(ensureCtx, os.Stderr); err != nil {
-			return fmt.Errorf("sandbox: ensure %s: %w", sandboxMgr.ContainerName(), err)
-		}
-	}
-	var restrictedRoots []string
-	if !cfg.Permissions.DisableFileConfinement {
-		restrictedRoots = append([]string{cwd}, cfg.Permissions.AdditionalDirectories...)
+		pb.MountSource = ov.Copy
+		defer func() { _ = workspace.Resolve(context.Background(), ov, false, nil, os.Stderr) }()
 	}
 
-	spec, err := agents.Find(cwd, flagAgent)
+	resuming := flagSession != ""
+	sessionID := ""
+	if resuming {
+		sessionID = flagSession
+	} else if !flagEphemeral {
+		sessionID = uuid.NewString()
+	}
+
+	spec := backend.TaskSpec{
+		TaskID:          uuid.NewString(),
+		Cwd:             cwd,
+		Prompt:          prompt,
+		Interactive:     false,
+		Ephemeral:       flagEphemeral,
+		MaxTurns:        flagMaxTurns,
+		Yolo:            flagYolo,
+		AgentProfile:    flagAgent,
+		Providers:       host.ProviderCatalog(providers),
+		DefaultProvider: defaultName,
+		Isolation:       isol,
+	}
+	if resuming {
+		spec.ResumeSessionID = flagSession
+	} else {
+		spec.SessionID = sessionID // empty when --ephemeral; worker skips the store
+	}
+	// Credential-scrub invariant: the SCRUBBED config crosses the seam,
+	// never the raw one. The worker rebuilds providers from
+	// spec.Providers + the host-proxied client; it gets no endpoint/key.
+	rc, err := json.Marshal(cfg.ScrubbedForWorker())
 	if err != nil {
-		return err
+		return fmt.Errorf("serialize config: %w", err)
 	}
-	applied := agents.Apply(spec, provider, registry)
-	provider = applied.Provider
-	registry = applied.Registry
+	spec.ResolvedConfig = rc
 
-	busInst := bus.New()
-
-	var (
-		store   *session.Store
-		writer  *session.Writer
-		resumed *session.State
-	)
-	if !flagEphemeral {
-		store, err = session.Open()
+	// Host owns session-row creation (mirrors the legacy in-process
+	// runOnce, which created the row host-side): the worker only
+	// attaches a message writer to it. This keeps the row visible
+	// host-side immediately and avoids racing the worker's startup.
+	if !flagEphemeral && !resuming {
+		store, err := session.Open()
 		if err != nil {
 			return fmt.Errorf("open session store: %w", err)
 		}
-		defer store.Close()
-		if flagSession != "" {
-			resumed, err = session.Load(store, flagSession)
-			if err != nil {
-				return fmt.Errorf("resume %s: %w", flagSession, err)
-			}
-			writer, err = session.AttachWriter(store, flagSession)
-			if err != nil {
-				return fmt.Errorf("attach writer: %w", err)
-			}
-		} else {
-			writer, err = session.NewSession(store, provider.Model, provider.Name, cwd)
-			if err != nil {
-				return fmt.Errorf("create session: %w", err)
-			}
+		if _, err := session.NewSessionWithID(store, sessionID, providers[defaultName].Model, defaultName, cwd); err != nil {
+			store.Close()
+			return fmt.Errorf("create session: %w", err)
 		}
+		store.Close()
 	}
 
-	maxTurns := flagMaxTurns
-	if applied.MaxTurns > 0 {
-		maxTurns = applied.MaxTurns
-	}
-	acfg := agent.Config{
-		Providers:             providers,
-		DefaultProvider:       defaultName,
-		Bus:                   busInst,
-		Registry:              registry,
-		Perms:                 checker,
-		Writer:                writer,
-		Cwd:                   cwd,
-		MaxTurns:              maxTurns,
-		GitAttribution:        cfg.Git.Attribution,
-		GitAttributionName:    cfg.Git.AttributionName,
-		ExtraSystemPrompt:     applied.PromptAppend,
-		AdditionalDirectories: cfg.Permissions.AdditionalDirectories,
-		RestrictedRoots:       restrictedRoots,
-		Hooks:                 hooks.New(cfg.Hooks.OnFileEdit, cfg.Hooks.OnSessionEnd),
-		WebFetchAllowHosts:    cfg.WebFetch.AllowHosts,
-		PruneCfg:              cfg.Context.Resolve(),
-	}
-	// Avoid the typed-nil-into-interface trap: assign Sandbox only when
-	// a manager actually exists. Otherwise the interface is non-nil but
-	// holds a nil *sandbox.Manager and bash.go's `ac.Sandbox != nil`
-	// check passes — then dispatch panics on first method call.
-	if sandboxMgr != nil {
-		acfg.Sandbox = sandboxMgr
-	}
-	if writer != nil {
-		acfg.SessionID = writer.SessionID()
-	}
-	if resumed != nil {
-		acfg.History = resumed.History
-	}
+	busInst := bus.New()
 
-	agt, err := agent.New(acfg)
-	if err != nil {
-		return fmt.Errorf("create agent: %w", err)
-	}
-
-	// In non-interactive mode, a permission prompt has no UI. Auto-deny so
-	// the model gets a "permission denied" tool result and can react. Run with
-	// --yolo to bypass.
+	// In non-interactive mode a permission prompt has no UI. Auto-deny
+	// (unchanged from the in-process path: it subscribes to the same
+	// bus the host adapter republishes the worker's prompts onto). Run
+	// with --yolo to bypass.
 	permCh := busInst.Subscribe(8)
 	go func() {
 		for evt := range permCh {
@@ -219,21 +189,9 @@ func runOnce(promptArgs []string) error {
 		}
 	}()
 
-	// Track whether any tool errored so we can exit non-zero.
 	var sawToolError bool
 	statusCh := busInst.Subscribe(64)
 	if flagFormat == "json" {
-		sid := ""
-		if writer != nil {
-			sid = writer.SessionID()
-		}
-		emitJSON(map[string]any{
-			"type":    "session_start",
-			"id":      sid,
-			"model":   provider.Model,
-			"cwd":     cwd,
-			"resumed": resumed != nil,
-		})
 		go renderJSON(statusCh, &sawToolError)
 	} else {
 		go renderText(statusCh, &sawToolError)
@@ -242,30 +200,51 @@ func runOnce(promptArgs []string) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Wire SIGINT/SIGTERM to cancel the in-flight turn cleanly.
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		agt.Cancel()
-	}()
-
-	inputCh := make(chan string, 1)
-	doneCh := make(chan error, 1)
-	go func() { doneCh <- agt.Run(ctx, inputCh) }()
-
-	// Send the single prompt and close the input channel so agent.Run will
-	// exit after the loop quiesces.
-	inputCh <- prompt
-	close(inputCh)
-
-	if err := <-doneCh; err != nil && !errors.Is(err, context.Canceled) {
+	sess, err := host.Start(ctx, b, spec, providers, busInst, bopts...)
+	if err != nil {
 		if flagFormat == "json" {
 			emitJSON(map[string]any{"type": "session_end", "tool_errors": sawToolError, "error": err.Error()})
 		}
 		return err
 	}
+	defer sess.Close()
 
+	// session_start mirrors the old emit (after the agent is
+	// constructed, before the first turn). host.Start has returned, so
+	// the worker is ready but no bus event has flowed yet — this stays
+	// the first stdout line. Model is the host-side default-provider
+	// model (identical to the old path for the common no-profile case;
+	// an --agent profile that overrides the model is resolved
+	// worker-side and only this informational header would differ).
+	if flagFormat == "json" {
+		emitJSON(map[string]any{
+			"type":    "session_start",
+			"id":      sessionID,
+			"model":   providers[defaultName].Model,
+			"cwd":     cwd,
+			"resumed": resuming,
+		})
+	}
+
+	// SIGINT/SIGTERM cancels the in-flight turn cleanly (Ctrl-C
+	// equivalent), now routed over the Channel as MsgCancel.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		sess.Cancel()
+	}()
+
+	werr := sess.Wait()
+	cancel()
+	busInst.Close() // ends the render goroutine's range, bounded
+
+	if werr != nil && !errors.Is(werr, context.Canceled) {
+		if flagFormat == "json" {
+			emitJSON(map[string]any{"type": "session_end", "tool_errors": sawToolError, "error": werr.Error()})
+		}
+		return werr
+	}
 	if flagFormat == "json" {
 		emitJSON(map[string]any{"type": "session_end", "tool_errors": sawToolError})
 	}

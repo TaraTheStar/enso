@@ -703,65 +703,17 @@ func (st *sessionState) unsubscribe(ch <-chan Event) {
 	}
 }
 
-// toWireEvent maps a bus event to the wire form. Returns ok=false for
+// toWireEvent maps a bus event to the daemon wire envelope. The
+// bus-event → wire mapping itself lives in the bus package
+// (bus.Event.WireForm) so the daemon socket and the Backend worker
+// Channel serialize events identically. Returns ok=false for
 // internal/unserializable events (e.g. PermissionRequest with a chan).
 func toWireEvent(evt bus.Event) (Event, bool) {
-	var typ string
-	switch evt.Type {
-	case bus.EventUserMessage:
-		typ = "UserMessage"
-	case bus.EventAssistantDelta:
-		typ = "AssistantDelta"
-	case bus.EventAssistantDone:
-		typ = "AssistantDone"
-	case bus.EventError:
-		typ = "Error"
-	case bus.EventCancelled:
-		typ = "Cancelled"
-	case bus.EventToolCallStart:
-		typ = "ToolCallStart"
-	case bus.EventToolCallProgress:
-		typ = "ToolCallProgress"
-	case bus.EventToolCallEnd:
-		typ = "ToolCallEnd"
-	case bus.EventAgentStart:
-		typ = "AgentStart"
-	case bus.EventAgentEnd:
-		typ = "AgentEnd"
-	case bus.EventCompacted:
-		typ = "Compacted"
-	case bus.EventAgentIdle:
-		typ = "AgentIdle"
-	case bus.EventInputDiscarded:
-		typ = "InputDiscarded"
-	default:
+	typ, payload, ok := evt.WireForm()
+	if !ok {
 		return Event{}, false
 	}
-	payload, err := json.Marshal(simplifyPayload(evt.Payload))
-	if err != nil {
-		payload = []byte(`null`)
-	}
 	return Event{Type: typ, Payload: payload}, true
-}
-
-// simplifyPayload coerces non-JSON-serializable payloads (errors, channels)
-// to safe representations.
-func simplifyPayload(p any) any {
-	switch v := p.(type) {
-	case error:
-		return v.Error()
-	case map[string]any:
-		out := make(map[string]any, len(v))
-		for k, val := range v {
-			out[k] = simplifyPayload(val)
-		}
-		return out
-	case nil:
-		return nil
-	default:
-		// Strings, ints, floats, bools all marshal fine.
-		return v
-	}
 }
 
 // nullID is just a guard so tests can detect uninitialised state.
