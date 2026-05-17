@@ -3,8 +3,6 @@
 package agent
 
 import (
-	"context"
-	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,7 +12,7 @@ import (
 )
 
 func TestEnvironmentNote_EmptyCwdReturnsEmpty(t *testing.T) {
-	if got := environmentNote("", time.Now(), nil, nil); got != "" {
+	if got := environmentNote("", time.Now(), "", nil); got != "" {
 		t.Errorf("empty cwd should return empty note, got %q", got)
 	}
 }
@@ -22,7 +20,7 @@ func TestEnvironmentNote_EmptyCwdReturnsEmpty(t *testing.T) {
 func TestEnvironmentNote_BasicShape(t *testing.T) {
 	tmp := t.TempDir()
 	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	got := environmentNote(tmp, now, nil, []string{tmp})
+	got := environmentNote(tmp, now, "", []string{tmp})
 
 	for _, want := range []string{
 		"# Environment",
@@ -46,7 +44,7 @@ func TestEnvironmentNote_DetectsGitRepo(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(tmp, ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got := environmentNote(tmp, time.Now(), nil, []string{tmp})
+	got := environmentNote(tmp, time.Now(), "", []string{tmp})
 	if !strings.Contains(got, "Git repo: yes") {
 		t.Errorf("expected 'Git repo: yes' for dir with .git, got:\n%s", got)
 	}
@@ -62,7 +60,7 @@ func TestEnvironmentNote_DetectsGitRepoFromSubdir(t *testing.T) {
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	got := environmentNote(sub, time.Now(), nil, []string{sub})
+	got := environmentNote(sub, time.Now(), "", []string{sub})
 	if !strings.Contains(got, "Git repo: yes") {
 		t.Errorf("walk-up should find .git from subdir, got:\n%s", got)
 	}
@@ -75,59 +73,42 @@ func TestEnvironmentNote_GitFileSubmodule(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(tmp, ".git"), []byte("gitdir: ../.git/modules/x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	got := environmentNote(tmp, time.Now(), nil, []string{tmp})
+	got := environmentNote(tmp, time.Now(), "", []string{tmp})
 	if !strings.Contains(got, "Git repo: yes") {
 		t.Errorf("submodule (.git as file) should count as repo, got:\n%s", got)
 	}
 }
 
-// fakeSandbox satisfies tools.SandboxRunner for testing the sandboxed
-// branch of environmentNote without spinning up a real container.
-type fakeSandbox struct {
-	runtime, image, container, mount string
-}
-
-func (f fakeSandbox) Exec(context.Context, io.Writer, string) error { return nil }
-func (f fakeSandbox) ContainerName() string                         { return f.container }
-func (f fakeSandbox) Runtime() string                               { return f.runtime }
-func (f fakeSandbox) Image() string                                 { return f.image }
-func (f fakeSandbox) WorkdirMount() string                          { return f.mount }
-
-func TestEnvironmentNote_SandboxedReportsContainerCwd(t *testing.T) {
+func TestEnvironmentNote_IsolationLineHonest(t *testing.T) {
 	tmp := t.TempDir()
-	sb := fakeSandbox{
-		runtime:   "docker",
-		image:     "alpine:latest",
-		container: "enso-test-abc123",
-		mount:     "/work",
-	}
-	got := environmentNote(tmp, time.Now(), sb, []string{tmp})
 
-	for _, want := range []string{
-		"Working directory: /work\n",
-		"Sandbox bind-mount: host " + tmp + " is mounted at /work. In shell commands, always use /work — never the host path.",
-		"Example: use `find /work -name \"*.go\"` (NOT `find " + tmp + " -name \"*.go\"`).",
-		"Sandbox: enabled — runtime docker, image alpine:latest, container enso-test-abc123",
-		"Bash tool runs inside the sandbox",
-		"file-touching tools (read/write/edit/grep/glob) run on the host process",
-		"File-tool access: confined to " + tmp,
-	} {
-		if !strings.Contains(got, want) {
-			t.Errorf("sandboxed env note missing %q\nfull:\n%s", want, got)
+	// Empty isolation → the conservative truth, and the cwd is the
+	// REAL host path (one namespace; no /work translation anywhere).
+	got := environmentNote(tmp, time.Now(), "", []string{tmp})
+	if !strings.Contains(got, "Working directory: "+tmp) {
+		t.Errorf("cwd should be the real path, got:\n%s", got)
+	}
+	if !strings.Contains(got, "Isolation: none") || !strings.Contains(got, "no automatic rollback") {
+		t.Errorf("empty isolation should state the no-isolation truth, got:\n%s", got)
+	}
+	// The deleted split-brain caveat must not resurface.
+	for _, gone := range []string{"/work", "Sandbox bind-mount", "never the host path"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("path-translation caveat %q must be gone, got:\n%s", gone, got)
 		}
 	}
-	// The host cwd should NOT appear as the primary "Working directory:"
-	// line — small models latch onto whatever path follows that label.
-	// The host path is allowed elsewhere (e.g. the bind-mount line, the
-	// do/don't example) so the model knows the mapping.
-	if strings.Contains(got, "Working directory: "+tmp) {
-		t.Errorf("sandboxed note should not list the host cwd as the primary working directory, got:\n%s", got)
+
+	// A supplied note is surfaced verbatim on the Isolation line.
+	note := "container (image alpine:latest), network sealed."
+	got = environmentNote(tmp, time.Now(), note, []string{tmp})
+	if !strings.Contains(got, "Isolation: "+note) {
+		t.Errorf("supplied isolation note not surfaced, got:\n%s", got)
 	}
 }
 
 func TestEnvironmentNote_UnconfinedFileToolsBanner(t *testing.T) {
 	tmp := t.TempDir()
-	got := environmentNote(tmp, time.Now(), nil, nil)
+	got := environmentNote(tmp, time.Now(), "", nil)
 	want := "File-tool access: unrestricted"
 	if !strings.Contains(got, want) {
 		t.Errorf("unconfined env note missing %q\nfull:\n%s", want, got)
@@ -140,7 +121,7 @@ func TestEnvironmentNote_UnconfinedFileToolsBanner(t *testing.T) {
 func TestEnvironmentNote_MultipleRestrictedRootsListed(t *testing.T) {
 	tmp := t.TempDir()
 	extra := t.TempDir()
-	got := environmentNote(tmp, time.Now(), nil, []string{tmp, extra})
+	got := environmentNote(tmp, time.Now(), "", []string{tmp, extra})
 	if !strings.Contains(got, "confined to "+tmp+", "+extra) {
 		t.Errorf("expected both roots in confinement list, got:\n%s", got)
 	}

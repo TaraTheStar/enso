@@ -11,9 +11,14 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/TaraTheStar/enso/internal/backend/podman"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/sandbox"
 )
+
+// flagPruneOlderThan restricts `sandbox prune` to per-task workers at
+// least this old (by their enso.created label). Zero = prune all.
+var flagPruneOlderThan time.Duration
 
 var sandboxCmd = &cobra.Command{
 	Use:   "sandbox",
@@ -108,6 +113,15 @@ var sandboxPruneCmd = &cobra.Command{
 				continue
 			}
 			fmt.Printf("removed %s\n", m.Name)
+		}
+		// Per-task workers (the Backend seam) carry an enso.task label
+		// and own anonymous volumes the by-name rm above doesn't drop.
+		// Sweep reaps terminal orphans + their volumes, honouring the
+		// age threshold.
+		if n, err := podman.Sweep(ctx, runtime, flagPruneOlderThan); err != nil {
+			fmt.Fprintf(os.Stderr, "sweep task workers: %v\n", err)
+		} else if n > 0 {
+			fmt.Printf("swept %d orphaned task worker(s) + volumes\n", n)
 		}
 		return nil
 	},

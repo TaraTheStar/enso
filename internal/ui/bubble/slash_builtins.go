@@ -31,8 +31,8 @@ import (
 // registerBuiltins installs the bubble-side slash commands. The set
 // here is deliberately a subset of internal/tui's builtins — anything
 // requiring tview overlays (file picker, find, grep, permissions
-// editor, compact-confirm modal) is omitted until phase 5 ports those
-// flows. Long-running commands that need a goroutine + program.Send
+// editor, compact-confirm modal) is omitted until those flows are ported.
+// Long-running commands that need a goroutine + program.Send
 // pattern (e.g. /compact) also wait for that infra to land.
 func registerBuiltins(reg *slash.Registry, sc *slashCtx) {
 	reg.Register(&helpCmd{reg: reg, sc: sc})
@@ -298,13 +298,22 @@ func (c *yoloCmd) Run(ctx context.Context, args string) error {
 		c.sc.printf("yolo: usage /yolo [on|off]  (no arg toggles)")
 		return nil
 	}
-	c.sc.checker.SetYolo(enable)
+	c.sc.checker.SetYolo(enable) // host-side display mirror
+	if c.sc.sess != nil {
+		// Behind the seam the enforcing checker lives in the worker;
+		// the local SetYolo above only keeps /info + the overlay in
+		// sync. This RPC is what actually changes tool gating.
+		if err := c.sc.sess.SetYolo(ctx, enable); err != nil {
+			c.sc.printf("yolo: worker did not apply the change: %v", err)
+			return nil
+		}
+	}
 	if enable {
 		c.sc.printf("yolo: on (all tool calls auto-allowed)")
 	} else {
-		// Bubble's permission flow lands in phase 5; until then
+		// Bubble's non-yolo permission flow is not yet wired; until then
 		// non-yolo will block tool calls entirely. Surface that.
-		c.sc.printf("yolo: off — note: bubble's permission prompt arrives in phase 5; tool calls will fail until then")
+		c.sc.printf("yolo: off — note: bubble's permission prompt is not yet wired; tool calls will fail until then")
 	}
 	return nil
 }
@@ -876,9 +885,9 @@ func (c *initCmd) Run(ctx context.Context, args string) error {
 // initPromptTemplate is the synthetic user message /init injects.
 // Mirrors internal/tui's template so behaviour is identical between
 // backends. Tool restriction (read/grep/glob/write/edit/todo) is not
-// applied in bubble's phase-5 cut — the slash.Skill submit pattern that
-// carries `allowedTools` is wired only in tui today; porting it is part
-// of phase 5's skill-loading work, deferred for now. The agent's
+// applied in bubble yet — the slash.Skill submit pattern that
+// carries `allowedTools` is wired only in tui today; porting it is
+// deferred for now. The agent's
 // default tool set runs the survey just fine; the restriction is a
 // defence-in-depth measure rather than a correctness requirement.
 func initPromptTemplate(target string) string {
@@ -935,9 +944,10 @@ func (c *compactCmd) Run(ctx context.Context, args string) error {
 	// EventCompacted on success; on failure we publish EventError so
 	// the user sees the failure inline in scrollback.
 	agt := c.sc.agt
+	pub := c.sc.bus
 	go func() {
-		if _, err := agt.ForceCompact(context.Background()); err != nil {
-			agt.Bus.Publish(bus.Event{Type: bus.EventError, Payload: fmt.Errorf("compact: %w", err)})
+		if _, err := agt.ForceCompact(context.Background()); err != nil && pub != nil {
+			pub.Publish(bus.Event{Type: bus.EventError, Payload: fmt.Errorf("compact: %w", err)})
 		}
 	}()
 	c.sc.printf("compact: running… (a Compacted block will appear when complete)")

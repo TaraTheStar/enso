@@ -365,6 +365,18 @@ type Config struct {
 	// stubbing, dedup, post-edit invalidation, compaction pinning).
 	// Zero value = defaults via config.ContextPruneConfig.Resolve().
 	PruneCfg config.ResolvedPruneConfig
+
+	// Capabilities is the tier-3 broker handle, forwarded to
+	// AgentContext (and inherited by spawned sub-agents). Non-nil only
+	// behind the Backend seam; nil elsewhere (tools behave as today).
+	Capabilities tools.CapabilityRequester
+
+	// IsolationNote is one honest sentence describing the box this
+	// agent runs in (supplied by the Backend seam: "none — direct
+	// host…" for LocalBackend, "container … network sealed" for
+	// PodmanBackend). Surfaced verbatim in the # Environment prompt
+	// section. Empty → environmentNote states the conservative truth.
+	IsolationNote string
 }
 
 // New creates an Agent with a system prompt built from the three-tier loader.
@@ -403,7 +415,7 @@ func New(cfg Config) (*Agent, error) {
 		if err != nil {
 			return nil, fmt.Errorf("build system prompt: %w", err)
 		}
-		if note := environmentNote(cfg.Cwd, time.Now(), cfg.Sandbox, cfg.RestrictedRoots); note != "" {
+		if note := environmentNote(cfg.Cwd, time.Now(), cfg.IsolationNote, cfg.RestrictedRoots); note != "" {
 			systemPrompt = systemPrompt + "\n\n" + note
 		}
 		if note := gitAttributionNote(cfg.GitAttribution, cfg.GitAttributionName); note != "" {
@@ -450,6 +462,8 @@ func New(cfg Config) (*Agent, error) {
 		RestrictedRoots:    cfg.RestrictedRoots,
 		FileEditHook:       fileEditHookOf(cfg.Hooks),
 		WebFetchAllowHosts: cfg.WebFetchAllowHosts,
+		Capabilities:       cfg.Capabilities,
+		IsolationNote:      cfg.IsolationNote,
 		OutputCaps: tools.DefaultOutputCaps{
 			Default: pruneCfg.OutputCapDefault,
 			PerTool: pruneCfg.OutputCapsPerTool,

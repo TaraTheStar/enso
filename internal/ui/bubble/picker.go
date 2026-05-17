@@ -62,8 +62,8 @@ func (p *pickerData) matches() []string {
 }
 
 // renderPicker produces the alt-screen view for the @ file picker.
-// width/height come from tea.WindowSizeMsg; phase-4 ignores them and
-// lets the terminal handle wrapping at narrow widths.
+// width/height come from tea.WindowSizeMsg; the current layout ignores
+// them and lets the terminal handle wrapping at narrow widths.
 func renderPicker(p *pickerData, width, height int) string {
 	_ = width
 	_ = height
