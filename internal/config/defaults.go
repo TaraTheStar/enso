@@ -35,14 +35,9 @@ deny = []
 # picker. Permission patterns still gate writes — this is informational.
 additional_directories = []
 
-[bash]
-# How to run the bash tool. "off" = direct host exec (default).
-# "auto" = run inside a per-project container (prefers podman, falls
-# back to docker). Use "podman" or "docker" to pin a runtime.
-sandbox = "off"
-
 [bash.sandbox_options]
-# Image to run when sandbox is enabled. Pick whatever toolchain you
+# Per-project container settings, used WHEN [backend] type = "podman".
+# Image to run. Pick whatever toolchain you
 # need; alpine is a small starting point.
 image = "alpine:latest"
 # Commands run once after container creation. Re-runs only when this
@@ -57,13 +52,26 @@ extra_mounts = []
 env = []
 
 [backend]
-# Where the agent core runs. "local" (default) = a host child
-# process, no isolation — today's behavior. "podman" = the core runs
-# inside a rootless container (overlay workspace, network-sealed,
-# host-proxied inference). Leave empty to derive from [bash] sandbox
-# above (off → local; auto/podman/docker → podman); an explicit
-# value here overrides that.
-type = ""
+# Where the agent core runs. This is the ONLY backend selector.
+#   "local"  (default) = a host child process, no isolation.
+#   "podman" = the core runs inside a rootless container (overlay
+#              workspace, network-sealed, host-proxied inference).
+#   "lima"   = the core runs inside a persistent per-project VM
+#              (real-VM isolation); see [lima] below.
+# Empty or unrecognized = "local" (fails safe).
+type = "local"
+# Container CLI for type = "podman": "auto" (default — prefer podman,
+# fall back to docker), "podman", or "docker". Ignored otherwise.
+# runtime = "auto"
+
+# Tunes the persistent per-project VM when [backend] type = "lima".
+# All optional; omitted fields use Lima defaults.
+[lima]
+# template     = "default"   # Lima template name, or a path/URL
+# cpus         = 4
+# memory       = "4GiB"
+# disk         = "20GiB"
+# extra_mounts = []           # extra host paths, mounted read-only
 
 [ui]
 # Theme name (default: "dark")

@@ -37,6 +37,7 @@ type Config struct {
 	LSP          map[string]LSPConfig      `toml:"lsp"`
 	Bash         BashConfig                `toml:"bash"`
 	Backend      BackendConfig             `toml:"backend"`
+	Lima         LimaConfig                `toml:"lima"`
 	Hooks        HooksConfig               `toml:"hooks"`
 	WebFetch     WebFetchConfig            `toml:"web_fetch"`
 	Search       SearchConfig              `toml:"search"`
@@ -557,15 +558,11 @@ type GitConfig struct {
 	AttributionName string `toml:"attribution_name"`
 }
 
-// BashConfig controls how the bash tool runs. The default (sandbox =
-// "off") executes commands directly on the host; setting sandbox to
-// "auto"/"podman"/"docker" runs them inside a per-project container so
-// the agent's shell can't escape the project directory.
+// BashConfig holds the bash tool's container settings, applied when
+// [backend] type = "podman" (see BackendConfig). An unknown `[bash]
+// sandbox` key in a config is simply ignored by the TOML decoder.
 type BashConfig struct {
-	// Sandbox: "off" (default), "auto" (podman, fallback docker),
-	// "podman", or "docker".
-	Sandbox string             `toml:"sandbox"`
-	Sb      BashSandboxOptions `toml:"sandbox_options"`
+	Sb BashSandboxOptions `toml:"sandbox_options"`
 }
 
 // BashSandboxOptions are the per-project container settings.
@@ -656,41 +653,90 @@ const (
 	// container: overlay workspace, network-sealed, host-proxied
 	// inference.
 	BackendPodman BackendKind = "podman"
+	// BackendLima runs the Worker inside a Lima VM (real VM isolation):
+	// a persistent per-project VM with a per-task workspace overlay
+	// mounted in, network-sealed, host-proxied inference.
+	BackendLima BackendKind = "lima"
 )
 
-// BackendConfig selects the execution backend. `type` is optional and
-// layered like every other config key, so a project can override the
-// user/global default. Empty `type` is not an error: ResolveBackend
-// derives the kind from the existing [bash] sandbox setting so old
-// config files keep working unchanged.
+// BackendConfig selects the execution backend. `type` is layered like
+// every other config key, so a project can override the user/global
+// default.
 type BackendConfig struct {
-	// Type: "local" (default) or "podman". Empty = derive from
-	// [bash] sandbox (off → local; auto/podman/docker → podman).
+	// Type: "local" (default), "podman", or "lima". Empty or
+	// unrecognized resolves to "local" (the no-isolation default).
 	Type string `toml:"type"`
+
+	// Runtime selects the container CLI for type = "podman":
+	// "auto" (default — prefer podman, fall back to docker),
+	// "podman", or "docker". Ignored for local/lima.
+	Runtime string `toml:"runtime"`
 }
 
-// ResolveBackend returns the selected BackendKind. An explicit
-// [backend] type wins; otherwise the kind is derived from the existing
-// [bash] sandbox knob so this is purely additive and behavior-
-// preserving — no existing config file changes meaning.
+// PodmanRuntime is the resolved container CLI selector for the podman
+// backend: the configured [backend] runtime, or "auto" when unset.
+func (c *Config) PodmanRuntime() string {
+	r := strings.ToLower(strings.TrimSpace(c.Backend.Runtime))
+	if r == "" {
+		return "auto"
+	}
+	return r
+}
+
+// LimaConfig is the optional [lima] block tuning the persistent
+// per-project VM that BackendLima provisions. Every field is optional;
+// zero values resolve to sane defaults in host.SelectBackend. Layered
+// like every other config key so a project can override the
+// user/global default.
+type LimaConfig struct {
+	// Template is a Lima template name (e.g. "default", "debian",
+	// "ubuntu") or a path/URL to a template YAML. Empty → a built-in
+	// minimal default suitable for the enso worker.
+	Template string `toml:"template"`
+	// CPUs allocated to the VM. 0 → Lima default.
+	CPUs int `toml:"cpus"`
+	// Memory is a Lima memory string (e.g. "4GiB"). Empty → Lima
+	// default.
+	Memory string `toml:"memory"`
+	// Disk is a Lima disk string (e.g. "20GiB"). Empty → Lima
+	// default.
+	Disk string `toml:"disk"`
+	// ExtraMounts are additional host paths to mount into the VM
+	// (read-only unless suffixed per Lima's mount syntax).
+	ExtraMounts []string `toml:"extra_mounts"`
+}
+
+// ResolveBackend returns the selected BackendKind from the explicit
+// [backend] type. Empty or unrecognized resolves to BackendLocal — the
+// no-isolation default; an unknown value fails safe to local rather
+// than silently picking a container/VM. [bash] sandbox no longer
+// selects the backend (that back-compat derivation was removed); it
+// only picks the container runtime (podman/docker/auto) once
+// [backend] type = "podman".
 func (c *Config) ResolveBackend() BackendKind {
 	switch strings.ToLower(strings.TrimSpace(c.Backend.Type)) {
-	case string(BackendLocal):
-		return BackendLocal
 	case string(BackendPodman):
 		return BackendPodman
-	case "":
-		// Derive from the legacy bash.sandbox selector.
-		switch strings.ToLower(strings.TrimSpace(c.Bash.Sandbox)) {
-		case "", "off":
-			return BackendLocal
-		default: // "auto", "podman", "docker"
-			return BackendPodman
-		}
-	default:
-		// Unknown explicit value: fail safe to the no-isolation
-		// default rather than silently picking a container.
+	case string(BackendLima):
+		return BackendLima
+	default: // "", "local", or anything unrecognized → fail safe to local
 		return BackendLocal
+	}
+}
+
+// UnrecognizedBackendType returns the offending value when [backend]
+// type is set to something ResolveBackend does not recognize — meaning
+// it silently fell back to "local" (NO isolation). Empty / "local" /
+// "podman" / "lima" return "" (a legitimate, intentional selection).
+// Callers surface this to the user: failing safe is fine, doing it
+// silently is not — an unrecognized value here is a safety-relevant
+// misconfiguration (the isolation the user asked for is absent).
+func (c *Config) UnrecognizedBackendType() string {
+	switch strings.ToLower(strings.TrimSpace(c.Backend.Type)) {
+	case "", string(BackendLocal), string(BackendPodman), string(BackendLima):
+		return ""
+	default:
+		return strings.TrimSpace(c.Backend.Type)
 	}
 }
 
