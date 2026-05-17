@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,52 @@ const testImage = "docker.io/library/alpine:latest"
 // there is one filesystem namespace. Skips cleanly where podman or the
 // image isn't available.
 func TestPodmanBackendConformance(t *testing.T) {
+	runConformance(t, "")
+}
+
+// TestPodmanBackendConformance_GVisor runs the SAME contract under the
+// gVisor hardened runtime. Skips unless runsc is installed — the
+// fail-safe + arg + mapping behavior is covered by fast unit tests; this
+// validates a real hardened container where the host supports it.
+func TestPodmanBackendConformance_GVisor(t *testing.T) {
+	if _, err := exec.LookPath("runsc"); err != nil {
+		t.Skip("runsc (gVisor) not on PATH")
+	}
+	if _, err := exec.LookPath("podman"); err != nil {
+		t.Skip("podman not on PATH")
+	}
+	// Precheck the capability the worker actually needs: a real Go
+	// binary running under THIS host's gVisor, via enso's exact rootless
+	// recipe (cgroupfs manager + a runsc --ignore-cgroups --network=none
+	// wrapper). Some gVisor builds/configs run busybox fine but exit Go
+	// binaries silently (unimplemented syscall in the Go runtime). That
+	// is a host/gVisor limitation, NOT an enso wiring bug — the wiring
+	// is covered by fast unit tests — so skip rather than false-fail.
+	tdir := t.TempDir()
+	wrapper := filepath.Join(tdir, "runsc-rootless")
+	real, _ := exec.LookPath("runsc")
+	if err := os.WriteFile(wrapper,
+		[]byte("#!/bin/sh\nexec "+real+" --ignore-cgroups --network=none \"$@\"\n"), 0o755); err != nil {
+		t.Fatalf("wrapper: %v", err)
+	}
+	probe := filepath.Join(tdir, "probe")
+	pg := exec.Command("go", "build", "-o", probe, "github.com/TaraTheStar/enso/cmd/enso")
+	pg.Env = append(os.Environ(), "CGO_ENABLED=0")
+	if out, err := pg.CombinedOutput(); err != nil {
+		t.Fatalf("probe build: %v\n%s", err, out)
+	}
+	sm, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(sm, "podman", "--cgroup-manager=cgroupfs",
+		"run", "--runtime="+wrapper, "--rm", "--network=none",
+		"-v", probe+":/probe:ro", testImage, "/probe", "--help").CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "Usage:") {
+		t.Skipf("this host's gVisor cannot run the enso Go binary (environment, not enso wiring): err=%v\n%s", err, out)
+	}
+	runConformance(t, "runsc")
+}
+
+func runConformance(t *testing.T, ociRuntime string) {
 	if testing.Short() {
 		t.Skip("builds a static binary + runs a container; skipped in -short")
 	}
@@ -73,10 +120,10 @@ func TestPodmanBackendConformance(t *testing.T) {
 		ResolvedConfig:  rc,
 		Providers:       []backend.ProviderInfo{{Name: "test", Model: "m"}},
 		DefaultProvider: "test",
-		Isolation:       backend.IsolationSpec{NetworkSealed: true, Image: testImage},
+		Isolation:       backend.IsolationSpec{NetworkSealed: true, Image: testImage, Runtime: ociRuntime},
 	}
 
-	b := &podman.Backend{Exe: bin, Image: testImage, Runtime: "podman", Network: "none"}
+	b := &podman.Backend{Exe: bin, Image: testImage, Runtime: "podman", Network: "none", OCIRuntime: ociRuntime}
 
 	busInst := bus.New()
 	sub := busInst.Subscribe(256)

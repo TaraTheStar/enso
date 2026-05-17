@@ -1,0 +1,598 @@
+diff --git a/docs/content/docs/sandbox.md b/docs/content/docs/sandbox.md
+index 3b6bc04..52135ac 100644
+--- a/docs/content/docs/sandbox.md
++++ b/docs/content/docs/sandbox.md
+@@ -151,6 +151,49 @@ root-owned. Set `uid = "1000:1000"` (or whichever your UID is) in
+ On macOS Docker Desktop: handles UID translation automatically; no
+ config needed.
+ 
++## gVisor hardening
++
++By default the container uses the runtime's normal OCI runtime
++(`runc`/`crun`), which shares the host kernel. Set:
++
++```toml
++[bash.sandbox_options]
++hardening = "gvisor"   # alias: "runsc"
++```
++
++to run the box under [gVisor](https://gvisor.dev) instead. gVisor
++intercepts the container's syscalls in a userspace kernel, so a
++kernel-level container escape has a much smaller surface. The cost is
++performance: syscall-heavy workloads (big builds, lots of small file
++I/O) run noticeably slower. Linux only.
++
++**Fail-safe.** If `runsc` isn't installed, ensō *refuses to start*
++with an actionable hint rather than silently running unhardened — an
++explicit hardening request is never quietly downgraded. An unknown
++`hardening` value is passed through and fails the same availability
++check loudly.
++
++**Rootless: handled automatically.** Rootless podman can't use the
++systemd cgroup manager without an interactive polkit session, and
++rootless `runsc` can't configure cgroups or run with the root network
++namespace. ensō adapts its *own* `podman` invocation for this — it
++uses the `cgroupfs` cgroup manager and points `--runtime` at a private
++`runsc --ignore-cgroups [--network=none]` wrapper under its runtime
++dir. **It never edits your `containers.conf`** or global podman
++config; the adaptation is scoped to ensō's containers.
++
++**Requirements / known limits.** You need `runsc` on `PATH` for your
++user, cgroup v2, and a kernel that permits unprivileged user
++namespaces. gVisor is **very sensitive to your kernel version**, and a
++distro-packaged `runsc` can lag a bleeding-edge kernel by enough that
++it runs shell images fine but exits Go binaries on an unimplemented
++syscall — symptom: the box starts but the agent never comes up. That
++is a runsc/host-kernel mismatch, not ensō wiring (ensō surfaces the
++captured runtime error plus this guidance). Fix: install a current
++upstream `runsc` (gVisor nightly/release) matching your kernel — e.g.
++on Debian sid the repo `runsc` may be too old; the upstream build
++works. Or unset `hardening` to run without gVisor.
++
+ ## Failure modes
+ 
+ - **Runtime not installed**: ensō refuses to start with a clear
+diff --git a/internal/backend/host/host.go b/internal/backend/host/host.go
+index d18e02e..1593262 100644
+--- a/internal/backend/host/host.go
++++ b/internal/backend/host/host.go
+@@ -58,6 +58,7 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec,
+ 		ExtraMounts: sb.ExtraMounts,
+ 		Env:         sb.Env,
+ 		UID:         sb.UID,
++		OCIRuntime:  sb.OCIRuntime(),
+ 		// MountSource (the throwaway workspace copy) is wired by the
+ 		// run/TUI call site, which owns the overlay lifecycle and the
+ 		// end-of-task commit/discard prompt.
+@@ -66,6 +67,7 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec,
+ 		NetworkSealed: net == "none",
+ 		Image:         img,
+ 		ExtraMounts:   sb.ExtraMounts,
++		Runtime:       sb.OCIRuntime(),
+ 	}
+ 
+ 	// Tier-3 broker: only constructed when the operator configured
+@@ -299,6 +301,14 @@ func Start(
+ 	select {
+ 	case err := <-ready:
+ 		if err != nil {
++			// A Backend may know WHY its box never came up (e.g. podman
++			// printed an OCI-runtime error to stderr). Surface it so the
++			// user gets something actionable instead of a bare EOF.
++			if d, ok := w.(interface{ StartupDiagnostic() string }); ok {
++				if msg := d.StartupDiagnostic(); msg != "" {
++					err = fmt.Errorf("%w\n\n%s", err, msg)
++				}
++			}
+ 			_ = w.Teardown(context.Background())
+ 			return nil, err
+ 		}
+diff --git a/internal/backend/podman/args_test.go b/internal/backend/podman/args_test.go
+index 88e10dd..9f6e0c7 100644
+--- a/internal/backend/podman/args_test.go
++++ b/internal/backend/podman/args_test.go
+@@ -3,9 +3,12 @@
+ package podman
+ 
+ import (
++	"context"
+ 	"os"
+ 	"strings"
+ 	"testing"
++
++	"github.com/TaraTheStar/enso/internal/backend"
+ )
+ 
+ // joinArgs renders argv as a single space-joined string for substring
+@@ -15,7 +18,7 @@ func joinArgs(a []string) string { return strings.Join(a, " ") }
+ func TestBuildRunArgs_Posture(t *testing.T) {
+ 	cwd := "/home/u/proj"
+ 	b := &Backend{Image: "alpine", Network: ""}
+-	got := joinArgs(b.buildRunArgs("enso-proj-t1", "t1", "/host/enso", cwd))
++	got := joinArgs(b.buildRunArgs("enso-proj-t1", "t1", "/host/enso", cwd, ""))
+ 
+ 	// One namespace: project at its REAL path, cwd = that path; no /work.
+ 	if !strings.Contains(got, "-v "+cwd+":"+cwd+" ") {
+@@ -39,7 +42,7 @@ func TestBuildRunArgs_Posture(t *testing.T) {
+ 	// Credential scrub: NO host environment is forwarded. Pick an env
+ 	// var that is essentially always set and assert it never appears.
+ 	_ = os.Setenv("ENSO_SCRUB_PROBE", "leaked-secret")
+-	got2 := joinArgs(b.buildRunArgs("n", "t1", "/host/enso", cwd))
++	got2 := joinArgs(b.buildRunArgs("n", "t1", "/host/enso", cwd, ""))
+ 	if strings.Contains(got2, "leaked-secret") || strings.Contains(got2, "ENSO_SCRUB_PROBE") {
+ 		t.Errorf("host env must never be forwarded to the box, got: %s", got2)
+ 	}
+@@ -48,7 +51,7 @@ func TestBuildRunArgs_Posture(t *testing.T) {
+ func TestBuildRunArgs_OverlayAndEgress(t *testing.T) {
+ 	cwd := "/p"
+ 	b := &Backend{Image: "alpine", MountSource: "/tmp/enso-ws/merged", EgressProxy: "http://127.0.0.1:54321"}
+-	got := joinArgs(b.buildRunArgs("n", "t1", "/e", cwd))
++	got := joinArgs(b.buildRunArgs("n", "t1", "/e", cwd, ""))
+ 
+ 	// Overlay = host-side throwaway copy bind-mounted at the REAL path
+ 	// (NOT podman's :O, which would silently discard the agent's work).
+@@ -91,3 +94,29 @@ func TestContainerProxyURL(t *testing.T) {
+ 		}
+ 	}
+ }
++
++func TestBuildRunArgs_GVisorRuntime(t *testing.T) {
++	// No hardening → no --runtime flag (default runc/crun).
++	plain := joinArgs((&Backend{Image: "alpine"}).buildRunArgs("n", "t", "/e", "/p", ""))
++	if strings.Contains(plain, "--runtime") {
++		t.Errorf("unhardened run must not pin a runtime, got: %s", plain)
++	}
++	// Hardened → `--runtime runsc` (gVisor) right after `run`.
++	got := joinArgs((&Backend{Image: "alpine", OCIRuntime: "runsc"}).buildRunArgs("n", "t", "/e", "/p", "runsc"))
++	if !strings.Contains(got, "run --rm -i --runtime runsc ") {
++		t.Errorf("gVisor run must pass --runtime runsc, got: %s", got)
++	}
++}
++
++func TestStart_RefusesWhenHardenedRuntimeMissing(t *testing.T) {
++	b := &Backend{Image: "alpine", OCIRuntime: "enso-nonexistent-runtime-xyz"}
++	_, err := b.Start(context.Background(), backend.TaskSpec{Cwd: t.TempDir()})
++	if err == nil {
++		t.Fatal("Start must refuse when the hardened runtime is unavailable")
++	}
++	for _, want := range []string{"not found", "Refusing to run unhardened", "gvisor.dev"} {
++		if !strings.Contains(err.Error(), want) {
++			t.Errorf("error must be actionable (missing %q): %v", want, err)
++		}
++	}
++}
+diff --git a/internal/backend/podman/conformance_test.go b/internal/backend/podman/conformance_test.go
+index cfb0e78..00e2dce 100644
+--- a/internal/backend/podman/conformance_test.go
++++ b/internal/backend/podman/conformance_test.go
+@@ -8,6 +8,7 @@ import (
+ 	"os"
+ 	"os/exec"
+ 	"path/filepath"
++	"strings"
+ 	"testing"
+ 	"time"
+ 
+@@ -30,6 +31,52 @@ const testImage = "docker.io/library/alpine:latest"
+ // there is one filesystem namespace. Skips cleanly where podman or the
+ // image isn't available.
+ func TestPodmanBackendConformance(t *testing.T) {
++	runConformance(t, "")
++}
++
++// TestPodmanBackendConformance_GVisor runs the SAME contract under the
++// gVisor hardened runtime. Skips unless runsc is installed — the
++// fail-safe + arg + mapping behavior is covered by fast unit tests; this
++// validates a real hardened container where the host supports it.
++func TestPodmanBackendConformance_GVisor(t *testing.T) {
++	if _, err := exec.LookPath("runsc"); err != nil {
++		t.Skip("runsc (gVisor) not on PATH")
++	}
++	if _, err := exec.LookPath("podman"); err != nil {
++		t.Skip("podman not on PATH")
++	}
++	// Precheck the capability the worker actually needs: a real Go
++	// binary running under THIS host's gVisor, via enso's exact rootless
++	// recipe (cgroupfs manager + a runsc --ignore-cgroups --network=none
++	// wrapper). Some gVisor builds/configs run busybox fine but exit Go
++	// binaries silently (unimplemented syscall in the Go runtime). That
++	// is a host/gVisor limitation, NOT an enso wiring bug — the wiring
++	// is covered by fast unit tests — so skip rather than false-fail.
++	tdir := t.TempDir()
++	wrapper := filepath.Join(tdir, "runsc-rootless")
++	real, _ := exec.LookPath("runsc")
++	if err := os.WriteFile(wrapper,
++		[]byte("#!/bin/sh\nexec "+real+" --ignore-cgroups --network=none \"$@\"\n"), 0o755); err != nil {
++		t.Fatalf("wrapper: %v", err)
++	}
++	probe := filepath.Join(tdir, "probe")
++	pg := exec.Command("go", "build", "-o", probe, "github.com/TaraTheStar/enso/cmd/enso")
++	pg.Env = append(os.Environ(), "CGO_ENABLED=0")
++	if out, err := pg.CombinedOutput(); err != nil {
++		t.Fatalf("probe build: %v\n%s", err, out)
++	}
++	sm, cancel := context.WithTimeout(context.Background(), 90*time.Second)
++	defer cancel()
++	out, err := exec.CommandContext(sm, "podman", "--cgroup-manager=cgroupfs",
++		"run", "--runtime="+wrapper, "--rm", "--network=none",
++		"-v", probe+":/probe:ro", testImage, "/probe", "--help").CombinedOutput()
++	if err != nil || !strings.Contains(string(out), "Usage:") {
++		t.Skipf("this host's gVisor cannot run the enso Go binary (environment, not enso wiring): err=%v\n%s", err, out)
++	}
++	runConformance(t, "runsc")
++}
++
++func runConformance(t *testing.T, ociRuntime string) {
+ 	if testing.Short() {
+ 		t.Skip("builds a static binary + runs a container; skipped in -short")
+ 	}
+@@ -73,10 +120,10 @@ func TestPodmanBackendConformance(t *testing.T) {
+ 		ResolvedConfig:  rc,
+ 		Providers:       []backend.ProviderInfo{{Name: "test", Model: "m"}},
+ 		DefaultProvider: "test",
+-		Isolation:       backend.IsolationSpec{NetworkSealed: true, Image: testImage},
++		Isolation:       backend.IsolationSpec{NetworkSealed: true, Image: testImage, Runtime: ociRuntime},
+ 	}
+ 
+-	b := &podman.Backend{Exe: bin, Image: testImage, Runtime: "podman", Network: "none"}
++	b := &podman.Backend{Exe: bin, Image: testImage, Runtime: "podman", Network: "none", OCIRuntime: ociRuntime}
+ 
+ 	busInst := bus.New()
+ 	sub := busInst.Subscribe(256)
+diff --git a/internal/backend/podman/podman.go b/internal/backend/podman/podman.go
+index 158b545..d967c8e 100644
+--- a/internal/backend/podman/podman.go
++++ b/internal/backend/podman/podman.go
+@@ -34,6 +34,7 @@ import (
+ 	"time"
+ 
+ 	"github.com/TaraTheStar/enso/internal/backend"
++	"github.com/TaraTheStar/enso/internal/paths"
+ 	"github.com/TaraTheStar/enso/internal/sandbox"
+ )
+ 
+@@ -70,6 +71,15 @@ type Backend struct {
+ 	// container so the only route out is the host's allowlist proxy
+ 	// (egress control). Empty keeps the box fully sealed.
+ 	EgressProxy string
++
++	// OCIRuntime is an optional `--runtime` value selecting a hardened
++	// OCI runtime — "runsc" runs the container under gVisor, which
++	// intercepts and filters syscalls in a userspace kernel (a much
++	// smaller host kernel attack surface, at a syscall-heavy
++	// performance cost; Linux only). Empty = the runtime default
++	// (runc/crun). If set but the runtime is not installed, Start
++	// refuses to launch rather than silently running unhardened.
++	OCIRuntime string
+ }
+ 
+ func (b *Backend) Name() string { return "podman" }
+@@ -78,6 +88,17 @@ func (b *Backend) Name() string { return "podman" }
+ // the box (enso-<base>-<taskid>); the project dir is the only thing
+ // mounted in (plus the read-only enso binary) — no host $HOME.
+ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Worker, error) {
++	// Fail safe FIRST (cheapest, most actionable): a requested hardened
++	// runtime that is not installed must REFUSE, never silently fall
++	// back to unhardened isolation.
++	if b.OCIRuntime != "" && !runtimeAvailable(b.OCIRuntime) {
++		return nil, fmt.Errorf(
++			"podman: OCI runtime %q not found on PATH — gVisor isolation requires it. "+
++				"Install gVisor (https://gvisor.dev/docs/user_guide/install/) and configure "+
++				"%q as a podman runtime, or unset bash.sandbox_options.hardening. "+
++				"Refusing to run unhardened.", b.OCIRuntime, b.OCIRuntime)
++	}
++
+ 	runtime, err := sandbox.ResolveRuntimeBinary(sandbox.Runtime(b.Runtime))
+ 	if err != nil {
+ 		return nil, fmt.Errorf("podman: %w", err)
+@@ -100,14 +121,47 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
+ 	// new one. Best-effort; never blocks the launch.
+ 	startupSweep(runtime)
+ 
++	// Rootless gVisor auto-adapt (scoped to enso's OWN invocation — we
++	// never touch the user's containers.conf): rootless podman can't
++	// use the systemd cgroup manager without an interactive polkit
++	// session, and rootless runsc can't configure cgroups at all. So
++	// when a gVisor runtime is requested rootless, run podman with the
++	// cgroupfs manager and point --runtime at a private wrapper that
++	// adds `runsc --ignore-cgroups`. Best-effort: if the wrapper can't
++	// be written we fall through to plain runsc (podman will error,
++	// and StartupDiagnostic explains the fix).
++	effRuntime := b.OCIRuntime
++	var globalFlags []string
++	gvisor := isGvisorRuntime(effRuntime)
++	if gvisor && os.Geteuid() != 0 {
++		if real, lerr := exec.LookPath(effRuntime); lerr == nil {
++			// A sealed box (podman --network none) hands runsc the root
++			// netns, which gVisor refuses ("cannot run with network
++			// enabled in root network namespace") unless its own
++			// netstack is also disabled. In egress mode the container
++			// has a real (slirp) netns, so runsc must keep its netstack
++			// to reach the proxy — don't disable it there.
++			sealed := b.EgressProxy == "" && (b.Network == "" || b.Network == "none")
++			if wp, werr := ensureRootlessRunscWrapper(real, sealed); werr == nil {
++				effRuntime = wp
++				globalFlags = []string{"--cgroup-manager=cgroupfs"}
++			}
++		}
++	}
++
+ 	name := containerName(spec.Cwd, spec.TaskID)
+-	args := b.buildRunArgs(name, spec.TaskID, exe, spec.Cwd)
++	argv := append(append([]string{}, globalFlags...),
++		b.buildRunArgs(name, spec.TaskID, exe, spec.Cwd, effRuntime)...)
+ 
+ 	// Not CommandContext: shutdown is an ordered Teardown (close the
+ 	// Channel → worker winds down → --rm reaps the container), not an
+ 	// abrupt mid-frame kill.
+-	cmd := exec.Command(runtime, args...)
+-	cmd.Stderr = os.Stderr // podman progress + worker stderr → user
++	cmd := exec.Command(runtime, argv...)
++	// Tee podman/runtime stderr to the user AND a bounded buffer so a
++	// box that never comes up yields an actionable error (not a bare
++	// EOF). 8 KiB is plenty for an OCI-runtime failure.
++	diag := &ringBuffer{max: 8 << 10}
++	cmd.Stderr = io.MultiWriter(os.Stderr, diag)
+ 
+ 	stdin, err := cmd.StdinPipe()
+ 	if err != nil {
+@@ -121,11 +175,74 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
+ 		return nil, fmt.Errorf("podman: start %s: %w", runtime, err)
+ 	}
+ 
+-	w := &podmanWorker{cmd: cmd, runtime: runtime, name: name}
++	w := &podmanWorker{cmd: cmd, runtime: runtime, name: name, diag: diag, gvisor: gvisor}
+ 	w.ch = backend.NewStreamChannelRW(stdout, stdin, &pipePair{stdin, stdout})
+ 	return w, nil
+ }
+ 
++// ringBuffer keeps the last max bytes written to it (concurrent-safe);
++// used to retain the tail of podman/runtime stderr for diagnostics.
++type ringBuffer struct {
++	mu  sync.Mutex
++	buf []byte
++	max int
++}
++
++func (r *ringBuffer) Write(p []byte) (int, error) {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	r.buf = append(r.buf, p...)
++	if len(r.buf) > r.max {
++		r.buf = r.buf[len(r.buf)-r.max:]
++	}
++	return len(p), nil
++}
++
++func (r *ringBuffer) String() string {
++	r.mu.Lock()
++	defer r.mu.Unlock()
++	return strings.TrimSpace(string(r.buf))
++}
++
++// isGvisorRuntime reports whether an OCI-runtime selector names gVisor
++// (the bare "runsc" the config maps to, or a path to it).
++func isGvisorRuntime(rt string) bool {
++	return rt != "" && filepath.Base(rt) == "runsc"
++}
++
++// ensureRootlessRunscWrapper writes (idempotently) a tiny wrapper under
++// enso's own runtime dir that execs the real runsc with
++// --ignore-cgroups, and returns its path. This is an enso-owned
++// artifact — it does not modify the user's podman configuration.
++func ensureRootlessRunscWrapper(realRunsc string, sealed bool) (string, error) {
++	dir, err := paths.RuntimeDir()
++	if err != nil {
++		return "", err
++	}
++	wdir := filepath.Join(dir, "podman")
++	if err := os.MkdirAll(wdir, 0o755); err != nil {
++		return "", err
++	}
++	flags := "--ignore-cgroups"
++	name := "runsc-rootless-net"
++	if sealed {
++		// No container netns → gVisor must also disable its netstack.
++		flags += " --network=none"
++		name = "runsc-rootless-sealed"
++	}
++	wp := filepath.Join(wdir, name)
++	script := "#!/bin/sh\n" +
++		"# Generated by enso. Rootless runsc cannot configure cgroups\n" +
++		"# (--ignore-cgroups); a sealed box has no netns (--network=none).\n" +
++		"exec " + realRunsc + " " + flags + " \"$@\"\n"
++	if cur, _ := os.ReadFile(wp); string(cur) != script {
++		if err := os.WriteFile(wp, []byte(script), 0o755); err != nil {
++			return "", err
++		}
++	}
++	return wp, nil
++}
++
+ // buildRunArgs is the pure `podman run …` argv builder (unit-tested
+ // without a runtime). It encodes the isolation posture:
+ //
+@@ -140,7 +257,7 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
+ //   - egress: sealed (`--network none`) unless an allowlist proxy is
+ //     wired, in which case the box gets exactly HTTPS_PROXY/HTTP_PROXY
+ //     and nothing else.
+-func (b *Backend) buildRunArgs(name, taskID, exe, cwd string) []string {
++func (b *Backend) buildRunArgs(name, taskID, exe, cwd, ociRuntime string) []string {
+ 	src := cwd
+ 	if b.MountSource != "" {
+ 		src = b.MountSource // host-side throwaway copy (workspace overlay)
+@@ -159,8 +276,11 @@ func (b *Backend) buildRunArgs(name, taskID, exe, cwd string) []string {
+ 		network = "slirp4netns:allow_host_loopback=true"
+ 	}
+ 
+-	args := []string{
+-		"run", "--rm", "-i",
++	args := []string{"run", "--rm", "-i"}
++	if ociRuntime != "" {
++		args = append(args, "--runtime", ociRuntime) // e.g. gVisor's runsc (or its rootless wrapper)
++	}
++	args = append(args,
+ 		"--name", name,
+ 		"--label", "enso.managed=true",
+ 		"--label", "enso.task=" + taskID,
+@@ -168,8 +288,8 @@ func (b *Backend) buildRunArgs(name, taskID, exe, cwd string) []string {
+ 		"--network", network,
+ 		"-v", mount,
+ 		"-w", cwd,
+-		"-v", exe + ":/usr/local/bin/enso:ro",
+-	}
++		"-v", exe+":/usr/local/bin/enso:ro",
++	)
+ 	if b.UID != "" {
+ 		args = append(args, "--user", b.UID)
+ 	}
+@@ -211,10 +331,49 @@ type podmanWorker struct {
+ 	name    string
+ 	ch      backend.Channel
+ 	once    sync.Once
++	diag    *ringBuffer
++	gvisor  bool
+ }
+ 
+ func (w *podmanWorker) Channel() backend.Channel { return w.ch }
+ 
++// StartupDiagnostic explains why the box never came up: the tail of
++// podman/runtime stderr, plus — when a gVisor runtime is in play —
++// the rootless remediation, since that is by far the most common
++// gVisor failure. Empty when there's nothing captured.
++func (w *podmanWorker) StartupDiagnostic() string {
++	if w.diag == nil {
++		return ""
++	}
++	// The channel EOFs the instant the box dies, often a beat before
++	// podman/runtime stderr is flushed into the buffer. A brief settle
++	// (error path only) makes the captured tail the actual error
++	// instead of empty.
++	time.Sleep(750 * time.Millisecond)
++	tail := w.diag.String()
++	if tail == "" && !w.gvisor {
++		return ""
++	}
++	var b strings.Builder
++	if tail != "" {
++		b.WriteString("podman/runtime said:\n  ")
++		b.WriteString(strings.ReplaceAll(tail, "\n", "\n  "))
++		b.WriteString("\n")
++	}
++	if w.gvisor {
++		b.WriteString(
++			"\ngVisor (runsc) under rootless podman is finicky. enso already\n" +
++				"runs it with --cgroup-manager=cgroupfs and a private\n" +
++				"runsc --ignore-cgroups wrapper. If it still fails, the host\n" +
++				"usually needs: cgroup v2, runsc installed for this user, and\n" +
++				"the kernel allowing unprivileged userns (sysctl\n" +
++				"kernel.unprivileged_userns_clone=1). To run without gVisor,\n" +
++				"unset bash.sandbox_options.hardening. See docs: Sandbox →\n" +
++				"gVisor hardening.")
++	}
++	return strings.TrimSpace(b.String())
++}
++
+ func (w *podmanWorker) Wait(ctx context.Context) error {
+ 	done := make(chan error, 1)
+ 	go func() { done <- w.cmd.Wait() }()
+@@ -262,6 +421,15 @@ func containerName(cwd, taskID string) string {
+ 	return "enso-" + base + "-" + id
+ }
+ 
++// runtimeAvailable reports whether a hardened OCI runtime binary
++// (e.g. "runsc") is on PATH. podman would also error if the runtime is
++// declared but missing/misconfigured; checking up front lets Start
++// fail with an actionable install hint instead of a raw podman error.
++func runtimeAvailable(name string) bool {
++	_, err := exec.LookPath(name)
++	return err == nil
++}
++
+ // slirpGatewayIP is the well-known slirp4netns gateway. With
+ // allow_host_loopback=true the container reaches the host's 127.0.0.1
+ // at this address (same convention as QEMU user-mode networking).
+diff --git a/internal/backend/worker/adapter.go b/internal/backend/worker/adapter.go
+index 61ffcd4..5a37b85 100644
+--- a/internal/backend/worker/adapter.go
++++ b/internal/backend/worker/adapter.go
+@@ -650,7 +650,11 @@ func isolationNote(is backend.IsolationSpec) string {
+ 	if !is.NetworkSealed {
+ 		net = "network not sealed"
+ 	}
+-	return fmt.Sprintf("container (image %s), %s. The entire agent runs inside the box on one filesystem. Workspace changes are not yet automatically rolled back.", is.Image, net)
++	hardening := ""
++	if is.Runtime == "runsc" {
++		hardening = " Syscalls are intercepted by gVisor (userspace kernel)."
++	}
++	return fmt.Sprintf("container (image %s), %s. The entire agent runs inside the box on one filesystem.%s Workspace changes are not yet automatically rolled back.", is.Image, net, hardening)
+ }
+ 
+ func decodeConfig(raw json.RawMessage) (*config.Config, error) {
+diff --git a/internal/config/config.go b/internal/config/config.go
+index bbe7a1f..8caa7e3 100644
+--- a/internal/config/config.go
++++ b/internal/config/config.go
+@@ -616,6 +616,31 @@ type BashSandboxOptions struct {
+ 	// expanded like provider api_key. The worker env is otherwise
+ 	// empty — this is the only way a secret reaches a sealed box.
+ 	Credentials map[string]string `toml:"credentials"`
++
++	// Hardening selects a hardened OCI runtime for the container.
++	// "gvisor" (alias "runsc") runs it under gVisor — syscalls are
++	// intercepted by a userspace kernel, shrinking the host kernel
++	// attack surface, at a syscall-heavy performance cost. Linux only;
++	// requires runsc installed and configured as a podman runtime. If
++	// set but unavailable enso REFUSES to run rather than silently
++	// dropping to unhardened isolation. Empty = the default runtime.
++	Hardening string `toml:"hardening"`
++}
++
++// OCIRuntime maps the user-facing Hardening knob to the `--runtime`
++// value podman expects. "" stays empty (default runtime); the gvisor
++// alias resolves to runsc; any other non-empty value is passed through
++// verbatim so an unknown/misconfigured choice fails the availability
++// check loudly instead of silently running unhardened.
++func (o BashSandboxOptions) OCIRuntime() string {
++	switch strings.ToLower(strings.TrimSpace(o.Hardening)) {
++	case "":
++		return ""
++	case "gvisor", "runsc":
++		return "runsc"
++	default:
++		return strings.TrimSpace(o.Hardening)
++	}
+ }
+ 
+ // BackendKind selects where the agent core runs. There is exactly one
+diff --git a/internal/config/hardening_test.go b/internal/config/hardening_test.go
+new file mode 100644
+index 0000000..a614fff
+--- /dev/null
++++ b/internal/config/hardening_test.go
+@@ -0,0 +1,25 @@
++// SPDX-License-Identifier: AGPL-3.0-or-later
++
++package config
++
++import "testing"
++
++func TestBashSandboxOptions_OCIRuntime(t *testing.T) {
++	cases := map[string]string{
++		"":        "",
++		"  ":      "",
++		"gvisor":  "runsc",
++		"GVisor":  "runsc",
++		"runsc":   "runsc",
++		" runsc ": "runsc",
++		// Unknown values pass through verbatim so Start fails the
++		// availability check loudly instead of silently unhardened.
++		"kata":  "kata",
++		"typo!": "typo!",
++	}
++	for in, want := range cases {
++		if got := (BashSandboxOptions{Hardening: in}).OCIRuntime(); got != want {
++			t.Errorf("OCIRuntime(%q) = %q, want %q", in, got, want)
++		}
++	}
++}
