@@ -120,7 +120,7 @@ func (SpawnTool) Run(ctx context.Context, args map[string]interface{}, ac *tools
 
 	childProviders := ac.Providers
 	if childProviders == nil {
-		// Defensive: pre-Phase-3 callers may not have set Providers
+		// Defensive: older callers may not have set Providers
 		// yet. Fall back to a one-element map containing the parent's
 		// current provider so spawn still works.
 		childProviders = map[string]*llm.Provider{ac.Provider.Name: ac.Provider}
@@ -146,6 +146,8 @@ func (SpawnTool) Run(ctx context.Context, args map[string]interface{}, ac *tools
 		Writer:             childWriter,
 		WebFetchAllowHosts: ac.WebFetchAllowHosts,
 		RestrictedRoots:    ac.RestrictedRoots,
+		Capabilities:       ac.Capabilities, // sealed children can still broker
+		IsolationNote:      ac.IsolationNote,
 	})
 	if err != nil {
 		return tools.Result{}, fmt.Errorf("spawn_agent: build child: %w", err)

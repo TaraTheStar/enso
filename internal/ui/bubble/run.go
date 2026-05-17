@@ -9,16 +9,17 @@
 // Once a message finishes streaming it graduates to scrollback, where
 // terminal-native selection works like in any tmux pane.
 //
-// Phase 1+ scope: full agent runtime (config, providers, MCP, LSP,
-// sandbox, persistence, resume, agent profiles). Yolo-only — the
-// permission flow lands in phase 5. UI features (sidebar, vim, slash
-// commands, overlays) land in phases 3-5.
+// Scope: full agent runtime (config, providers, MCP, LSP, sandbox,
+// persistence, resume, agent profiles) plus the slash/overlay
+// surface, all driven over the Backend seam.
 //
 // See ~/.claude/plans/gleaming-growing-pebble.md for the full plan.
 package bubble
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -28,16 +29,19 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"sync/atomic"
+
+	"github.com/google/uuid"
+
 	"github.com/TaraTheStar/enso/internal/agent"
-	"github.com/TaraTheStar/enso/internal/agents"
+	"github.com/TaraTheStar/enso/internal/backend"
+	"github.com/TaraTheStar/enso/internal/backend/host"
+	"github.com/TaraTheStar/enso/internal/backend/podman"
+	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/hooks"
 	"github.com/TaraTheStar/enso/internal/llm"
-	"github.com/TaraTheStar/enso/internal/lsp"
-	"github.com/TaraTheStar/enso/internal/mcp"
 	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/sandbox"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/slash"
 	"github.com/TaraTheStar/enso/internal/tools"
@@ -88,147 +92,167 @@ func Run(opts Options) error {
 	if err != nil {
 		return err
 	}
+	// Exactly one execution path: LocalBackend (sandbox off) or
+	// PodmanBackend (sandbox on), both behind the seam. No in-process
+	// branch — the structural fix the whole effort exists for.
+	b, isol, bopts := host.SelectBackend(cfg)
+	return runTUIViaBackend(b, isol, bopts, opts, cwd, cfg, providers, defaultName)
+}
+
+// runTUIViaBackend is the Backend-seam implementation of the
+// interactive TUI for the default (sandbox-off) path. The agent core
+// (model loop + tools + session message store + mcp/lsp/agents recipe)
+// runs in the worker child process; the host keeps the terminal, the
+// REAL providers, rendering, the permission modal, and the slash /
+// overlay surface. host.Start republishes the worker's bus events onto
+// busInst, so forwardBus / the conversation state machine / the
+// permission modal work unchanged.
+//
+// Fidelity notes (the seam's honest, documented limitations — same
+// philosophy as daemon-attach mode):
+//   - Agent-state slash commands (/model /compact /prune /context /cost
+//     /info numbers /prompt /yolo) and skills' tool-gating round-trip
+//     to the worker (control RPC) or read the telemetry snapshot, so
+//     they are behavior-identical.
+//   - Session meta (/session /label /fork /sessions, audit, replay)
+//     uses a host-opened handle to the SAME sqlite store (LocalBackend
+//     shares the filesystem) — honest, not faked.
+//   - Permission y/n decisions cross the wire faithfully; the modal's
+//     "always"/"turn" pattern-persistence degrades to allow-once with
+//     the existing notice (the enforcing checker is worker-side, like
+//     attach mode). /lsp /mcp /transcript reflect worker-side managers
+//     and show a host-derived view.
+func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.Option, opts Options, cwd string, cfg *config.Config, providers map[string]*llm.Provider, defaultName string) error {
 	provider := providers[defaultName]
+
+	// Workspace overlay: run the agent against a throwaway clone of the
+	// project. The interactive commit/discard/keep prompt happens after
+	// the TUI exits (terminal restored), below.
+	var overlayWS *workspace.Overlay
+	if pb, ok := b.(*podman.Backend); ok && cfg.Bash.Sb.Workspace == "overlay" {
+		ws, err := workspace.New(context.Background(), cwd)
+		if err != nil {
+			return fmt.Errorf("workspace: %w", err)
+		}
+		pb.MountSource = ws.Copy
+		overlayWS = ws
+	}
+
+	resuming := opts.Session != ""
+	sessionID := ""
+	if resuming {
+		sessionID = opts.Session
+	} else if !opts.Ephemeral {
+		sessionID = uuid.NewString()
+	}
+
+	// Non-secret provider catalog (names/models/pool only); shared
+	// projection so run/TUI/daemon can't drift on what crosses the seam.
+	catalog := host.ProviderCatalog(providers)
+
+	spec := backend.TaskSpec{
+		TaskID:          uuid.NewString(),
+		Cwd:             cwd,
+		Interactive:     true,
+		Ephemeral:       opts.Ephemeral,
+		MaxTurns:        opts.MaxTurns,
+		Yolo:            opts.Yolo,
+		AgentProfile:    opts.Agent,
+		Providers:       catalog,
+		DefaultProvider: defaultName,
+		Isolation:       isol,
+	}
+	if resuming {
+		spec.ResumeSessionID = opts.Session
+	} else {
+		spec.SessionID = sessionID
+	}
+	// Credential-scrub invariant: the SCRUBBED config crosses the seam.
+	rc, err := json.Marshal(cfg.ScrubbedForWorker())
+	if err != nil {
+		return fmt.Errorf("serialize config: %w", err)
+	}
+	spec.ResolvedConfig = rc
 
 	busInst := bus.New()
 
+	// Host-side DISPLAY checker: built from the same cfg so /perms,
+	// /info and the overlay reflect the policy accurately. It does NOT
+	// enforce (the worker's checker does); /yolo mirrors here and
+	// RPC-toggles the worker's real one.
 	denies := append([]string{}, cfg.Permissions.Deny...)
 	ignorePatterns, _ := permissions.LoadIgnoreFile(filepath.Join(cwd, ".ensoignore"))
 	if len(ignorePatterns) > 0 {
 		denies = append(denies, permissions.IgnoreToDenyPatterns(ignorePatterns)...)
 	}
-	checker := permissions.NewChecker(cfg.Permissions.Allow, cfg.Permissions.Ask, denies, cfg.Permissions.Mode)
+	dispChecker := permissions.NewChecker(cfg.Permissions.Allow, cfg.Permissions.Ask, denies, cfg.Permissions.Mode)
 	if opts.Yolo {
-		checker.SetYolo(true)
+		dispChecker.SetYolo(true)
 	}
 
-	registry := tools.BuildDefault()
-	agent.RegisterSpawn(registry)
-	tools.RegisterSearch(registry, cfg.Search)
+	// Host-side DISPLAY registry: the default tool set for /tools and
+	// the overlay. The worker owns the real, profile-filtered registry
+	// (with mcp/lsp tools); starting managers host-side would
+	// double-spawn server processes, so this is intentionally the
+	// unfiltered core set.
+	dispRegistry := tools.BuildDefault()
+	agent.RegisterSpawn(dispRegistry)
+	tools.RegisterSearch(dispRegistry, cfg.Search)
 
-	transcripts := tools.NewTranscripts()
-
-	mcpMgr := mcp.NewManager()
-	if len(cfg.MCP) > 0 {
-		mcpMgr.Start(context.Background(), cfg.MCP)
-		mcpMgr.RegisterAll(registry)
-	}
-	defer mcpMgr.Close()
-
-	lspMgr := lsp.NewManager(cwd, cfg.LSP)
-	tools.RegisterLSP(registry, lspMgr)
-	defer lspMgr.Close()
-
-	var sandboxMgr *sandbox.Manager
-	if sbCfg, on := sandbox.FromConfig(cfg); on {
-		sandboxMgr, err = sandbox.NewManager(cwd, sbCfg)
-		if err != nil {
-			return fmt.Errorf("sandbox: %w", err)
-		}
-		ensureCtx, ensureCancel := context.WithTimeout(context.Background(), 60*time.Second)
-		if err := sandboxMgr.Ensure(ensureCtx, os.Stderr); err != nil {
-			ensureCancel()
-			return fmt.Errorf("sandbox: ensure %s: %w", sandboxMgr.ContainerName(), err)
-		}
-		ensureCancel()
-	}
 	var restrictedRoots []string
 	if !cfg.Permissions.DisableFileConfinement {
 		restrictedRoots = append([]string{cwd}, cfg.Permissions.AdditionalDirectories...)
 	}
 
-	spec, err := agents.Find(cwd, opts.Agent)
-	if err != nil {
-		return err
-	}
-	applied := agents.Apply(spec, provider, registry)
-	provider = applied.Provider
-	registry = applied.Registry
-
+	// Host-side handle to the SAME session store (shared fs under
+	// LocalBackend) for label/fork/sessions/replay/audit. The worker
+	// owns the message-append writer; this host writer only touches
+	// session meta + the events (audit) table — different tables, no
+	// seq contention.
 	var (
 		store   *session.Store
 		writer  *session.Writer
 		resumed *session.State
 	)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sess, err := host.Start(ctx, b, spec, providers, busInst, bopts...)
+	if err != nil {
+		return fmt.Errorf("bubble: start worker: %w", err)
+	}
+	defer sess.Close()
+
 	if !opts.Ephemeral {
 		store, err = session.Open()
 		if err != nil {
 			return fmt.Errorf("open session store: %w", err)
 		}
 		defer store.Close()
-
-		if opts.Session != "" {
+		if resuming {
 			resumed, err = session.Load(store, opts.Session)
 			if err != nil {
 				return fmt.Errorf("resume %s: %w", opts.Session, err)
 			}
-			writer, err = session.AttachWriter(store, opts.Session)
-			if err != nil {
-				return fmt.Errorf("attach writer: %w", err)
-			}
-			if resumed.Interrupted {
-				_ = writer.MarkInterrupted(false)
-			}
 		} else {
-			writer, err = session.NewSession(store, provider.Model, provider.Name, cwd)
-			if err != nil {
+			// Host owns session-row creation (mirrors the legacy
+			// in-process bubble.Run). The worker attaches a
+			// message-append writer to this row; the host writer below
+			// is for session meta + the audit/events table.
+			if _, err = session.NewSessionWithID(store, sessionID, provider.Model, defaultName, cwd); err != nil {
 				return fmt.Errorf("create session: %w", err)
 			}
 		}
+		writer, err = session.AttachWriter(store, sessionID)
+		if err != nil {
+			return fmt.Errorf("attach writer: %w", err)
+		}
+		if resuming && resumed.Interrupted {
+			_ = writer.MarkInterrupted(false)
+		}
 	}
 
-	maxTurns := opts.MaxTurns
-	if applied.MaxTurns > 0 {
-		maxTurns = applied.MaxTurns
-	}
-
-	hooksInst := hooks.New(cfg.Hooks.OnFileEdit, cfg.Hooks.OnSessionEnd)
-
-	agentCfg := agent.Config{
-		Providers:             providers,
-		DefaultProvider:       defaultName,
-		Bus:                   busInst,
-		Registry:              registry,
-		Perms:                 checker,
-		Writer:                writer,
-		Cwd:                   cwd,
-		MaxTurns:              maxTurns,
-		Transcripts:           transcripts,
-		GitAttribution:        cfg.Git.Attribution,
-		GitAttributionName:    cfg.Git.AttributionName,
-		ExtraSystemPrompt:     applied.PromptAppend,
-		AdditionalDirectories: cfg.Permissions.AdditionalDirectories,
-		RestrictedRoots:       restrictedRoots,
-		Hooks:                 hooksInst,
-		WebFetchAllowHosts:    cfg.WebFetch.AllowHosts,
-		PruneCfg:              cfg.Context.Resolve(),
-	}
-	if sandboxMgr != nil {
-		agentCfg.Sandbox = sandboxMgr
-	}
-	if writer != nil {
-		agentCfg.SessionID = writer.SessionID()
-	}
-	if resumed != nil {
-		agentCfg.History = resumed.History
-	}
-
-	agt, err := agent.New(agentCfg)
-	if err != nil {
-		return fmt.Errorf("create agent: %w", err)
-	}
-
-	// Anything printed via fmt.Println BEFORE tea.NewProgram.Run() lands
-	// in the user's real terminal scrollback (we're inline, not
-	// alt-screen). Use that to surface the startup state — model,
-	// MCP/LSP/sandbox configuration — so the user can see what runtime
-	// services are loading without summoning the inspector overlay.
-	printStartupBanner(provider, cfg, sandboxMgr != nil, writer)
-
-	// Replay the resumed transcript into terminal scrollback before the
-	// program takes over. The phase-1 renderer is intentionally terse;
-	// phase 3 reuses the shared block-model formatter for styled,
-	// consistent rendering between live and replayed messages.
+	printStartupBanner(provider, cfg, false, writer)
 	if resumed != nil {
 		replayHistory(resumed.History)
 		if resumed.Interrupted {
@@ -236,16 +260,31 @@ func Run(opts Options) error {
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	inputCh := make(chan string, 64)
 
-	// Audit-log subscriber: persist a curated subset of events into the
-	// session's events table so diagnostic replay is possible. Subscribes
-	// before the agent goroutine starts so we don't miss the first
-	// EventUserMessage. auditDone guards the shutdown ordering — we
-	// drain audit before closing the store.
+	// Submit pump: model writes typed/synthetic input to inputCh; we
+	// relay each line to the worker as MsgInput. Mirrors the old
+	// `go agt.Run(ctx, inputCh)` reader.
+	submitDone := make(chan struct{})
+	go func() {
+		defer close(submitDone)
+		for {
+			select {
+			case text, ok := <-inputCh:
+				if !ok {
+					return
+				}
+				if err := sess.Submit(text); err != nil {
+					busInst.Publish(bus.Event{Type: bus.EventError, Payload: fmt.Errorf("submit: %w", err)})
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	// Audit-log subscriber (host writer → events table). Same curated
+	// subset and shutdown ordering as the in-process path.
 	auditDone := make(chan struct{})
 	if writer != nil {
 		auditCh := busInst.Subscribe(64)
@@ -265,32 +304,32 @@ func Run(opts Options) error {
 		close(auditDone)
 	}
 
-	agentDone := make(chan struct{})
+	// Worker lifetime: when the agent core winds down (or errors), turn
+	// it into the same bus signals the conversation machine expects.
+	workerDone := make(chan struct{})
 	go func() {
-		defer close(agentDone)
-		if err := agt.Run(ctx, inputCh); err != nil && err != context.Canceled {
-			busInst.Publish(bus.Event{Type: bus.EventError, Payload: err})
+		defer close(workerDone)
+		if werr := sess.Wait(); werr != nil && !errors.Is(werr, context.Canceled) {
+			busInst.Publish(bus.Event{Type: bus.EventError, Payload: werr})
 		}
 	}()
 
-	// Slash command registry + handler context. The handlers are wired
-	// with concrete refs to the agent / checker / store / providers so
-	// /yolo, /model, /info, etc. has everything it needs to run inline.
+	agtCtl := &sessionAgentControl{sess: sess, providers: providers}
+
 	slashReg := slash.NewRegistry()
 	slashContext := &slashCtx{
-		agt:         agt,
-		checker:     checker,
-		registry:    registry,
-		store:       store,
-		writer:      writer,
-		providers:   providers,
-		cwd:         cwd,
-		lspMgr:      lspMgr,
-		mcpMgr:      mcpMgr,
-		transcripts: transcripts,
+		agt:       agtCtl,
+		sess:      sess,
+		bus:       busInst,
+		checker:   dispChecker,
+		registry:  dispRegistry,
+		store:     store,
+		writer:    writer,
+		providers: providers,
+		cwd:       cwd,
+		// lspMgr/mcpMgr/transcripts live worker-side; nil here → the
+		// handlers' existing nil guards render a host-side view.
 	}
-	// submit is the hook /init and /loop use to push a synthetic user
-	// message into the agent's input channel.
 	slashContext.submit = func(text string) {
 		go func() {
 			select {
@@ -299,39 +338,26 @@ func Run(opts Options) error {
 			}
 		}()
 	}
-
-	// workflowDeps wires every cross-cutting runtime reference /workflow
-	// needs into one bag. Pre-built so individual handler invocations
-	// don't re-derive them.
 	slashContext.workflowDeps = workflow.RunDeps{
 		Providers:          providers,
 		DefaultProvider:    defaultName,
 		Bus:                busInst,
-		Registry:           registry,
-		Perms:              checker,
+		Registry:           dispRegistry,
+		Perms:              dispChecker,
 		Cwd:                cwd,
-		MaxTurns:           maxTurns,
-		GlobalAgents:       agt.AgentCtx.GlobalAgents,
-		MaxAgents:          agt.AgentCtx.MaxAgents,
-		MaxDepth:           agt.AgentCtx.MaxDepth,
+		MaxTurns:           opts.MaxTurns,
+		GlobalAgents:       &atomic.Int64{}, // host-side workflow budget (agent.New resolves Max* defaults)
 		Depth:              0,
-		Transcripts:        transcripts,
 		Writer:             writer,
 		GitAttribution:     cfg.Git.Attribution,
 		GitAttributionName: cfg.Git.AttributionName,
 		WebFetchAllowHosts: cfg.WebFetch.AllowHosts,
 		RestrictedRoots:    restrictedRoots,
 	}
-
 	registerBuiltins(slashReg, slashContext)
 
-	// Custom skills from $XDG_CONFIG_HOME/enso/skills and
-	// ./.enso/skills. Each skill renders a templated prompt and
-	// (optionally) restricts the next turn to a subset of tools. The
-	// submitter applies the restriction before pushing the rendered
-	// text into inputCh.
 	skillSubmit := func(text string, allowedTools []string) {
-		agt.SetNextTurnTools(allowedTools)
+		agtCtl.SetNextTurnTools(allowedTools)
 		go func() {
 			select {
 			case inputCh <- text:
@@ -348,28 +374,21 @@ func Run(opts Options) error {
 		}
 	}
 
-	// conv is held by the model; the slashCtx grabs the same pointer
-	// after construction so /find can see history.
-
-	// Vim mode is enabled when [ui] editor_mode = "vim" in config.
-	// The single-line subset is h/l/0/$/w/b/x/i/a/A; j/k/G/o/O don't
-	// apply since the input is one line.
 	vim := strings.EqualFold(cfg.UI.EditorMode, "vim")
-
 	m := &model{
 		inputCh:   inputCh,
-		modelName: agt.Provider().Model,
+		modelName: provider.Model,
 		slashReg:  slashReg,
 		slashCtx:  slashContext,
 		input: inputState{
 			vim:       vim,
-			vimNormal: vim, // start in normal mode when vim is on
+			vimNormal: vim,
 		},
 		overlay: &overlayData{
-			agt:      agt,
+			agt:      agtCtl,
 			cfg:      cfg,
-			checker:  checker,
-			registry: registry,
+			checker:  dispChecker,
+			registry: dispRegistry,
 			writer:   writer,
 			cwd:      cwd,
 		},
@@ -380,34 +399,42 @@ func Run(opts Options) error {
 		},
 		sessions: &sessionsOverlayData{store: store},
 	}
-	m.permCheckerCwd.checker = checker
+	// Enforcing checker is worker-side: leaving permCheckerCwd.checker
+	// nil makes the modal's "always/turn" honestly degrade to
+	// allow-once (y/n still cross the wire), exactly like attach mode.
+	m.permCheckerCwd.checker = nil
 	m.permCheckerCwd.cwd = cwd
 	slashContext.conv = &m.conv
-	p := tea.NewProgram(m)
 
+	p := tea.NewProgram(m)
 	busSub := busInst.Subscribe(8192)
 	go forwardBus(p, busSub)
 
 	_, runErr := p.Run()
 
-	// Shutdown ordering: cancel ctx so the agent loop returns, close
-	// inputCh so any pending submit unwinds, wait for the agent
-	// goroutine, then close the bus (which closes every subscriber
-	// channel including audit), wait for audit drain, finally let
-	// deferred Close() calls (mcpMgr, lspMgr, store) run.
+	// Shutdown ordering: cancel ctx, close inputCh + tell the worker no
+	// more input so it winds down, wait for the worker, then close the
+	// bus (closes audit + forwardBus subscribers), drain audit, finally
+	// deferred Close()s (sess teardown, store) run.
 	cancel()
 	close(inputCh)
-	<-agentDone
+	<-submitDone
+	sess.CloseInput()
+	<-workerDone
 	busInst.Close()
 	<-auditDone
+
+	// The TUI has exited and the terminal is restored (inline mode), so
+	// the overlay commit/discard/keep prompt can talk to the user
+	// directly. Done before any session-switch exec so a switch can't
+	// strand the diverged copy.
+	if overlayWS != nil {
+		_ = workspace.Resolve(context.Background(), overlayWS, true, os.Stdin, os.Stdout)
+	}
 
 	if runErr != nil {
 		return fmt.Errorf("bubble: %w", runErr)
 	}
-
-	// If the user picked a session in the Ctrl-R overlay, syscall.Exec
-	// into the same binary with --session <id>. Never returns on
-	// success — the new process replaces ours.
 	if m.pendingSwitch != "" {
 		return execIntoSession(m.pendingSwitch)
 	}

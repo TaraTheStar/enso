@@ -9,8 +9,6 @@ import (
 	"runtime"
 	"strings"
 	"time"
-
-	"github.com/TaraTheStar/enso/internal/tools"
 )
 
 // environmentNote returns a system-prompt addendum describing the agent's
@@ -23,19 +21,20 @@ import (
 // paths into the system prompt. The model can run `git status` itself if
 // it needs the current state.
 //
-// When sb is non-nil, the bash tool routes through a container. The note
-// reports the in-container working directory (the path the model will
-// see when it runs `pwd` or references files in shell commands) and
-// flags the sandbox so the model knows shell userland is constrained to
-// the configured image — not the host.
+// isolation is a single honest sentence describing the box the agent
+// runs in (supplied by the Backend seam). There is exactly one
+// filesystem namespace now — the entire agent core, bash AND the file
+// tools, runs in the same place — so there is deliberately NO
+// host↔container path-translation caveat anymore: that whole class of
+// "use /work not the host path" prompt instruction is gone because the
+// situation it described cannot occur. Empty isolation falls back to
+// the conservative truth (direct host execution, no rollback).
 //
 // restrictedRoots is the file-tool confinement list (typically
 // `[cwd, ...permissions.additional_directories]`). Empty means
 // confinement is off (`permissions.disable_file_confinement = true`)
-// and file tools can touch any host path the agent process can read.
-// File tools always run on the host process — sandbox routing only
-// applies to bash — so this is independent of sb.
-func environmentNote(cwd string, now time.Time, sb tools.SandboxRunner, restrictedRoots []string) string {
+// and file tools can touch any path the agent can read.
+func environmentNote(cwd string, now time.Time, isolation string, restrictedRoots []string) string {
 	if cwd == "" {
 		return ""
 	}
@@ -43,19 +42,13 @@ func environmentNote(cwd string, now time.Time, sb tools.SandboxRunner, restrict
 	if isGitRepo(cwd) {
 		gitRepo = "yes"
 	}
+	if strings.TrimSpace(isolation) == "" {
+		isolation = "none — this agent runs directly on the host; changes apply in place with no sandbox and no automatic rollback."
+	}
 	var b strings.Builder
 	b.WriteString("# Environment\n\n")
-
-	if sb != nil {
-		mount := sb.WorkdirMount()
-		fmt.Fprintf(&b, "- Working directory: %s\n", mount)
-		fmt.Fprintf(&b, "- Sandbox bind-mount: host %s is mounted at %s. In shell commands, always use %s — never the host path.\n", cwd, mount, mount)
-		fmt.Fprintf(&b, "  Example: use `find %s -name \"*.go\"` (NOT `find %s -name \"*.go\"`).\n", mount, cwd)
-		fmt.Fprintf(&b, "- Sandbox: enabled — runtime %s, image %s, container %s\n", sb.Runtime(), sb.Image(), sb.ContainerName())
-		b.WriteString("- Bash tool runs inside the sandbox and sees container paths; file-touching tools (read/write/edit/grep/glob) run on the host process and take host paths — they do NOT go through the sandbox.\n")
-	} else {
-		fmt.Fprintf(&b, "- Working directory: %s\n", cwd)
-	}
+	fmt.Fprintf(&b, "- Working directory: %s\n", cwd)
+	fmt.Fprintf(&b, "- Isolation: %s\n", isolation)
 	if len(restrictedRoots) > 0 {
 		fmt.Fprintf(&b, "- File-tool access: confined to %s. Paths outside these roots will be rejected.\n", strings.Join(restrictedRoots, ", "))
 	} else {

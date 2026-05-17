@@ -70,7 +70,7 @@ type model struct {
 
 	// Identity for status line. Only the model name is shown by default;
 	// provider/base URL/context window live in /info and the Ctrl-Space
-	// sidebar overlay (planned for later phases). Showing the provider
+	// session inspector overlay. Showing the provider
 	// inline is redundant when the user has named their provider after
 	// the model, and load-bearing only when the same model is reachable
 	// via multiple providers — that nuance belongs in the on-demand
@@ -320,8 +320,8 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+c":
-		// Phase 1: Ctrl-C also quits. Later phases distinguish "cancel
-		// current turn" from "quit app" the way tui does.
+		// Ctrl-C currently quits the app; distinguishing "cancel
+		// current turn" from "quit app" the way tui does is not yet wired.
 		m.quitting = true
 		return m, tea.Quit
 
