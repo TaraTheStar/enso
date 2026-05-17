@@ -36,6 +36,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -79,7 +80,37 @@ type Backend struct {
 	// ExtraMounts are additional host paths mounted read-only into the
 	// VM (Lima `mounts:` entries).
 	ExtraMounts []string
+
+	// Sealed makes the guest network egress default-deny: a per-task
+	// firewall (Start → sealGuestEgress) drops all new outbound from the
+	// guest except loopback, established/related (the host's inbound
+	// limactl-shell SSH return path — the Channel), and the host egress
+	// proxy when one is wired. Set by host.SelectBackend for the lima
+	// backend. With it set, a `bash` `curl https://example.com` fails
+	// the same way it does in a default `--network none` podman box;
+	// inference is unaffected (host-proxied over the stdio Channel, not
+	// the guest network). If the seal cannot be applied, Start REFUSES
+	// rather than run a box that claims to be sealed but isn't.
+	Sealed bool
+
+	// EgressProxy, when set, is the host loopback proxy URL. It is
+	// translated to the Lima host gateway (192.168.5.2) and injected
+	// into the worker as HTTPS_PROXY/HTTP_PROXY, and the firewall opens
+	// exactly that gateway:port — making the allowlist proxy the box's
+	// only route out. Empty keeps the box fully sealed (no egress).
+	EgressProxy string
 }
+
+// limaHostGateway is the address the guest reaches the HOST on in
+// Lima's default user-mode network (QEMU slirp / VZ). It is hardcoded
+// in Lima itself (pkg/networks/const.go: SlirpGateway, subnet
+// 192.168.5.0/24, intentionally non-configurable per instance). Host
+// loopback services bound on 127.0.0.1:PORT are reachable from the
+// guest at this address:PORT — the Lima analogue of podman's slirp
+// 10.0.2.2. Using the literal IP (not host.lima.internal) is
+// deliberate: a sealed guest cannot reach Lima's DNS to resolve the
+// name.
+const limaHostGateway = "192.168.5.2"
 
 func (b *Backend) Name() string { return "lima" }
 
@@ -125,10 +156,29 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 		return nil, err
 	}
 
+	// Seal the guest egress BEFORE launching the worker. Re-applied
+	// every task: the persistent per-project VM outlives any single
+	// host proxy instance (a fresh loopback port each process), so the
+	// firewall's allowed proxy port must be refreshed to match. A guest
+	// without iptables, or any other failure, REFUSES the launch — a
+	// box that cannot be sealed must never run while the prompt claims
+	// it is (the Phase-6 honesty invariant).
+	proxyURL := ""
+	if b.Sealed {
+		proxyURL = guestProxyURL(b.EgressProxy)
+		if err := sealGuestEgress(ctx, limactl, name, proxyURL); err != nil {
+			return nil, fmt.Errorf(
+				"lima: could not seal guest egress on %q: %w — refusing to "+
+					"run a VM that is not sealed while isolation claims it is. "+
+					"The guest needs iptables (default Lima images have it); "+
+					"or set [backend] type to \"podman\"/\"local\".", name, err)
+		}
+	}
+
 	// Not CommandContext: shutdown is an ordered Teardown (close the
 	// Channel → worker winds down), not an abrupt mid-frame kill. The
 	// persistent VM is NOT stopped per task (only GC stops/deletes it).
-	cmd := exec.Command(limactl, buildShellArgs(name, spec.Cwd, exe)...)
+	cmd := exec.Command(limactl, buildShellArgs(name, spec.Cwd, exe, proxyURL)...)
 	diag := &ringBuffer{max: 8 << 10}
 	cmd.Stderr = io.MultiWriter(os.Stderr, diag)
 
@@ -208,9 +258,11 @@ func vmStatus(ctx context.Context, limactl, name string) string {
 //   - the static enso binary's dir mounted READ-ONLY at its real path
 //     so the guest execs it 1:1 (no image rebuild);
 //   - no containerd — a plain, minimal VM;
-//   - sealed by default: the worker dials no model (inference is
-//     host-proxied over the Channel); egress is a documented
-//     follow-up, mirroring how podman started.
+//   - sealed: the worker dials no model (inference is host-proxied over
+//     the Channel) and the guest egress is firewalled default-deny at
+//     launch (Start → sealGuestEgress); the network config itself is
+//     left to the base template (Lima's user-mode net is needed for the
+//     host's inbound SSH Channel — the seal is on OUTPUT, not the NIC).
 func (b *Backend) buildVMConfig(cwd, exe string) string {
 	tmpl := strings.TrimSpace(b.Template)
 	if tmpl == "" {
@@ -257,9 +309,100 @@ func buildStartArgs(name, yamlPath string) []string {
 
 // buildShellArgs is the pure `limactl shell` argv that launches the
 // worker. --workdir pins the guest cwd to the project's REAL path; the
-// enso binary is execed at its real (read-only mounted) path.
-func buildShellArgs(name, cwd, exe string) []string {
-	return []string{"shell", "--workdir", cwd, name, exe, "__worker"}
+// enso binary is execed at its real (read-only mounted) path. When a
+// guest-reachable proxy URL is given the worker is wrapped in `env` so
+// HTTPS_PROXY/HTTP_PROXY point at the host egress proxy (its only route
+// out) — the Lima analogue of podman's -e proxy injection. Loopback is
+// never proxied (the worker dials no model; inference is host-proxied
+// over stdio, not the guest network).
+func buildShellArgs(name, cwd, exe, proxyURL string) []string {
+	args := []string{"shell", "--workdir", cwd, name}
+	if proxyURL != "" {
+		args = append(args, "env",
+			"HTTPS_PROXY="+proxyURL, "HTTP_PROXY="+proxyURL,
+			"https_proxy="+proxyURL, "http_proxy="+proxyURL,
+			"NO_PROXY=127.0.0.1,localhost", "no_proxy=127.0.0.1,localhost")
+	}
+	return append(args, exe, "__worker")
+}
+
+// guestProxyURL rewrites a host-loopback proxy URL to the address the
+// sealed guest actually reaches it on: Lima exposes host 127.0.0.1
+// services at the slirp gateway (192.168.5.2), the same way podman's
+// containerProxyURL maps to 10.0.2.2. The host bind stays loopback (the
+// proxy is host-private); only the in-guest env is translated. A
+// non-loopback host (operator pointed EgressProxy at a real address) is
+// passed through unchanged. Empty in → empty out (no proxy → no env).
+func guestProxyURL(hostURL string) string {
+	if hostURL == "" {
+		return ""
+	}
+	u, err := url.Parse(hostURL)
+	if err != nil {
+		return hostURL
+	}
+	if h := u.Hostname(); h != "127.0.0.1" && h != "localhost" && h != "::1" {
+		return hostURL
+	}
+	host := limaHostGateway
+	if p := u.Port(); p != "" {
+		host += ":" + p
+	}
+	u.Host = host
+	return u.String()
+}
+
+// sealScript is the pure (unit-tested) guest firewall program: a
+// default-deny OUTPUT chain that drops every NEW outbound connection
+// the guest originates EXCEPT loopback, established/related (so the
+// host's inbound limactl-shell SSH return traffic — the Channel —
+// keeps working), and, when a proxy is wired, exactly the host egress
+// proxy at the Lima gateway:port. INPUT is untouched (the host must
+// still reach guest sshd). Idempotent: it rebuilds its own ENSO_EGRESS
+// chain and installs the OUTPUT jump at most once, so re-running it
+// every task with a fresh proxy port is safe. `-w` waits for the xtables
+// lock; conntrack matches the established return path.
+func sealScript(proxyHostport string) string {
+	allowProxy := ""
+	if proxyHostport != "" {
+		host, port := proxyHostport, ""
+		if i := strings.LastIndex(proxyHostport, ":"); i >= 0 {
+			host, port = proxyHostport[:i], proxyHostport[i+1:]
+		}
+		if port != "" {
+			allowProxy = "iptables -w -A ENSO_EGRESS -p tcp -d " + host +
+				" --dport " + port + " -j ACCEPT\n"
+		}
+	}
+	return "set -e\n" +
+		"iptables -w -F ENSO_EGRESS 2>/dev/null || iptables -w -N ENSO_EGRESS\n" +
+		"iptables -w -A ENSO_EGRESS -o lo -j ACCEPT\n" +
+		"iptables -w -A ENSO_EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n" +
+		allowProxy +
+		"iptables -w -A ENSO_EGRESS -j REJECT --reject-with icmp-port-unreachable\n" +
+		"iptables -w -C OUTPUT -j ENSO_EGRESS 2>/dev/null || iptables -w -I OUTPUT 1 -j ENSO_EGRESS\n"
+}
+
+// sealGuestEgress applies sealScript inside the guest as root (Lima's
+// default user has passwordless sudo). proxyURL is the already
+// gateway-translated value handed to the worker; the firewall opens the
+// same host:port. A non-zero exit (no iptables, sudo refused, …)
+// propagates so Start can REFUSE — never run unsealed while claiming to
+// be sealed.
+func sealGuestEgress(ctx context.Context, limactl, name, proxyURL string) error {
+	hostport := ""
+	if proxyURL != "" {
+		if u, err := url.Parse(proxyURL); err == nil {
+			hostport = u.Host
+		}
+	}
+	script := sealScript(hostport)
+	c := exec.CommandContext(ctx, limactl, "shell", name,
+		"sudo", "sh", "-c", script)
+	if out, err := c.CombinedOutput(); err != nil {
+		return fmt.Errorf("%v\n%s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 type pipePair struct{ stdin, stdout io.Closer }

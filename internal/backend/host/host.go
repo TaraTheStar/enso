@@ -59,15 +59,19 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, 
 			Memory:      cfg.Lima.Memory,
 			Disk:        cfg.Lima.Disk,
 			ExtraMounts: cfg.Lima.ExtraMounts,
+			Sealed:      true, // guest egress firewalled default-deny at launch
 			// MountSource (the per-project stable workspace copy) is
 			// wired by the run/TUI call site, which owns the overlay
 			// lifecycle and the end-of-task commit/discard prompt.
 		}
-		// Sealed by construction: the worker dials no model (inference
-		// is host-proxied over the Channel). Guest-egress allowlisting
-		// is a documented follow-up (mirrors how podman started).
+		// Genuinely sealed now (not just by inference being host-proxied):
+		// lima.Backend.Sealed firewalls guest OUTPUT default-deny, and the
+		// same static broker + egress proxy podman uses are wired in so a
+		// configured allowlist opens the box's only route out. NetworkSealed
+		// is honest because the seal is enforced, not merely asserted.
 		isol := backend.IsolationSpec{NetworkSealed: true, Kind: "vm"}
-		return lb, isol, nil
+		opts := egressBrokerOpts(cfg.Bash.Sb, func(u string) { lb.EgressProxy = u })
+		return lb, isol, opts
 	case config.BackendPodman:
 		// fall through to the podman construction below
 	default:
@@ -101,28 +105,37 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, 
 		Runtime:       sb.OCIRuntime(),
 	}
 
-	// Tier-3 broker: only constructed when the operator configured
-	// credentials or an egress allowlist. Otherwise the default-deny
-	// broker stays in force (a sealed box with no grants at all).
-	var opts []Option
-	if len(sb.Credentials) > 0 || len(sb.Egress) > 0 {
-		broker := &AllowlistBroker{
-			Creds:  sb.Credentials,
-			Egress: map[string]bool{},
-		}
-		for _, e := range sb.Egress {
-			broker.Egress[e] = true
-		}
-		if len(sb.Egress) > 0 {
-			pr := egress.New()
-			if err := pr.Start(); err == nil {
-				broker.Proxy = pr
-				b.EgressProxy = pr.ProxyURL() // box's only route out
-			}
-		}
-		opts = append(opts, WithBroker(broker))
-	}
+	opts := egressBrokerOpts(sb, func(u string) { b.EgressProxy = u })
 	return b, isol, opts
+}
+
+// egressBrokerOpts builds the tier-3 capability broker the SAME way for
+// every sealed backend (podman, lima) so the two cannot drift: a
+// static allowlist broker, only constructed when the operator
+// configured credentials or an egress allowlist (otherwise the
+// default-deny policy stays in force — a sealed box with no grants at
+// all). When an egress allowlist is configured it also starts the host
+// allowlist proxy and hands its URL back via setProxy so the backend
+// can make it the box's only route out. Nil result → no broker.
+func egressBrokerOpts(sb config.BashSandboxOptions, setProxy func(string)) []Option {
+	if len(sb.Credentials) == 0 && len(sb.Egress) == 0 {
+		return nil
+	}
+	broker := &AllowlistBroker{
+		Creds:  sb.Credentials,
+		Egress: map[string]bool{},
+	}
+	for _, e := range sb.Egress {
+		broker.Egress[e] = true
+	}
+	if len(sb.Egress) > 0 {
+		pr := egress.New()
+		if err := pr.Start(); err == nil {
+			broker.Proxy = pr
+			setProxy(pr.ProxyURL()) // box's only route out
+		}
+	}
+	return []Option{WithBroker(broker)}
 }
 
 // Session is a running worker driven over the Channel. Its lifetime
