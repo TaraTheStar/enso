@@ -87,7 +87,8 @@ func TestBashDeny_KnownResidualGap_DocumentedNotFixed(t *testing.T) {
 	// Locks in the documented gap from AGENTS.md / TODO #21: the
 	// segment splitter does NOT recurse into command substitution or
 	// backticks. These are real bypasses; a security-conscious user
-	// must rely on `bash.sandbox = "auto"` for protection. If a
+	// must rely on an isolating backend (`[backend] type = "podman"`
+	// or `"lima"`) for protection. If a
 	// future change extends the matcher to handle these, this test
 	// SHOULD fail and be updated — that's a deliberate signpost.
 	al := NewAllowlist(nil, nil, []string{"bash(rm -rf *)"})

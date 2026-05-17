@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/TaraTheStar/enso/internal/backend/lima"
 	"github.com/TaraTheStar/enso/internal/backend/podman"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/sandbox"
@@ -94,35 +96,46 @@ var sandboxPruneCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		ms, err := sandbox.ListManaged(ctx, sandbox.RuntimeAuto)
-		if err != nil {
-			return err
-		}
-		if len(ms) == 0 {
-			fmt.Println("(no enso-managed containers to prune)")
-			return nil
-		}
-		// Resolve runtime once; reuse for each rm.
-		runtime, err := sandbox.ResolveRuntimeBinary(sandbox.RuntimeAuto)
-		if err != nil {
-			return err
-		}
-		for _, m := range ms {
-			if err := sandbox.RemoveByName(ctx, runtime, m.Name); err != nil {
-				fmt.Fprintf(os.Stderr, "rm %s: %v\n", m.Name, err)
-				continue
+		// Podman side (legacy per-project sandboxes + per-task workers).
+		// A missing podman/docker is not fatal: the lima sweep below
+		// must still run.
+		if ms, err := sandbox.ListManaged(ctx, sandbox.RuntimeAuto); err != nil {
+			fmt.Fprintf(os.Stderr, "list podman sandboxes: %v\n", err)
+		} else if runtime, rerr := sandbox.ResolveRuntimeBinary(sandbox.RuntimeAuto); rerr != nil {
+			fmt.Fprintf(os.Stderr, "resolve container runtime: %v\n", rerr)
+		} else {
+			for _, m := range ms {
+				if err := sandbox.RemoveByName(ctx, runtime, m.Name); err != nil {
+					fmt.Fprintf(os.Stderr, "rm %s: %v\n", m.Name, err)
+					continue
+				}
+				fmt.Printf("removed %s\n", m.Name)
 			}
-			fmt.Printf("removed %s\n", m.Name)
+			// Per-task workers (the Backend seam) carry an enso.task
+			// label and own anonymous volumes the by-name rm above
+			// doesn't drop. Sweep reaps terminal orphans + their
+			// volumes, honouring the age threshold.
+			if n, err := podman.Sweep(ctx, runtime, flagPruneOlderThan); err != nil {
+				fmt.Fprintf(os.Stderr, "sweep task workers: %v\n", err)
+			} else if n > 0 {
+				fmt.Printf("swept %d orphaned task worker(s) + volumes\n", n)
+			}
 		}
-		// Per-task workers (the Backend seam) carry an enso.task label
-		// and own anonymous volumes the by-name rm above doesn't drop.
-		// Sweep reaps terminal orphans + their volumes, honouring the
-		// age threshold.
-		if n, err := podman.Sweep(ctx, runtime, flagPruneOlderThan); err != nil {
-			fmt.Fprintf(os.Stderr, "sweep task workers: %v\n", err)
-		} else if n > 0 {
-			fmt.Printf("swept %d orphaned task worker(s) + volumes\n", n)
+
+		// Lima side: persistent per-project VMs. These are NOT garbage
+		// by default (substrate reuse), so prune only removes them
+		// here, explicitly, honouring --older-than (instance dir
+		// mtime). Skipped silently when limactl is absent.
+		if limactl, lerr := exec.LookPath("limactl"); lerr == nil {
+			if n, err := lima.Sweep(ctx, limactl, flagPruneOlderThan); err != nil {
+				fmt.Fprintf(os.Stderr, "sweep lima VMs: %v\n", err)
+			} else if n > 0 {
+				fmt.Printf("removed %d enso lima VM(s)\n", n)
+			}
 		}
+		// Bound accumulated workspace review copies across every lima
+		// project stage dir (independent of limactl availability).
+		lima.SweepStageKept(os.Stdout)
 		return nil
 	},
 }

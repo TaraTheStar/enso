@@ -95,7 +95,8 @@ func NewAllowlist(allow, ask, deny []string) *Allowlist {
 // `bash(rm -rf *)` — the deny still fires on the trailing segment.
 // Residual gap (not closed here): command substitution like
 // `$(rm -rf /)` and backtick equivalents still bypass; for adversarial
-// inputs, `bash.sandbox = "auto"` is the real boundary, not deny rules.
+// inputs, an isolating backend (`[backend] type = "podman"` or
+// `"lima"`) is the real boundary, not deny rules.
 func (al *Allowlist) Match(tool, arg string) (matched bool, kind Kind) {
 	for _, p := range al.patterns {
 		if p.Tool != "*" && p.Tool != tool {
@@ -160,7 +161,8 @@ func bashHasUnchainedMetachars(pattern, cmd string) bool {
 // inside a string doesn't trigger a split. Subshell extraction is
 // deliberately out of scope (`$(...)` and backticks are NOT recursed
 // into) — this matcher is the cheap separator-split tier; real
-// adversarial isolation belongs in `bash.sandbox = "auto"`.
+// adversarial isolation belongs in an isolating backend
+// (`[backend] type = "podman"` or `"lima"`).
 //
 // Empty segments are dropped, so trailing or doubled separators
 // don't produce blank entries the caller has to filter.

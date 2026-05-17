@@ -243,24 +243,36 @@ allow = ["web_search(*)"]              # any query
 ask   = ["web_search(* exploit *)"]    # prompt for queries containing "exploit"
 ```
 
-## `[bash]` and `[bash.sandbox_options]`
+## `[backend]`, `[lima]`, and `[bash.sandbox_options]`
 
 ```toml
-[bash]
-sandbox = "off"            # "off" | "auto" | "podman" | "docker"
+[backend]
+type    = "local"          # "local" (default) | "podman" | "lima"
+runtime = "auto"           # type=podman only: "auto" | "podman" | "docker"
 
-[bash.sandbox_options]
+[lima]                      # type = "lima" only; all optional
+template     = "default"   # Lima template name, or a path/URL
+cpus         = 4
+memory       = "4GiB"
+disk         = "20GiB"
+extra_mounts = []           # extra host paths, mounted read-only
+
+[bash.sandbox_options]      # type = "podman" only
 image         = "alpine:latest"
 init          = []                          # commands to run once after creation
 network       = ""                          # "" inherits; "none" / "host" / named
 extra_mounts  = []                          # ["src:dst[:opts]", ...]
 env           = []                          # ["KEY=value", ...]
 name          = ""                          # override auto-generated name
-workdir_mount = "/work"                     # in-container path for cwd
 uid           = ""                          # --user value (rarely needed)
+workspace     = ""                          # "overlay" = throwaway copy + resolve
+hardening     = ""                          # "gvisor" / "runsc"
 ```
 
-See [Sandbox]({{< relref "../docs/sandbox.md" >}}).
+`[backend] type` is the sole backend selector. `[bash] sandbox` is
+**removed** (breaking) — delete it from old configs; the key is now
+silently ignored. See the CHANGELOG and
+[Sandbox]({{< relref "../docs/sandbox.md" >}}).
 
 ## `[git]`
 

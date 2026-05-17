@@ -62,7 +62,7 @@ Per-tool argument matching:
   separators. Deny rules are *guardrails, not walls* — they don't
   recurse into command substitution (`$(...)`, backticks) or `eval`.
   For real isolation against a hostile model or hostile codebase,
-  set `[bash] sandbox = "auto"`.
+  set `[backend] type = "podman"` (or `"lima"`).
 
 **Path patterns** (read/write/edit/grep/glob) use doublestar globs.
 `./src/**` matches everything under `./src/` recursively.

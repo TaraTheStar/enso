@@ -22,7 +22,6 @@ import (
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
-	"github.com/TaraTheStar/enso/internal/backend/podman"
 	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
@@ -99,17 +98,14 @@ func runOnce(promptArgs []string) error {
 // worker is ready); the worker, which owns the store, inserts the row
 // under that id.
 func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.Option, prompt, cwd string, cfg *config.Config, providers map[string]*llm.Provider, defaultName string) error {
-	// Workspace overlay: clone the project into a throwaway copy and run
-	// the agent against THAT (bind-mounted at the real path inside the
-	// box). `enso run` is non-interactive, so at task end Resolve keeps
-	// the diverged copy and prints how to apply it — never silently
-	// commits or destroys the agent's work.
-	if pb, ok := b.(*podman.Backend); ok && cfg.Bash.Sb.Workspace == "overlay" {
-		ov, err := workspace.New(context.Background(), cwd)
-		if err != nil {
-			return fmt.Errorf("workspace: %w", err)
-		}
-		pb.MountSource = ov.Copy
+	// Workspace overlay: run the agent against a throwaway copy
+	// bind-mounted at the real path inside the box. `enso run` is
+	// non-interactive, so at task end Resolve keeps the diverged copy
+	// and prints how to apply it — never silently commits or destroys
+	// the agent's work. Backend-specific wiring lives in one helper.
+	if ov, err := host.SetupWorkspaceOverlay(context.Background(), b, cfg, cwd, os.Stderr); err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	} else if ov != nil {
 		defer func() { _ = workspace.Resolve(context.Background(), ov, false, nil, os.Stderr) }()
 	}
 

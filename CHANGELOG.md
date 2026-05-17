@@ -4,7 +4,53 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.2.0] - 2026-05-09
+## [v2.3.0] - 2026-05-16
+
+### Added
+- **`[backend] type = "lima"` — real-VM isolation.** The whole agent
+  runs inside a Lima VM (macOS vz/qemu, Linux qemu+KVM, Windows
+  wsl2), host-proxied inference, project mounted at its real path.
+  The VM is **persistent per project** (`enso-<base>-<hash>`):
+  created once, resumed for later tasks (substrate reused — first run
+  pays an image download + boot, later runs start fast). Per-task
+  *workspace* isolation is still total via the overlay. Tunables
+  under `[lima]` (`template`/`cpus`/`memory`/`disk`/`extra_mounts`).
+  Fail-safe: refuses to start (no silent downgrade) if `limactl` is
+  absent. Reclaim VMs explicitly with `enso sandbox prune`
+  (`--older-than` honored); they are never auto-deleted. See the
+  Sandbox doc for the carry-forward tradeoff.
+- **`[backend] runtime`** selects the container CLI for
+  `type = "podman"`: `"auto"` (default — podman, falling back to
+  docker), `"podman"`, or `"docker"`.
+
+### Changed
+- **Workspace overlay is now a true three-way merge.** With
+  `[bash.sandbox_options] workspace = "overlay"`, task end compares a
+  pristine baseline against both the agent's copy and the live
+  project. Non-conflicting agent changes apply **per file**
+  (create/modify/delete) — there is no longer a blanket
+  `rsync --delete` from a stale snapshot, so editing the project (or
+  running `git`) while the agent works no longer risks clobbering
+  your concurrent work. Files both sides changed are reported as
+  conflicts and kept for manual merge; `[f]orce-all` (typed
+  `overwrite`) is required to override them. The resolve prompt now
+  shows a real unified diff with a `[v]iew` full-diff option.
+  Superseded `merged.kept-*` review copies are capped (3 most
+  recent) and swept by `enso sandbox prune`.
+
+### Removed
+- **BREAKING: `[bash] sandbox` is removed.** `[backend] type` is now
+  the sole backend selector (`"local"` default, `"podman"`,
+  `"lima"`); the legacy `[bash] sandbox` → backend derivation is
+  gone and the key is silently ignored. **Migration:** delete
+  `[bash] sandbox` and set `[backend] type`; if you relied on
+  `sandbox = "podman"`/`"auto"`, set `[backend] type = "podman"`
+  (optionally `[backend] runtime`) — until you do, you run with **no
+  isolation**. An unrecognized `[backend] type` still fails safe to
+  `local` and is flagged loudly on stderr. `[bash.sandbox_options]`
+  (image/init/network/mounts/workspace/hardening/…) is unchanged.
+
+## [v2.2.0] - 2026-05-09
 
 ### Added
 - **Provider pools (`[pools.<name>]`).** Providers behind the same
@@ -55,7 +101,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   layer (useful for team-shared canonical prompts). See the Prompt
   layering doc.
 
-## [2.1.0] - 2026-05-09
+## [v2.1.0] - 2026-05-09
 
 ### Changed
 - TUI upgraded to Bubble Tea v2 with refreshed input handling and
@@ -67,7 +113,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Status line gained a streaming-only `.TokensPerSec` template
   variable; the default template hides the segment when idle.
 
-## [2.0.0] - 2026-05-09
+## [v2.0.0] - 2026-05-09
 
 Major release: the TUI was migrated off `rivo/tview` onto
 `charmbracelet/bubbletea` + `lipgloss`. Completed messages now live in
@@ -91,7 +137,7 @@ recent-sessions list) take over the alt-screen only while open.
 - Default `enso` (and `enso tui`) now run the Bubble Tea backend; the
   old tview backend has been removed.
 
-## [1.2.0] - 2026-05-09
+## [v1.2.0] - 2026-05-09
 
 Substantial post-v1 release focused on resilience, observability, and
 operator ergonomics.
@@ -167,14 +213,14 @@ operator ergonomics.
   here-docs) are documented as out-of-scope; sandbox mode is the
   recommended boundary for hostile-input sessions.
 
-## [1.1.1] - 2026-05-07
+## [v1.1.1] - 2026-05-07
 
 ### Fixed
 - `Ctrl-C` handling moved up to the application level so it no longer
   exits ensō by accident when the focused widget happened to ignore
   the keypress.
 
-## [1.1.0] - 2026-05-07
+## [v1.1.0] - 2026-05-07
 
 ### Added
 - `web_search` tool with two backends: DuckDuckGo's HTML endpoint by
@@ -186,7 +232,7 @@ operator ergonomics.
   cross-platform binaries (Linux, macOS, Windows × amd64/arm64) on tag
   push and attaches them to the GitHub release.
 
-## [1.0.0] - 2026-05-07
+## [v1.0.0] - 2026-05-07
 
 First public release.
 
@@ -215,9 +261,11 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
-[2.1.0]: https://github.com/TaraTheStar/enso/compare/v2.0.0...v2.1.0
-[2.0.0]: https://github.com/TaraTheStar/enso/compare/v1.2.0...v2.0.0
-[1.2.0]: https://github.com/TaraTheStar/enso/compare/v1.1.1...v1.2.0
-[1.1.1]: https://github.com/TaraTheStar/enso/compare/v1.1.0...v1.1.1
-[1.1.0]: https://github.com/TaraTheStar/enso/compare/v1.0.0...v1.1.0
-[1.0.0]: https://github.com/TaraTheStar/enso/releases/tag/v1.0.0
+[v2.3.0]: https://github.com/TaraTheStar/enso/compare/v2.2.0...v2.3.0
+[v2.2.0]: https://github.com/TaraTheStar/enso/compare/v2.1.0...v2.2.0
+[v2.1.0]: https://github.com/TaraTheStar/enso/compare/v2.0.0...v2.1.0
+[v2.0.0]: https://github.com/TaraTheStar/enso/compare/v1.2.0...v2.0.0
+[v1.2.0]: https://github.com/TaraTheStar/enso/compare/v1.1.1...v1.2.0
+[v1.1.1]: https://github.com/TaraTheStar/enso/compare/v1.1.0...v1.1.1
+[v1.1.0]: https://github.com/TaraTheStar/enso/compare/v1.0.0...v1.1.0
+[v1.0.0]: https://github.com/TaraTheStar/enso/releases/tag/v1.0.0

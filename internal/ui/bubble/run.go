@@ -36,7 +36,6 @@ import (
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
-	"github.com/TaraTheStar/enso/internal/backend/podman"
 	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
@@ -128,14 +127,9 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 	// Workspace overlay: run the agent against a throwaway clone of the
 	// project. The interactive commit/discard/keep prompt happens after
 	// the TUI exits (terminal restored), below.
-	var overlayWS *workspace.Overlay
-	if pb, ok := b.(*podman.Backend); ok && cfg.Bash.Sb.Workspace == "overlay" {
-		ws, err := workspace.New(context.Background(), cwd)
-		if err != nil {
-			return fmt.Errorf("workspace: %w", err)
-		}
-		pb.MountSource = ws.Copy
-		overlayWS = ws
+	overlayWS, werr := host.SetupWorkspaceOverlay(context.Background(), b, cfg, cwd, os.Stderr)
+	if werr != nil {
+		return fmt.Errorf("workspace: %w", werr)
 	}
 
 	resuming := opts.Session != ""
