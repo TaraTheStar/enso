@@ -650,7 +650,11 @@ func isolationNote(is backend.IsolationSpec) string {
 	if !is.NetworkSealed {
 		net = "network not sealed"
 	}
-	return fmt.Sprintf("container (image %s), %s. The entire agent runs inside the box on one filesystem. Workspace changes are not yet automatically rolled back.", is.Image, net)
+	hardening := ""
+	if is.Runtime == "runsc" {
+		hardening = " Syscalls are intercepted by gVisor (userspace kernel)."
+	}
+	return fmt.Sprintf("container (image %s), %s. The entire agent runs inside the box on one filesystem.%s Workspace changes are not yet automatically rolled back.", is.Image, net, hardening)
 }
 
 func decodeConfig(raw json.RawMessage) (*config.Config, error) {

@@ -151,6 +151,49 @@ root-owned. Set `uid = "1000:1000"` (or whichever your UID is) in
 On macOS Docker Desktop: handles UID translation automatically; no
 config needed.
 
+## gVisor hardening
+
+By default the container uses the runtime's normal OCI runtime
+(`runc`/`crun`), which shares the host kernel. Set:
+
+```toml
+[bash.sandbox_options]
+hardening = "gvisor"   # alias: "runsc"
+```
+
+to run the box under [gVisor](https://gvisor.dev) instead. gVisor
+intercepts the container's syscalls in a userspace kernel, so a
+kernel-level container escape has a much smaller surface. The cost is
+performance: syscall-heavy workloads (big builds, lots of small file
+I/O) run noticeably slower. Linux only.
+
+**Fail-safe.** If `runsc` isn't installed, ensō *refuses to start*
+with an actionable hint rather than silently running unhardened — an
+explicit hardening request is never quietly downgraded. An unknown
+`hardening` value is passed through and fails the same availability
+check loudly.
+
+**Rootless: handled automatically.** Rootless podman can't use the
+systemd cgroup manager without an interactive polkit session, and
+rootless `runsc` can't configure cgroups or run with the root network
+namespace. ensō adapts its *own* `podman` invocation for this — it
+uses the `cgroupfs` cgroup manager and points `--runtime` at a private
+`runsc --ignore-cgroups [--network=none]` wrapper under its runtime
+dir. **It never edits your `containers.conf`** or global podman
+config; the adaptation is scoped to ensō's containers.
+
+**Requirements / known limits.** You need `runsc` on `PATH` for your
+user, cgroup v2, and a kernel that permits unprivileged user
+namespaces. gVisor is **very sensitive to your kernel version**, and a
+distro-packaged `runsc` can lag a bleeding-edge kernel by enough that
+it runs shell images fine but exits Go binaries on an unimplemented
+syscall — symptom: the box starts but the agent never comes up. That
+is a runsc/host-kernel mismatch, not ensō wiring (ensō surfaces the
+captured runtime error plus this guidance). Fix: install a current
+upstream `runsc` (gVisor nightly/release) matching your kernel — e.g.
+on Debian sid the repo `runsc` may be too old; the upstream build
+works. Or unset `hardening` to run without gVisor.
+
 ## Failure modes
 
 - **Runtime not installed**: ensō refuses to start with a clear

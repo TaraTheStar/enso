@@ -616,6 +616,31 @@ type BashSandboxOptions struct {
 	// expanded like provider api_key. The worker env is otherwise
 	// empty — this is the only way a secret reaches a sealed box.
 	Credentials map[string]string `toml:"credentials"`
+
+	// Hardening selects a hardened OCI runtime for the container.
+	// "gvisor" (alias "runsc") runs it under gVisor — syscalls are
+	// intercepted by a userspace kernel, shrinking the host kernel
+	// attack surface, at a syscall-heavy performance cost. Linux only;
+	// requires runsc installed and configured as a podman runtime. If
+	// set but unavailable enso REFUSES to run rather than silently
+	// dropping to unhardened isolation. Empty = the default runtime.
+	Hardening string `toml:"hardening"`
+}
+
+// OCIRuntime maps the user-facing Hardening knob to the `--runtime`
+// value podman expects. "" stays empty (default runtime); the gvisor
+// alias resolves to runsc; any other non-empty value is passed through
+// verbatim so an unknown/misconfigured choice fails the availability
+// check loudly instead of silently running unhardened.
+func (o BashSandboxOptions) OCIRuntime() string {
+	switch strings.ToLower(strings.TrimSpace(o.Hardening)) {
+	case "":
+		return ""
+	case "gvisor", "runsc":
+		return "runsc"
+	default:
+		return strings.TrimSpace(o.Hardening)
+	}
 }
 
 // BackendKind selects where the agent core runs. There is exactly one
