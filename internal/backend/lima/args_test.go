@@ -73,7 +73,7 @@ func TestBuildVMConfig_OverlayAndTemplate(t *testing.T) {
 }
 
 func TestBuildShellArgs_NoPTYRealCwd(t *testing.T) {
-	got := joinArgs(buildShellArgs("enso-proj-deadbeef", "/home/u/proj", "/host/bin/enso"))
+	got := joinArgs(buildShellArgs("enso-proj-deadbeef", "/home/u/proj", "/host/bin/enso", ""))
 	// Worker pinned to the REAL cwd, exec the bind-mounted enso.
 	if !strings.Contains(got, "shell --workdir /home/u/proj enso-proj-deadbeef /host/bin/enso __worker") {
 		t.Errorf("shell must run the worker at the real cwd, got: %s", got)
@@ -81,6 +81,77 @@ func TestBuildShellArgs_NoPTYRealCwd(t *testing.T) {
 	// Must be PTY-free so the binary frame stays clean: no -t/--tty.
 	if strings.Contains(got, "--tty") || strings.Contains(got, " -t ") {
 		t.Errorf("worker shell must not allocate a tty, got: %s", got)
+	}
+}
+
+func TestBuildShellArgs_ProxyInjection(t *testing.T) {
+	got := joinArgs(buildShellArgs("vm", "/p", "/e/enso", "http://192.168.5.2:54321"))
+	// Worker wrapped in `env` so its only route out is the host proxy
+	// (reached at the Lima gateway), and loopback is never proxied.
+	for _, want := range []string{
+		"shell --workdir /p vm env ",
+		"HTTPS_PROXY=http://192.168.5.2:54321",
+		"HTTP_PROXY=http://192.168.5.2:54321",
+		"NO_PROXY=127.0.0.1,localhost",
+		"/e/enso __worker",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in: %s", want, got)
+		}
+	}
+	// No proxy → no env wrapper (fully sealed box).
+	if bare := joinArgs(buildShellArgs("vm", "/p", "/e/enso", "")); strings.Contains(bare, "env ") || strings.Contains(bare, "PROXY") {
+		t.Errorf("no-proxy launch must not inject env: %s", bare)
+	}
+}
+
+func TestGuestProxyURL_GatewayTranslation(t *testing.T) {
+	// Host loopback → the Lima slirp gateway (host bind stays loopback;
+	// only the in-guest value is translated).
+	if got := guestProxyURL("http://127.0.0.1:9000"); got != "http://192.168.5.2:9000" {
+		t.Errorf("loopback must map to the Lima gateway, got %q", got)
+	}
+	// Non-loopback (operator pointed at a real address) passes through.
+	if got := guestProxyURL("http://10.1.2.3:8080"); got != "http://10.1.2.3:8080" {
+		t.Errorf("non-loopback must pass through, got %q", got)
+	}
+	// Empty in → empty out (no proxy → no env).
+	if got := guestProxyURL(""); got != "" {
+		t.Errorf("empty must stay empty, got %q", got)
+	}
+}
+
+func TestSealScript_DefaultDenyPosture(t *testing.T) {
+	// Sealed, no proxy: loopback + established only, then REJECT, and
+	// NO proxy ACCEPT line (a fully sealed box, like default podman
+	// --network none).
+	s := sealScript("")
+	for _, want := range []string{
+		"ENSO_EGRESS -o lo -j ACCEPT",
+		"--ctstate ESTABLISHED,RELATED -j ACCEPT",
+		"ENSO_EGRESS -j REJECT",
+		"-C OUTPUT -j ENSO_EGRESS", // idempotent jump install
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("sealed script missing %q:\n%s", want, s)
+		}
+	}
+	if strings.Contains(s, "--dport") {
+		t.Errorf("no-proxy seal must not open any egress port:\n%s", s)
+	}
+	// The REJECT must come AFTER the allow rules (order matters).
+	if strings.Index(s, "REJECT") < strings.Index(s, "lo -j ACCEPT") {
+		t.Errorf("REJECT must follow the ACCEPT allowances:\n%s", s)
+	}
+
+	// With a proxy: exactly that host:port is opened, before the REJECT.
+	p := sealScript("192.168.5.2:54321")
+	allow := "ENSO_EGRESS -p tcp -d 192.168.5.2 --dport 54321 -j ACCEPT"
+	if !strings.Contains(p, allow) {
+		t.Errorf("proxied seal must open the gateway:port, got:\n%s", p)
+	}
+	if strings.Index(p, allow) > strings.Index(p, "-j REJECT") {
+		t.Errorf("proxy ACCEPT must precede REJECT:\n%s", p)
 	}
 }
 
