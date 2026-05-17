@@ -52,7 +52,19 @@ type Writer struct {
 
 // NewSession inserts a fresh session row and returns a Writer scoped to it.
 func NewSession(s *Store, model, provider, cwd string) (*Writer, error) {
-	id := uuid.NewString()
+	return NewSessionWithID(s, uuid.NewString(), model, provider, cwd)
+}
+
+// NewSessionWithID is NewSession with a caller-supplied id. The Backend
+// seam uses this: the host mints the session id (so it can name the run
+// in its --format json header / audit before the worker is even ready)
+// and passes it in TaskSpec; the worker, which owns the store, inserts
+// the row under that id. An empty id falls back to a fresh uuid so the
+// in-process callers keep working unchanged.
+func NewSessionWithID(s *Store, id, model, provider, cwd string) (*Writer, error) {
+	if id == "" {
+		id = uuid.NewString()
+	}
 	now := time.Now().Unix()
 	_, err := s.DB.Exec(
 		`INSERT INTO sessions(id, created_at, updated_at, model, provider, cwd) VALUES(?,?,?,?,?,?)`,

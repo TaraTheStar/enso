@@ -3,13 +3,16 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +36,7 @@ type Config struct {
 	Git          GitConfig                 `toml:"git"`
 	LSP          map[string]LSPConfig      `toml:"lsp"`
 	Bash         BashConfig                `toml:"bash"`
+	Backend      BackendConfig             `toml:"backend"`
 	Hooks        HooksConfig               `toml:"hooks"`
 	WebFetch     WebFetchConfig            `toml:"web_fetch"`
 	Search       SearchConfig              `toml:"search"`
@@ -456,7 +460,10 @@ type HooksConfig struct {
 
 // ProviderConfig holds settings for a single LLM endpoint.
 type ProviderConfig struct {
-	Endpoint string `toml:"endpoint"`
+	// Endpoint + APIKey are worker:"deny" — inference is host-proxied,
+	// so the worker never dials a model and must never receive either
+	// (the credential-scrub invariant, enforced by ScrubbedForWorker).
+	Endpoint string `toml:"endpoint" worker:"deny"`
 	Model    string `toml:"model"`
 	// Description is a short capability hint ("deep reasoning, hard
 	// SWE") surfaced in the auto-rendered "## Available models" prompt
@@ -468,7 +475,7 @@ type ProviderConfig struct {
 	// auto-grouped with every other provider sharing its Endpoint
 	// (one llama-swap = one pool, zero config). See ResolvePools.
 	Pool    string        `toml:"pool"`
-	APIKey  string        `toml:"api_key"`
+	APIKey  string        `toml:"api_key" worker:"deny"`
 	Sampler SamplerConfig `toml:"sampler"`
 
 	// InputPricePerMillion and OutputPricePerMillion are dollars per
@@ -590,6 +597,113 @@ type BashSandboxOptions struct {
 	// host user automatically; docker runs as root inside the
 	// container, which can leave root-owned files in the bind mount.
 	UID string `toml:"uid"`
+
+	// Workspace = "overlay" makes the project mount a throwaway podman
+	// overlay: the agent sees the real tree but every write lands in
+	// an ephemeral upper layer discarded at task end (automatic
+	// one-command rollback). Empty/"direct" = writes hit
+	// the project in place (today's behaviour).
+	Workspace string `toml:"workspace"`
+
+	// Egress is the per-task outbound allowlist ("host:port", or bare
+	// "host" for :80+:443). A network-sealed worker reaches ONLY these,
+	// via the host allowlist proxy, and only after the tier-3 broker
+	// grants the matching capability. Empty = fully sealed.
+	Egress []string `toml:"egress"`
+
+	// Credentials maps a logical secret name the worker may broker
+	// (CapCredential) to its value; ENSO_-prefixed env refs are
+	// expanded like provider api_key. The worker env is otherwise
+	// empty — this is the only way a secret reaches a sealed box.
+	Credentials map[string]string `toml:"credentials"`
+}
+
+// BackendKind selects where the agent core runs. There is exactly one
+// execution path: the core always runs as a Worker behind a Backend.
+type BackendKind string
+
+const (
+	// BackendLocal runs the Worker as a host child process: no
+	// container, no overlay, full host env — today's behavior. The
+	// default.
+	BackendLocal BackendKind = "local"
+	// BackendPodman runs the Worker as PID 1 of a rootless podman
+	// container: overlay workspace, network-sealed, host-proxied
+	// inference.
+	BackendPodman BackendKind = "podman"
+)
+
+// BackendConfig selects the execution backend. `type` is optional and
+// layered like every other config key, so a project can override the
+// user/global default. Empty `type` is not an error: ResolveBackend
+// derives the kind from the existing [bash] sandbox setting so old
+// config files keep working unchanged.
+type BackendConfig struct {
+	// Type: "local" (default) or "podman". Empty = derive from
+	// [bash] sandbox (off → local; auto/podman/docker → podman).
+	Type string `toml:"type"`
+}
+
+// ResolveBackend returns the selected BackendKind. An explicit
+// [backend] type wins; otherwise the kind is derived from the existing
+// [bash] sandbox knob so this is purely additive and behavior-
+// preserving — no existing config file changes meaning.
+func (c *Config) ResolveBackend() BackendKind {
+	switch strings.ToLower(strings.TrimSpace(c.Backend.Type)) {
+	case string(BackendLocal):
+		return BackendLocal
+	case string(BackendPodman):
+		return BackendPodman
+	case "":
+		// Derive from the legacy bash.sandbox selector.
+		switch strings.ToLower(strings.TrimSpace(c.Bash.Sandbox)) {
+		case "", "off":
+			return BackendLocal
+		default: // "auto", "podman", "docker"
+			return BackendPodman
+		}
+	default:
+		// Unknown explicit value: fail safe to the no-isolation
+		// default rather than silently picking a container.
+		return BackendLocal
+	}
+}
+
+// ScrubbedForWorker returns a deep copy with every `worker:"deny"`
+// field zeroed (see scrub.go for what that tag means and why it is
+// scoped to the host-proxied provider credentials, not all secrets).
+// It is the enforcement point for the credential-scrub invariant: the
+// host serializes THIS — never the raw config — into
+// TaskSpec.ResolvedConfig, so a provider endpoint/key cannot cross the
+// Backend seam. The worker rebuilds providers from the non-secret
+// catalog (TaskSpec.Providers) plus the host-proxied inference client.
+//
+// The deep copy is a JSON round-trip: Config is already required to be
+// JSON-(de)serializable for TaskSpec.ResolvedConfig, so this cannot
+// introduce a shape the worker can't read, and it guarantees the
+// reflection scrub never mutates the caller's live config (maps and
+// slices included). A marshal failure falls back to the explicit
+// provider scrub so the invariant holds even then.
+func (c *Config) ScrubbedForWorker() *Config {
+	raw, err := json.Marshal(c)
+	if err == nil {
+		cp := &Config{}
+		if json.Unmarshal(raw, cp) == nil {
+			scrubSecrets(reflect.ValueOf(cp))
+			return cp
+		}
+	}
+	// Defensive fallback: never return an unscrubbed config.
+	cp := *c
+	if c.Providers != nil {
+		cp.Providers = make(map[string]ProviderConfig, len(c.Providers))
+		for k, p := range c.Providers {
+			p.Endpoint = ""
+			p.APIKey = ""
+			cp.Providers[k] = p
+		}
+	}
+	return &cp
 }
 
 // LSPConfig declares one language-server entry. The TOML key
@@ -887,6 +1001,9 @@ func LoadWithFirstRun(cwd, explicit string) (*Config, bool, error) {
 		cfg.Providers[name] = p
 	}
 	cfg.Search.SearXNG.APIKey = ExpandEnsoEnv(cfg.Search.SearXNG.APIKey)
+	for k, v := range cfg.Bash.Sb.Credentials {
+		cfg.Bash.Sb.Credentials[k] = ExpandEnsoEnv(v)
+	}
 	return &cfg, freshlyWritten, nil
 }
 

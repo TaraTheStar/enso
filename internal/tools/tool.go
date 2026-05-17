@@ -65,6 +65,17 @@ type AgentContext struct {
 	MaxTurns    int
 	TurnCount   int
 
+	// Capabilities is the tier-3 broker handle. Non-nil only behind the
+	// Backend seam (worker); nil on the in-process / LocalBackend path,
+	// where tools behave as today (no sealing, no broker). Inherited by
+	// spawned sub-agents so a sealed child can still request grants.
+	Capabilities CapabilityRequester
+
+	// IsolationNote is the honest one-line box description, inherited by
+	// spawned sub-agents so their # Environment section matches the
+	// parent's (a child shares the same box).
+	IsolationNote string
+
 	// CurrentToolID is set by the agent loop just before each Tool.Run so
 	// long-running tools (e.g. bash) can publish EventToolCallProgress
 	// events tagged with the originating call's id. Cleared after Run.

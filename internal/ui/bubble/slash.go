@@ -9,7 +9,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/TaraTheStar/enso/internal/agent"
+	"github.com/TaraTheStar/enso/internal/backend/host"
+	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/lsp"
 	"github.com/TaraTheStar/enso/internal/mcp"
@@ -24,13 +25,26 @@ import (
 // into the `out` buffer; the dispatcher tea.Println's the result to
 // scrollback after Run returns. quit short-circuits the program.
 type slashCtx struct {
-	agt       *agent.Agent
+	agt       agentControl
 	checker   *permissions.Checker
 	registry  *tools.Registry
 	store     *session.Store
 	writer    *session.Writer
 	providers map[string]*llm.Provider
 	cwd       string
+
+	// sess is the worker session when the TUI runs behind the Backend
+	// seam (sandbox-off / LocalBackend); nil on the legacy in-process
+	// path. Slash commands whose effect must reach the worker's REAL
+	// state (e.g. /yolo toggling the enforcing checker) round-trip
+	// through it; the host-side checker is then a display mirror.
+	sess *host.Session
+
+	// bus is the host event bus (busInst). /compact publishes its
+	// background ForceCompact failure here. In-process and worker paths
+	// both have a host bus, so the slash layer never reaches through
+	// the agent for it (the worker agent's bus isn't host-visible).
+	bus *bus.Bus
 
 	// Runtime managers for /lsp and /mcp. Either may be nil (e.g. if
 	// cfg has no servers configured) — handlers must guard.

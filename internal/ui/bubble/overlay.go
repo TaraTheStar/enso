@@ -9,7 +9,6 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/permissions"
 	"github.com/TaraTheStar/enso/internal/session"
@@ -24,7 +23,7 @@ import (
 // consistent state even if the underlying agent / managers continue
 // mutating in the background.
 type overlayData struct {
-	agt      *agent.Agent
+	agt      agentControl
 	cfg      *config.Config
 	checker  *permissions.Checker
 	registry *tools.Registry
@@ -84,6 +83,13 @@ func keyValue(key, value string) string {
 
 func sectionModel(d *overlayData) string {
 	p := d.agt.Provider()
+	if p == nil {
+		// Defensive: behind the seam Provider() resolves the active
+		// name against the real provider set; a transient mismatch
+		// (before the first telemetry snapshot) yields nil rather than
+		// panicking the inspector.
+		return strings.Join([]string{sectionHeader("model"), keyValue("name", "(initialising…)")}, "\n")
+	}
 	used := d.agt.EstimateTokens()
 	var lines []string
 	lines = append(lines, sectionHeader("model"))
@@ -163,5 +169,4 @@ var (
 	_ = (*session.Writer)(nil)
 	_ = (*permissions.Checker)(nil)
 	_ = (*config.Config)(nil)
-	_ = (*agent.Agent)(nil)
 )

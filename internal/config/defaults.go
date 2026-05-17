@@ -56,6 +56,15 @@ extra_mounts = []
 # KEY=value entries injected into the container env.
 env = []
 
+[backend]
+# Where the agent core runs. "local" (default) = a host child
+# process, no isolation — today's behavior. "podman" = the core runs
+# inside a rootless container (overlay workspace, network-sealed,
+# host-proxied inference). Leave empty to derive from [bash] sandbox
+# above (off → local; auto/podman/docker → podman); an explicit
+# value here overrides that.
+type = ""
+
 [ui]
 # Theme name (default: "dark")
 theme = "dark"

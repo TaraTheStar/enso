@@ -177,41 +177,10 @@ func synthesizePermissionEvent(ev daemon.Event, ac *attachClient, sessionID stri
 // bus.Event so the conversation state machine + block renderer can
 // consume it.
 func toBusEvent(e daemon.Event) bus.Event {
-	var payload any
-	if len(e.Payload) > 0 {
-		_ = json.Unmarshal(e.Payload, &payload)
-	}
-	switch e.Type {
-	case "UserMessage":
-		s, _ := payload.(string)
-		return bus.Event{Type: bus.EventUserMessage, Payload: s}
-	case "AssistantDelta":
-		s, _ := payload.(string)
-		return bus.Event{Type: bus.EventAssistantDelta, Payload: s}
-	case "ReasoningDelta":
-		s, _ := payload.(string)
-		return bus.Event{Type: bus.EventReasoningDelta, Payload: s}
-	case "AssistantDone":
-		return bus.Event{Type: bus.EventAssistantDone}
-	case "AgentIdle":
-		return bus.Event{Type: bus.EventAgentIdle}
-	case "Error":
-		s, _ := payload.(string)
-		return bus.Event{Type: bus.EventError, Payload: fmt.Errorf("%s", s)}
-	case "Cancelled":
-		return bus.Event{Type: bus.EventCancelled}
-	case "ToolCallStart":
-		return bus.Event{Type: bus.EventToolCallStart, Payload: payload}
-	case "ToolCallProgress":
-		return bus.Event{Type: bus.EventToolCallProgress, Payload: payload}
-	case "ToolCallEnd":
-		return bus.Event{Type: bus.EventToolCallEnd, Payload: payload}
-	case "AgentStart":
-		return bus.Event{Type: bus.EventAgentStart, Payload: payload}
-	case "AgentEnd":
-		return bus.Event{Type: bus.EventAgentEnd, Payload: payload}
-	case "Compacted":
-		return bus.Event{Type: bus.EventCompacted, Payload: payload}
+	// Delegate to the single source of truth so an attached daemon
+	// session and a local-backend run reconstruct events identically.
+	if ev, ok := bus.FromWire(e.Type, e.Payload); ok {
+		return ev
 	}
 	return bus.Event{}
 }
