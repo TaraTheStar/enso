@@ -3,9 +3,12 @@
 package podman
 
 import (
+	"context"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/TaraTheStar/enso/internal/backend"
 )
 
 // joinArgs renders argv as a single space-joined string for substring
@@ -15,7 +18,7 @@ func joinArgs(a []string) string { return strings.Join(a, " ") }
 func TestBuildRunArgs_Posture(t *testing.T) {
 	cwd := "/home/u/proj"
 	b := &Backend{Image: "alpine", Network: ""}
-	got := joinArgs(b.buildRunArgs("enso-proj-t1", "t1", "/host/enso", cwd))
+	got := joinArgs(b.buildRunArgs("enso-proj-t1", "t1", "/host/enso", cwd, ""))
 
 	// One namespace: project at its REAL path, cwd = that path; no /work.
 	if !strings.Contains(got, "-v "+cwd+":"+cwd+" ") {
@@ -39,7 +42,7 @@ func TestBuildRunArgs_Posture(t *testing.T) {
 	// Credential scrub: NO host environment is forwarded. Pick an env
 	// var that is essentially always set and assert it never appears.
 	_ = os.Setenv("ENSO_SCRUB_PROBE", "leaked-secret")
-	got2 := joinArgs(b.buildRunArgs("n", "t1", "/host/enso", cwd))
+	got2 := joinArgs(b.buildRunArgs("n", "t1", "/host/enso", cwd, ""))
 	if strings.Contains(got2, "leaked-secret") || strings.Contains(got2, "ENSO_SCRUB_PROBE") {
 		t.Errorf("host env must never be forwarded to the box, got: %s", got2)
 	}
@@ -48,7 +51,7 @@ func TestBuildRunArgs_Posture(t *testing.T) {
 func TestBuildRunArgs_OverlayAndEgress(t *testing.T) {
 	cwd := "/p"
 	b := &Backend{Image: "alpine", MountSource: "/tmp/enso-ws/merged", EgressProxy: "http://127.0.0.1:54321"}
-	got := joinArgs(b.buildRunArgs("n", "t1", "/e", cwd))
+	got := joinArgs(b.buildRunArgs("n", "t1", "/e", cwd, ""))
 
 	// Overlay = host-side throwaway copy bind-mounted at the REAL path
 	// (NOT podman's :O, which would silently discard the agent's work).
@@ -88,6 +91,32 @@ func TestContainerProxyURL(t *testing.T) {
 	} {
 		if got := containerProxyURL(in); got != want {
 			t.Errorf("containerProxyURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestBuildRunArgs_GVisorRuntime(t *testing.T) {
+	// No hardening → no --runtime flag (default runc/crun).
+	plain := joinArgs((&Backend{Image: "alpine"}).buildRunArgs("n", "t", "/e", "/p", ""))
+	if strings.Contains(plain, "--runtime") {
+		t.Errorf("unhardened run must not pin a runtime, got: %s", plain)
+	}
+	// Hardened → `--runtime runsc` (gVisor) right after `run`.
+	got := joinArgs((&Backend{Image: "alpine", OCIRuntime: "runsc"}).buildRunArgs("n", "t", "/e", "/p", "runsc"))
+	if !strings.Contains(got, "run --rm -i --runtime runsc ") {
+		t.Errorf("gVisor run must pass --runtime runsc, got: %s", got)
+	}
+}
+
+func TestStart_RefusesWhenHardenedRuntimeMissing(t *testing.T) {
+	b := &Backend{Image: "alpine", OCIRuntime: "enso-nonexistent-runtime-xyz"}
+	_, err := b.Start(context.Background(), backend.TaskSpec{Cwd: t.TempDir()})
+	if err == nil {
+		t.Fatal("Start must refuse when the hardened runtime is unavailable")
+	}
+	for _, want := range []string{"not found", "Refusing to run unhardened", "gvisor.dev"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must be actionable (missing %q): %v", want, err)
 		}
 	}
 }

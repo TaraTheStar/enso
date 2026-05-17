@@ -58,6 +58,7 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, 
 		ExtraMounts: sb.ExtraMounts,
 		Env:         sb.Env,
 		UID:         sb.UID,
+		OCIRuntime:  sb.OCIRuntime(),
 		// MountSource (the throwaway workspace copy) is wired by the
 		// run/TUI call site, which owns the overlay lifecycle and the
 		// end-of-task commit/discard prompt.
@@ -66,6 +67,7 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, 
 		NetworkSealed: net == "none",
 		Image:         img,
 		ExtraMounts:   sb.ExtraMounts,
+		Runtime:       sb.OCIRuntime(),
 	}
 
 	// Tier-3 broker: only constructed when the operator configured
@@ -299,6 +301,14 @@ func Start(
 	select {
 	case err := <-ready:
 		if err != nil {
+			// A Backend may know WHY its box never came up (e.g. podman
+			// printed an OCI-runtime error to stderr). Surface it so the
+			// user gets something actionable instead of a bare EOF.
+			if d, ok := w.(interface{ StartupDiagnostic() string }); ok {
+				if msg := d.StartupDiagnostic(); msg != "" {
+					err = fmt.Errorf("%w\n\n%s", err, msg)
+				}
+			}
 			_ = w.Teardown(context.Background())
 			return nil, err
 		}
