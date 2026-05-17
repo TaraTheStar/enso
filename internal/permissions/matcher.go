@@ -43,7 +43,8 @@ func MatchPath(pattern, path string) bool {
 // re-check via bashSplitTopLevel so `bash(rm -rf *)` deny correctly
 // fires on `do_evil; rm -rf /`. The remaining gap (command substitution
 // like `$(rm -rf /)` and backticks) is not closed here — for
-// adversarial inputs `bash.sandbox = "auto"` is the real boundary.
+// adversarial inputs an isolating backend (`[backend] type =
+// "podman"` or `"lima"`) is the real boundary.
 func MatchCommand(pattern, cmd string) bool {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "*" || pattern == "" {

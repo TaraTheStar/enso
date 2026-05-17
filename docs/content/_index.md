@@ -14,9 +14,9 @@ A small, single-binary, terminal-first agentic coding agent in Go
 ensō talks to any OpenAI-compatible chat endpoint and gives it the
 tools to read and edit your project, run shell commands, search the
 codebase, fetch URLs, and orchestrate sub-agents. Sessions persist to
-SQLite and resume across crashes. Opt into `[bash] sandbox = "auto"`
-and bash runs inside a per-project podman or docker container so the
-agent can't escape the project directory.
+SQLite and resume across crashes. Opt into `[backend] type = "podman"`
+(or `"lima"`) and the whole agent runs inside a per-project container
+or VM so it can't escape the project directory.
 
 ## Why ensō
 
@@ -30,10 +30,11 @@ agent can't escape the project directory.
   call, and event is written to SQLite *before* the UI renders it.
   `kill -9` mid-tool-call and the session resumes with the interrupted
   call surfaced as a synthetic tool result.
-- **Container sandbox, opt-in.** Set `[bash] sandbox = "auto"` and
-  the agent's shell runs in a per-project alpine container with the
-  cwd bind-mounted. File tools (`read`/`write`/`edit`/`grep`/`glob`)
-  refuse paths outside cwd in the same mode. Off by default.
+- **Container / VM isolation, opt-in.** Set `[backend] type =
+  "podman"` (or `"lima"`) and the whole agent runs in a per-project
+  container/VM with the cwd bind-mounted at its real path. File tools
+  (`read`/`write`/`edit`/`grep`/`glob`) refuse paths outside cwd
+  regardless. Off by default (`"local"`).
 - **Real LSP.** Configure any language server under `[lsp.<name>]` and
   the agent gets `lsp_hover`, `lsp_definition`, `lsp_references`, and
   `lsp_diagnostics` tools.

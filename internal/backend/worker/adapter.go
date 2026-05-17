@@ -650,6 +650,10 @@ func isolationNote(is backend.IsolationSpec) string {
 	if !is.NetworkSealed {
 		net = "network not sealed"
 	}
+	if is.Kind == "vm" {
+		// Lima: a real guest kernel/VM, not a shared-kernel container.
+		return fmt.Sprintf("real VM (Lima), %s. The entire agent runs inside the VM on one filesystem; the VM is persistent per project (its userland carries forward across this project's tasks). Workspace changes are not yet automatically rolled back.", net)
+	}
 	hardening := ""
 	if is.Runtime == "runsc" {
 		hardening = " Syscalls are intercepted by gVisor (userspace kernel)."

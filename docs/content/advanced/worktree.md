@@ -83,7 +83,7 @@ worktree (`--worktree` each) can work in parallel without conflict.
 
 ## Combining with the sandbox
 
-`--worktree` and `[bash] sandbox` work together. The sandbox
+`--worktree` and an isolating `[backend] type` work together. The sandbox
 container is per-cwd (the worktree's path), so each worktree gets its
 own container. That means each worktree pays the image-pull and init
 cost the first time. If you do a lot of parallel worktree sessions

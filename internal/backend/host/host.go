@@ -18,11 +18,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"sort"
 	"sync"
 
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/egress"
+	"github.com/TaraTheStar/enso/internal/backend/lima"
 	"github.com/TaraTheStar/enso/internal/backend/local"
 	"github.com/TaraTheStar/enso/internal/backend/podman"
 	"github.com/TaraTheStar/enso/internal/backend/wire"
@@ -39,7 +42,35 @@ import (
 // LocalBackend; "sandbox on" is PodmanBackend. Single host-side place
 // this mapping is made so the call sites cannot drift.
 func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, []Option) {
-	if cfg.ResolveBackend() != config.BackendPodman {
+	// Failing safe to local is fine; doing it silently is not. An
+	// unrecognized [backend] type means the isolation the user asked
+	// for is ABSENT — flag it visibly (stderr, not just the log file)
+	// before falling through to the LocalBackend default.
+	if bad := cfg.UnrecognizedBackendType(); bad != "" {
+		msg := fmt.Sprintf("config error: unrecognized [backend] type %q — falling back to \"local\" (NO isolation: changes apply directly to the host, no rollback). Valid values: local, podman, lima.", bad)
+		slog.Error("config: " + msg)
+		fmt.Fprintln(os.Stderr, "enso: "+msg)
+	}
+	switch cfg.ResolveBackend() {
+	case config.BackendLima:
+		lb := &lima.Backend{
+			Template:    cfg.Lima.Template,
+			CPUs:        cfg.Lima.CPUs,
+			Memory:      cfg.Lima.Memory,
+			Disk:        cfg.Lima.Disk,
+			ExtraMounts: cfg.Lima.ExtraMounts,
+			// MountSource (the per-project stable workspace copy) is
+			// wired by the run/TUI call site, which owns the overlay
+			// lifecycle and the end-of-task commit/discard prompt.
+		}
+		// Sealed by construction: the worker dials no model (inference
+		// is host-proxied over the Channel). Guest-egress allowlisting
+		// is a documented follow-up (mirrors how podman started).
+		isol := backend.IsolationSpec{NetworkSealed: true, Kind: "vm"}
+		return lb, isol, nil
+	case config.BackendPodman:
+		// fall through to the podman construction below
+	default:
 		return &local.Backend{}, backend.IsolationSpec{}, nil
 	}
 	sb := cfg.Bash.Sb
@@ -52,7 +83,7 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, 
 		net = "none" // sealed by default
 	}
 	b := &podman.Backend{
-		Runtime:     cfg.Bash.Sandbox, // "auto"/"podman"/"docker"
+		Runtime:     cfg.PodmanRuntime(), // [backend] runtime; "" → "auto"
 		Image:       img,
 		Network:     net,
 		ExtraMounts: sb.ExtraMounts,
