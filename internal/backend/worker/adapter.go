@@ -648,7 +648,7 @@ func isolationNote(is backend.IsolationSpec) string {
 	}
 	net := "network sealed (egress only via brokered, default-denied capabilities)"
 	if !is.NetworkSealed {
-		net = "network not sealed"
+		net = "network NOT sealed — the agent has full, direct outbound internet access"
 	}
 	if is.Kind == "vm" {
 		// Lima: a real guest kernel/VM, not a shared-kernel container.
