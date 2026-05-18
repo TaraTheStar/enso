@@ -1,42 +1,84 @@
 # Project-local enso config for the enso repo itself.
 #
-# This is the "shared, committed" project config — distinct from
-# `.enso/config.local.toml` (gitignored, where "Allow + Remember"
-# writes). It layers on top of the user config in
+# Shared, committed project config — distinct from
+# `.enso/config.local.toml` (gitignored; where "Allow + Remember"
+# writes). It layers UNDER the user config in
 # `~/.config/enso/config.toml`.
 #
-# What it does:
-#   - Names a Go-toolchain image so the bash sandbox can build/test
-#     this codebase if the user has sandboxing enabled at the user
-#     level (`[bash] sandbox = "docker"` or similar).
-#   - Allowlists a few read-only / safe build commands so dogfooders
-#     don't get prompted for every `go test`.
+# Scope rule (enforced): this file may set the per-backend ENVIRONMENT
+# ([backend.podman|lima|egress]) — that is project-specific and must be
+# reproducible for teammates/CI. It must NOT set [backend] type or
+# workspace: those are a per-user/machine choice and are stripped (with
+# a warning) if set outside a project... but conversely we still leave
+# the backend SELECTION to the user. Pick your backend in your user
+# config; this file makes whichever you pick actually build enso.
 #
-# What it doesn't do:
-#   - Choose the sandbox backend (docker/podman/off). That's a
-#     per-user decision; set it in your user config.
-#   - Configure providers, MCP servers, hooks, etc. — those are also
-#     per-user.
+# enso is a pure-Go project: `go 1.26.2` (go.mod), not vendored, built
+# CGO_ENABLED=0. A working sandbox therefore needs, in the guest: a Go
+# toolchain ≥1.26.2, git (version stamp + VCS module fallback), and
+# make (`make check` = fmt-check + vet + test + build). Module and
+# toolchain fetches need egress to the Go proxy (the box is sealed
+# default-deny).
 
-# --- bash sandbox image ------------------------------------------------
+# --- podman backend ----------------------------------------------------
 #
-# Active only when the user has [bash] sandbox set to a non-"off"
-# value. Alpine variant keeps the pull small; init installs the few
-# extras enso's own Makefile needs (git for module fetches that
-# bypass GOPROXY, make for `make check`).
+# Used when the user has [backend] type = "podman". The official Go
+# Alpine image already ships the 1.26.x toolchain; init only adds the
+# extras the Makefile needs.
 
-[bash.sandbox_options]
+[backend.podman]
 image = "golang:1.26-alpine"
 init = [
-    "apk add --no-cache git make",
+    # gopls is a precompiled Alpine community package (/usr/bin/gopls,
+    # on PATH for all users) — far cheaper than `go install` and no
+    # module/toolchain fetch. community is enabled by default on the
+    # official golang:*-alpine image. Powers [lsp.gopls] below.
+    "apk add --no-cache git make gopls",
+]
+
+# --- lima backend ------------------------------------------------------
+#
+# Used when the user has [backend] type = "lima" (host $HOME is NOT
+# mounted into the guest — see docs/Sandbox). The default Alpine image
+# has no Go toolchain, so init installs a base `go` plus git/make.
+# Alpine's `go` may be older than go.mod's 1.26.2; that's fine — Go's
+# GOTOOLCHAIN=auto (default) fetches the exact toolchain named in
+# go.mod at build time, via the allowlisted proxy below.
+#
+# init runs during VM provisioning, BEFORE the egress seal, so the apk
+# fetch itself needs no allowlist entry.
+
+[backend.lima]
+template = "alpine"
+init = [
+    # Base toolchain + gopls, all from Alpine packages (community is
+    # enabled by default on the Lima Alpine cloud image). gopls lands
+    # at /usr/bin/gopls — on PATH for the non-root agent user, no
+    # `go install`/GOBIN dance, no module or toolchain fetch. Runs at
+    # VM provisioning (pre-seal), so the apk fetch needs no egress
+    # allowlist entry. Powers [lsp.gopls] below.
+    "apk add --no-cache go git make gopls",
+]
+
+# --- egress ------------------------------------------------------------
+#
+# Shared by podman + lima. The sealed box reaches ONLY these. The Go
+# module proxy + checksum DB cover `go build/test/mod` for this repo's
+# (public) dependencies AND GOTOOLCHAIN's go1.26.2 download — both ride
+# proxy.golang.org. Add "github.com" only if you switch to
+# GOPROXY=direct (the proxy already mirrors VCS sources).
+
+[backend.egress]
+allow = [
+    "proxy.golang.org",
+    "sum.golang.org",
 ]
 
 # --- permissions -------------------------------------------------------
 #
-# Read-only and routine build commands the agent runs all the time
-# while working in this repo. Adjust if your workflow differs; the
-# user-level deny list always wins, so additions here can't escalate
-# beyond what the user has already permitted.
+# Read-only and routine build commands the agent runs constantly in
+# this repo. The user-level deny list always wins, so nothing here can
+# escalate beyond what the user already permitted.
 
 [permissions]
 allow = [
@@ -45,8 +87,12 @@ allow = [
     "bash(go vet *)",
     "bash(go mod *)",
     "bash(gofmt *)",
-    "bash(make check)",
     "bash(make)",
+    "bash(make check)",
+    "bash(make fmt-check)",
+    "bash(make vet)",
+    "bash(make test)",
+    "bash(make build)",
     "bash(git status)",
     "bash(git diff *)",
     "bash(git log *)",
@@ -63,11 +109,11 @@ ask = [
 
 # --- language servers --------------------------------------------------
 #
-# This repo is Go, so wire gopls in by default. Servers are spawned
-# lazily on first use of an lsp_* tool against a matching file, so this
-# costs nothing until the agent actually reaches for it. Anyone who has
-# `gopls` on their PATH (`go install golang.org/x/tools/gopls@latest`)
-# gets symbol lookups, diagnostics, hover, and references for free.
+# Go repo → wire gopls. Spawned lazily on first lsp_* use. Needs
+# `gopls` on PATH where the agent core runs: provided in-guest by the
+# podman/lima init above (apk package), or on your host for the local
+# backend (`apk add gopls`, your distro's package, or `go install
+# golang.org/x/tools/gopls@latest`).
 
 [lsp.gopls]
 command      = "gopls"

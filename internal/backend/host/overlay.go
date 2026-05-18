@@ -4,6 +4,7 @@ package host
 
 import (
 	"context"
+	"fmt"
 	"io"
 
 	"github.com/TaraTheStar/enso/internal/backend"
@@ -14,7 +15,7 @@ import (
 )
 
 // SetupWorkspaceOverlay wires the throwaway workspace overlay for the
-// chosen backend when `[bash.sandbox_options] workspace = "overlay"`.
+// chosen backend when `[backend] workspace = "overlay"`.
 // It is the single place this safety-critical wiring lives so the run
 // and TUI call sites cannot drift (they previously each carried a
 // duplicate podman + lima block).
@@ -25,8 +26,13 @@ import (
 // Podman gets a fresh per-task temp copy; Lima a stable per-project
 // stage dir (so the persistent VM's mount config never changes).
 func SetupWorkspaceOverlay(ctx context.Context, b backend.Backend, cfg *config.Config, cwd string, out io.Writer) (*workspace.Overlay, error) {
-	if cfg.Bash.Sb.Workspace != "overlay" {
+	if cfg.Backend.Workspace != "overlay" {
 		return nil, nil
+	}
+	// The clone is synchronous and silent; for a large project it can
+	// take a while, so say so (the TUI is not up yet — out is stderr).
+	if out != nil {
+		fmt.Fprintln(out, "enso: preparing the workspace overlay copy…")
 	}
 	switch be := b.(type) {
 	case *podman.Backend:

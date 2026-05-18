@@ -125,7 +125,7 @@ func TestRunWizard_PreservesDocumentationTail(t *testing.T) {
 	_, body := runWizardScripted(t, "\n\n\n")
 	for _, want := range []string{
 		"[permissions]",
-		"[bash.sandbox_options]",
+		"[backend]",
 		"type = \"local\"",
 		"[ui]",
 		"# MCP servers.",

@@ -121,32 +121,65 @@ func NewAt(ctx context.Context, project, stageDir string, out io.Writer) (*Overl
 	base := filepath.Join(stageDir, "base")
 	merged := filepath.Join(stageDir, "merged")
 
-	if fi, statErr := os.Stat(merged); statErr == nil && fi.IsDir() {
-		if entries, _ := os.ReadDir(merged); len(entries) > 0 {
-			kept := filepath.Join(stageDir, fmt.Sprintf("merged.kept-%d", time.Now().UnixNano()))
-			if rerr := os.Rename(merged, kept); rerr == nil && out != nil {
-				fmt.Fprintf(out, "workspace: a prior kept-for-review copy was preserved at %s\n", kept)
+	// INODE STABILITY (load-bearing): a persistent Lima VM 9p-exports
+	// `merged` by the directory inode it had at VM boot — qemu virtfs
+	// does NOT re-resolve the path. So once the VM exists, `merged` must
+	// keep its inode forever; we only ever refresh its CONTENTS in place
+	// (qemu 9p resolves children by name on each access). Renaming or
+	// removing the dir itself would strand the reused guest mount on the
+	// orphaned old inode: empty project, writes lost, Resolve sees
+	// nothing. So: MkdirAll (create once, reused thereafter), never
+	// rename/rmdir `merged`.
+	if err := os.MkdirAll(merged, 0o755); err != nil {
+		return nil, err
+	}
+	// A prior non-empty `merged` (a NON-interactive run kept it for
+	// review) is preserved by moving its CONTENTS aside, not the dir.
+	if entries, _ := os.ReadDir(merged); len(entries) > 0 {
+		kept := filepath.Join(stageDir, fmt.Sprintf("merged.kept-%d", time.Now().UnixNano()))
+		moved := false
+		if os.MkdirAll(kept, 0o755) == nil {
+			for _, e := range entries {
+				if os.Rename(filepath.Join(merged, e.Name()), filepath.Join(kept, e.Name())) == nil {
+					moved = true
+				}
 			}
-		} else {
-			_ = os.RemoveAll(merged)
+		}
+		if moved && out != nil {
+			fmt.Fprintf(out, "workspace: a prior kept-for-review copy was preserved at %s\n", kept)
+		} else if !moved {
+			_ = os.RemoveAll(kept)
 		}
 	}
+	clearDirContents(merged) // any leftover (partial move) — inode kept
 	pruneKept(stageDir, KeptCap, out)
-	_ = os.RemoveAll(base) // stale baseline: not user data
-	for _, d := range []string{base, merged} {
-		if err := os.MkdirAll(d, 0o755); err != nil {
-			return nil, err
-		}
+
+	// base is host-only (never 9p-exported) → free to recreate.
+	_ = os.RemoveAll(base)
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return nil, err
 	}
 	if err := clone(ctx, abs, base); err != nil {
 		return nil, err
 	}
-	if err := clone(ctx, base, merged); err != nil {
+	if err := clone(ctx, base, merged); err != nil { // into the inode-stable dir
 		return nil, err
 	}
-	// root="" : Cleanup removes base+merged explicitly, never the
-	// stable parent or a renamed-aside kept copy.
+	// root="" : Cleanup clears merged IN PLACE (inode preserved for the
+	// persistent VM) and removes base; it never rmdir's merged.
 	return &Overlay{Project: abs, Copy: merged, base: base, root: ""}, nil
+}
+
+// clearDirContents removes every entry inside dir but not dir itself,
+// preserving dir's inode (required for the persistent-VM 9p export).
+func clearDirContents(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		_ = os.RemoveAll(filepath.Join(dir, e.Name()))
+	}
 }
 
 // KeptCap bounds how many superseded merged.kept-* review copies a
@@ -156,7 +189,7 @@ const KeptCap = 3
 
 // PruneKept deletes all but the `keep` most recent merged.kept-* (by
 // mtime) directly under stageDir, reporting removals on out (may be
-// nil). Best-effort. Exported so `enso sandbox prune` can sweep stale
+// nil). Best-effort. Exported so `enso prune` can sweep stale
 // review copies across every project stage dir as a manual backstop.
 func PruneKept(stageDir string, keep int, out io.Writer) {
 	matches, _ := filepath.Glob(filepath.Join(stageDir, "merged.kept-*"))
@@ -370,23 +403,35 @@ func clip(s string, max int) string {
 // Discard deletes the working copy + baseline; project untouched.
 func (o *Overlay) Discard() error { return o.Cleanup() }
 
-// Cleanup removes the throwaway trees (root for New; base+merged for
-// NewAt). Idempotent. After KeepPath it is a HARD no-op — the copy and
-// baseline the user was told are safe stay on disk.
+// Cleanup discards the throwaway trees. Idempotent. After KeepPath it
+// is a HARD no-op — the copy + baseline the user was told are safe stay
+// on disk.
+//
+//   - New() (root != ""): a private tmpdir, no persistent VM pinned to
+//     it — remove the whole tree.
+//   - NewAt() (root == ""): a persistent Lima VM 9p-exports o.Copy by
+//     inode, so o.Copy's CONTENTS are cleared but the directory itself
+//     is NEVER removed (rmdir'ing it would strand the reused guest
+//     mount on a dangling inode). base is host-only → removed.
 func (o *Overlay) Cleanup() error {
 	if o.kept {
 		return nil
 	}
 	var firstErr error
-	for _, p := range []string{o.root, o.base, o.Copy} {
-		if p == "" {
-			continue
+	if o.root != "" {
+		if err := os.RemoveAll(o.root); err != nil {
+			firstErr = err
 		}
-		if err := os.RemoveAll(p); err != nil && firstErr == nil {
+		o.root = ""
+	} else if o.Copy != "" {
+		clearDirContents(o.Copy) // preserve the inode-stable dir
+	}
+	if o.base != "" {
+		if err := os.RemoveAll(o.base); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
-	o.root, o.base = "", ""
+	o.base = ""
 	return firstErr
 }
 
@@ -404,7 +449,32 @@ func (o *Overlay) KeepPath() string {
 // commit/destroy) and prints how to reconcile; interactive offers
 // commit (non-conflicting changes applied per-file) / discard / keep /
 // view / force.
-func Resolve(ctx context.Context, o *Overlay, interactive bool, in io.Reader, out io.Writer) error {
+// ResolveOption tunes Resolve. Used to inject a diff colorizer from the
+// UI layer without workspace importing it (that would be an import
+// cycle and would break the internal/ui insulation boundary).
+type ResolveOption func(*resolveOpts)
+
+type resolveOpts struct {
+	styleDiff func(string) string
+}
+
+// WithDiffStyler supplies a function that colorizes a unified-diff blob
+// (one styled string in, one out). Applied to both the clipped summary
+// and the full [v]iew output. Nil/absent → plain text.
+func WithDiffStyler(f func(string) string) ResolveOption {
+	return func(o *resolveOpts) { o.styleDiff = f }
+}
+
+func Resolve(ctx context.Context, o *Overlay, interactive bool, in io.Reader, out io.Writer, opts ...ResolveOption) error {
+	var ro resolveOpts
+	for _, opt := range opts {
+		opt(&ro)
+	}
+	styleDiff := ro.styleDiff
+	if styleDiff == nil {
+		styleDiff = func(s string) string { return s }
+	}
+
 	agent, _, conflicts, err := o.threeWay()
 	if err != nil {
 		fmt.Fprintf(out, "workspace: could not compare (%v); changes kept at %s\n", err, o.KeepPath())
@@ -420,7 +490,7 @@ func Resolve(ctx context.Context, o *Overlay, interactive bool, in io.Reader, ou
 		summary = fmt.Sprintf("(could not render diff: %v)", derr)
 	}
 	fmt.Fprintf(out, "\nAgent changes (%d file(s); %s vs the project at task start):\n%s\n",
-		len(agent), o.Copy, clip(summary, maxSummaryLines))
+		len(agent), o.Copy, styleDiff(clip(summary, maxSummaryLines)))
 
 	if len(conflicts) > 0 {
 		fmt.Fprintf(out, "\n⚠ %d of these were ALSO changed on the host since the session started "+
@@ -455,7 +525,7 @@ func Resolve(ctx context.Context, o *Overlay, interactive bool, in io.Reader, ou
 			if e != nil {
 				fmt.Fprintf(out, "  could not produce diff: %v\n", e)
 			} else {
-				fmt.Fprintf(out, "\n%s\n", full)
+				fmt.Fprintf(out, "\n%s\n", styleDiff(full))
 			}
 		case "c", "commit":
 			if err := o.applyPaths(ctx, safe); err != nil {

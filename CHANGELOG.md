@@ -4,6 +4,214 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed (BREAKING — config migration required)
+- **Unified backend configuration.** Every backend's environment now
+  lives under its own `[backend.<name>]` sub-table, selected by the
+  single `[backend] type` switch. Switching backends is now a one-line,
+  lossless change with a shared vocabulary (`init`, `extra_mounts`)
+  across podman and lima. There is **no backward compatibility**: the
+  old keys are silently ignored by the TOML decoder, so a stale config
+  will run with *default* settings (e.g. the `alpine:latest` image and
+  no `init`) until migrated.
+
+  **Config scoping is now enforced.** `[backend] type` and
+  `[backend] workspace` are selection/safety knobs and may be set in any
+  config layer (system, user, or project — the user config is typical).
+  The per-backend *environment* sub-tables (`[backend.podman]`,
+  `[backend.lima]`, `[backend.egress]`) describe what the project needs
+  and must be reproducible from the repo, so they are honored **only**
+  from project-scoped config (`<repo>/.enso/config.toml`,
+  `.enso/config.local.toml`, or an explicit `-c` file). Set in the user
+  or system config they are **stripped with a one-time warning** — there
+  is deliberately no user-global backend environment, so a personal
+  `init` can never silently collide with a repo's.
+
+  **Required migration actions:**
+  - In your **user** config (`~/.config/enso/config.toml`) keep only
+    `[backend] type` / `workspace`; move any `[backend.podman|lima|
+    egress]` blocks out (they will now be ignored there).
+  - In each **repo's** `.enso/config.toml`, set the environment:
+    - `[bash.sandbox_options]` → split into:
+      - `[backend.podman]` for `image`, `init`, `network`,
+        `extra_mounts`, `env`, `name`, `workdir_mount`, `uid`,
+        `hardening`
+      - `[backend.podman] runtime` ← was `[backend] runtime`
+      - `[backend.egress]` for `allow` (← `egress`) and `credentials`
+    - `[lima]` → `[backend.lima]` (`template`, `cpus`, `memory`, `disk`,
+      `extra_mounts`, and the new `init`)
+  - `[backend] workspace` ← was `[bash.sandbox_options] workspace`
+    (now backend-agnostic; user-settable).
+
+  Example — **user** config:
+  ```toml
+  [backend]
+  type      = "lima"
+  workspace = "overlay"
+  ```
+
+  Example — **repo** `.enso/config.toml`:
+  ```toml
+  [backend.egress]
+  allow = ["github.com"]
+
+  [backend.podman]
+  image = "golang:1.22"
+  init  = ["apk add --no-cache git"]
+
+  [backend.lima]
+  template = "alpine"          # guest image distro (default)
+  init     = ["apk add --no-cache git"]
+  ```
+
+### Added
+- **Backend bring-up is no longer silent.** A cold lima run
+  (cloud-image download + VM boot + provisioning + egress seal) used to
+  show a blank terminal for minutes because `limactl` output was
+  captured and discarded on success. Lima's native progress now streams
+  live to stderr, plus concise enso phase lines (`preparing the
+  workspace overlay copy…`, `creating/resuming Lima VM…`, `sealing the
+  guest network…`, `Lima VM ready — starting the agent…`). stderr-only
+  so `--format json` stdout stays clean; a bounded tail is still kept
+  for actionable errors. Podman already streamed its pull progress and
+  gains the workspace-copy framing.
+- **Lima provisioning (`[backend.lima] init`).** Shell lines that run
+  once during VM provisioning (rendered into the generated Lima
+  instance YAML's `provision:` block, `mode: system`, with `set -e`).
+  The podman `init` analogue — install toolchains the base template
+  lacks without baking a custom image.
+- **Colored post-session overlay diff.** The end-of-task
+  commit/discard/keep prompt now renders the agent's diff with the same
+  git-style syntax coloring used in the TUI scrollback (interactive
+  path only).
+- **Podman `[backend.podman] init` is now honored.** It was previously
+  consumed only by the (now-removed) legacy sandbox manager. Each
+  per-task `podman run` wraps the entrypoint: init runs in-container
+  (output redirected to stderr so it can't corrupt the worker Channel;
+  `set -e` so a failed init fails the task), then `exec`s the worker.
+  Because podman containers are per-task `--rm`, init re-runs each
+  task — keep it cheap (package installs) or bake heavy tooling into
+  the image.
+- **lima overlay write-back fixed (persistent-VM inode stability).** The
+  workspace overlay's `merged` directory now keeps a stable inode for
+  the life of the per-project VM. Previously `workspace.NewAt` rotated
+  its inode every run (rename-aside / `RemoveAll` + `MkdirAll`), but a
+  persistent Lima VM 9p-exports `merged` by the inode it had at boot
+  (qemu virtfs doesn't re-resolve the path). So on any run that reused
+  the VM, the guest mount was stranded on the orphaned old inode: the
+  project showed empty/stale, agent writes never reached the host, and
+  the end-of-task commit/discard/keep prompt never appeared (zero
+  changes detected → silent discard) — most visibly right after a
+  `commit`, whose `Cleanup()` removed `merged` outright. Now contents
+  are refreshed in place and `Cleanup()` clears the lima copy without
+  rmdir'ing it. Covered by a real-VM regression test exercising the
+  reuse path (`TestOverlayReuseAndDrift_RealVM`).
+- **lima VM auto-recreate on config drift.** A persistent per-project
+  lima VM is also rebuilt automatically when the generated instance
+  config no longer matches the effective config (workspace toggled,
+  lima settings changed, or an enso upgrade changed the mount layout) —
+  complementary to the inode fix, for cases where the mount path or
+  image itself changes. Safe: project state lives in the host workspace
+  overlay; the VM is reproducible from `init`/provisioning.
+
+### Removed
+- **Legacy per-project sandbox.** The `internal/sandbox` package and
+  the `enso sandbox list|stop|rm|prune` commands are gone. They drove a
+  *persistent* per-project podman/docker container that predated the
+  Backend seam; podman is now strictly per-task (`podman run --rm`),
+  and that container model's only remaining value (init amortization)
+  is moot now that `init` is package-install-cheap. **`enso sandbox
+  prune` is replaced by `enso prune`** (same `--older-than`): it
+  reclaims terminal podman task workers + volumes, enso lima VMs, and
+  accumulated workspace review copies. The dead in-process
+  `SandboxRunner`/`runBashSandboxed` bash path was removed too —
+  isolation is the Backend, not an in-process branch.
+
+### Security
+- **Lima no longer mounts host `$HOME` into the guest.** Previously the
+  lima backend inherited `template:default`, whose base chain
+  (`template:_default/mounts`) binds the host home directory read-only
+  into the VM — so the agent could read `~/.ssh`, `~/.aws`,
+  `~/.config/enso` (provider API keys), and sibling repos. enso now
+  inherits an **image-only** base (`template:_images/<distro>`, default
+  **Alpine**) and mounts only the project copy (writable) and the
+  read-only enso binary. With no `~` mount there is also no parent
+  mount to shadow the workspace, so the prior read-only-workspace bug's
+  cause is removed (not worked around).
+  - `[backend.lima] template` now selects the guest **image distro**
+    (`alpine` default, or `debian`/`ubuntu`/…), not an arbitrary Lima
+    template; a path/URL is still used verbatim (you then own the mount
+    posture). Extra guest packages go in `[backend.lima] init`.
+  - On the default Alpine image enso auto-installs `iptables` (the
+    cloud image omits it; the egress seal requires it) as a
+    provisioning step ahead of your `init`.
+  - Persistent per-project VMs created before this release still mount
+    `$HOME`, but enso now **auto-recreates** any lima VM whose
+    generated config no longer matches (see "lima VM auto-recreate"
+    below) — the stale `$HOME`-mounting VM is rebuilt on the next run
+    with no action required.
+
+### Fixed
+- **`fatal error: invalid runtime symbol table` mid-session
+  (lima/podman).** The isolated backends 9p/bind-mounted the host's
+  *live* enso binary into the guest and exec'd it 1:1; a persistent
+  lima VM keeps that mount across tasks. Rebuilding enso in place
+  (`make build`/`make install`/`go install` — the Go toolchain
+  O_TRUNC-overwrites the output) while a guest worker had it mmap'd
+  made 9p fault in a mix of old+new pages, corrupting the Go runtime's
+  pclntab → the fatal error, surfacing "every so often" (only when the
+  runtime needs the pctab during a turn). enso now execs an
+  **immutable, content-addressed snapshot** of the binary under
+  `$XDG_STATE_HOME/enso/exe/<hash>/` (`internal/backend/exestage`),
+  copied at most once: a rebuilt binary hashes differently → new path
+  → the lima drift-recreate rebuilds the VM cleanly while any in-flight
+  worker keeps running its own untouched copy. This also narrows the
+  lima mount to a dir containing only enso (previously the whole
+  `~/go/bin` was exposed read-only into the guest). Snapshots are
+  reclaimed by `enso prune` (honoring `--older-than`).
+- **Paste into the TUI did nothing (Ctrl-Shift-V / Cmd-V / middle-click
+  X11 PRIMARY).** bubbletea v2 enables bracketed paste by default, so a
+  terminal paste arrives as `tea.PasteMsg` rather than keystrokes — and
+  the model's `Update` had no case for it, so the content was silently
+  dropped. Added a `tea.PasteMsg` case that inserts at the cursor,
+  gated exactly like typed text (ignored while a picker/permission/
+  egress/overlay modal or vim-normal owns the keyboard). The input is
+  single-line by design (Enter submits), so pasted newlines are
+  flattened to spaces — a multi-line snippet stays usable without
+  corrupting the single-line cursor/render. Mouse reporting stays off,
+  so native terminal selection/copy is unaffected. (Plain Ctrl-V is
+  not a terminal paste in raw mode and intentionally still does
+  nothing — use the terminal's paste binding.)
+- **Sessions not saved under podman/lima (no `--continue`, absent from
+  the picker).** The agent Worker runs *inside* the VM/container, so
+  its `session.Open()` resolved to the guest's filesystem: the host
+  created the session row + audit rows but the `messages` rows were
+  written to a throwaway guest DB the host never sees. The picker
+  (`HAVING msg_count > 0`) hid such sessions and `--continue` loaded an
+  empty history. Fixed by streaming persistence over the Channel: an
+  isolated worker (`Isolation.Kind != ""` — now also set for podman)
+  ships each append as `MsgPersistMessage`/`MsgPersistToolCall`; the
+  host applies them to the host DB via a new `host.WithWriter`. Resume
+  history is shipped to the worker via `spec.ResumeHistory` (the guest
+  DB is empty so it can't `session.Load`). The **local backend is
+  unchanged** (shared FS, direct writes — no double-write, since the
+  host only applies persist envelopes, which the local worker never
+  sends). Proven by a real-sealed-container e2e test
+  (`TestPodmanRemoteSessionPersistence`).
+- **lima worker not reaped on terminal close (SIGHUP).** Teardown was
+  reached only via `defer sess.Close()`. bubbletea handles SIGINT/
+  SIGTERM (returns + restores the terminal, defers run), but **SIGHUP**
+  (terminal/tab closed, parent shell exited) is unhandled and its
+  default action killed enso before the defer could run. The backend
+  worker's `limactl`+ssh process group is deliberately `Setpgid`'d off
+  enso's terminal so a terminal SIGHUP can't kill it mid-task — but
+  with Teardown skipped, nothing reaped it, so lima kept the SSH
+  session into the VM open ("lima still holding something open"). Both
+  the TUI and `enso run` now catch SIGHUP and run the (idempotent)
+  Teardown before exiting; SIGINT/SIGTERM are still left to bubbletea
+  so its terminal restore is not regressed.
+
 ## [v2.4.0] - 2026-05-18
 
 ### Added

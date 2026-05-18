@@ -176,6 +176,31 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 
+	case tea.PasteMsg:
+		// Terminal bracketed paste — Ctrl-Shift-V, Cmd-V, or
+		// middle-click X11 PRIMARY. bubbletea v2 enables bracketed
+		// paste by default, so pasted text arrives here (NOT as
+		// keystrokes); without this case it was silently dropped, which
+		// is why pasting "didn't work". (Plain Ctrl-V is not a terminal
+		// paste in raw mode and intentionally does nothing.)
+		//
+		// Ignore while a modal/prompt owns the keyboard, exactly as
+		// typed text is. The input is single-line by design (Enter
+		// submits), so flatten newlines to spaces: a multi-line snippet
+		// stays usable and the single-line cursor/render isn't
+		// corrupted by raw \n in the buffer.
+		if m.pickerOpen || m.sessionsOpen || m.perm != nil || m.egress != nil || m.overlayOpen {
+			return m, nil
+		}
+		if m.input.vim && m.input.vimNormal {
+			return m, nil // normal mode is not a text-entry context
+		}
+		text := strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(msg.Content)
+		if text != "" {
+			m.input.insertString(text)
+		}
+		return m, nil
+
 	case busEventMsg:
 		return m.handleBusEvent(msg.ev)
 

@@ -19,7 +19,6 @@ import (
 	"github.com/TaraTheStar/enso/internal/instructions"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -44,7 +43,7 @@ type Agent struct {
 	Registry  *tools.Registry
 	Perms     *permissions.Checker
 	AgentCtx  *tools.AgentContext
-	Writer    *session.Writer // optional; nil = ephemeral
+	Writer    tools.SessionWriter // optional; nil = ephemeral (or a remote, seam-backed writer for isolated backends)
 	MaxTurns  int
 	Hooks     *hooks.Hooks // optional; on_session_end fires from Run's defer
 
@@ -291,7 +290,7 @@ type Config struct {
 	Bus       *bus.Bus
 	Registry  *tools.Registry
 	Perms     *permissions.Checker
-	Writer    *session.Writer
+	Writer    tools.SessionWriter
 	History   []llm.Message // optional; if non-nil, replaces the default system prompt
 	Cwd       string
 	SessionID string
@@ -338,10 +337,6 @@ type Config struct {
 	// surfaced in the @-file picker. Tool calls already accept any path,
 	// so this is informational unless paired with permission patterns.
 	AdditionalDirectories []string
-
-	// Sandbox, when non-nil, is forwarded to AgentContext so the bash
-	// tool routes through the container instead of the host.
-	Sandbox tools.SandboxRunner
 
 	// RestrictedRoots, when non-empty, is forwarded to AgentContext so
 	// file-touching tools refuse paths outside the allowed roots. Wired
@@ -458,7 +453,6 @@ func New(cfg Config) (*Agent, error) {
 		AgentRole:          cfg.AgentRole,
 		Transcripts:        cfg.Transcripts,
 		Writer:             cfg.Writer,
-		Sandbox:            cfg.Sandbox,
 		RestrictedRoots:    cfg.RestrictedRoots,
 		FileEditHook:       fileEditHookOf(cfg.Hooks),
 		WebFetchAllowHosts: cfg.WebFetchAllowHosts,
@@ -740,7 +734,19 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	}
 	release()
 
-	asst := llm.Message{Role: "assistant", Content: content.String()}
+	contentStr := content.String()
+	// Fallback for GGUF chat templates (Qwen3/Hermes-style on llama.cpp)
+	// that leak tool calls into the assistant text instead of the
+	// structured tool_calls channel. Only when the API channel gave us
+	// nothing — a well-behaved provider's structured calls always win.
+	if len(toolCalls) == 0 {
+		if cleaned, inline := llm.ParseInlineToolCalls(contentStr); len(inline) > 0 {
+			contentStr = cleaned
+			toolCalls = inline
+		}
+	}
+
+	asst := llm.Message{Role: "assistant", Content: contentStr}
 	if len(toolCalls) > 0 {
 		asst.ToolCalls = toolCalls
 	}

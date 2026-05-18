@@ -130,14 +130,14 @@ For real work, run the agent inside a per-project container:
 [backend]
 type = "podman"
 
-[bash.sandbox_options]
+[backend.podman]
 image = "alpine:latest"
 init  = ["apk add --no-cache git curl jq make"]
 ```
 
-The agent's shell now sees only `/work` (your project) and the
-container's rootfs. Host paths outside cwd are invisible. Manage
-containers with `enso sandbox list / stop / rm / prune`.
+The agent's shell now sees only your project (mounted at its real
+path) and the container/VM rootfs. Host paths outside cwd are
+invisible. Reclaim stale sandboxes with `enso prune [--older-than]`.
 
 Full details in [Sandbox]({{< relref "docs/sandbox.md" >}}).
 

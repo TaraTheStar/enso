@@ -18,7 +18,7 @@ func TestBashSandboxOptions_OCIRuntime(t *testing.T) {
 		"typo!": "typo!",
 	}
 	for in, want := range cases {
-		if got := (BashSandboxOptions{Hardening: in}).OCIRuntime(); got != want {
+		if got := (PodmanBackendConfig{Hardening: in}).OCIRuntime(); got != want {
 			t.Errorf("OCIRuntime(%q) = %q, want %q", in, got, want)
 		}
 	}

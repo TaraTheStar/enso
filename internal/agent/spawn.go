@@ -11,7 +11,6 @@ import (
 
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/llm"
-	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -95,13 +94,13 @@ func (SpawnTool) Run(ctx context.Context, args map[string]interface{}, ac *tools
 	}
 
 	agentID := shortUUID()
-	// Forward the parent's writer (if any). Sub-agent rows persist with
-	// the child's AgentID so transcripts are queryable post-resume via
-	// session.LoadAgentTranscript while staying out of top-level Load.
-	var childWriter *session.Writer
-	if w, ok := ac.Writer.(*session.Writer); ok {
-		childWriter = w
-	}
+	// Forward the parent's writer (if any) verbatim — concrete
+	// *session.Writer (local) or the seam-backed remote writer
+	// (isolated) alike. Sub-agent rows persist with the child's AgentID
+	// (AppendMessage carries it) so transcripts stay queryable
+	// post-resume via session.LoadAgentTranscript without polluting
+	// top-level Load.
+	childWriter := ac.Writer
 
 	// Per-call provider: child defaults to the parent's current provider
 	// (ac.Provider, kept live by Agent.SetProvider). The optional `model`
