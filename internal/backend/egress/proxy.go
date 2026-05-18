@@ -7,7 +7,14 @@
 // pointed at it via HTTPS_PROXY. Everything not explicitly allowed is
 // refused — a curl-bash mishap or a wrong-remote push cannot leave the
 // box. The allowlist is per-Proxy (one per task), starts empty
-// (default-deny), and only ever grows by explicit Allow.
+// (default-deny), and only ever grows by explicit Allow — except under
+// --yolo, where AllowAll bypasses the gate entirely (traffic still flows
+// through, and is observable at, this host proxy; the box stays sealed).
+//
+// An optional Decider turns the default-deny into an interactive prompt:
+// on a not-allowed target the proxy asks (blocking) and, if granted,
+// promotes the target to the allowlist. Without a Decider the deny is
+// hard, exactly as before.
 package egress
 
 import (
@@ -25,9 +32,25 @@ import (
 // host:port targets. HTTPS flows through CONNECT (the proxy never sees
 // plaintext or terminates TLS — it is a policy gate, not a MITM); plain
 // HTTP is forwarded with the same allowlist check.
+// Decider is consulted when a target is NOT on the static allowlist
+// (and allow-all is off). It blocks until the user (via the host-side
+// InteractiveBroker) answers, returning true to allow the connection
+// or false to refuse it. A nil Decider preserves the hard default-deny
+// posture — an unconfigured sealed box still refuses everything.
+//
+// AuthorizeEgress runs on the request goroutine; ctx is the request
+// context so a client that gives up unblocks the wait. An allowed
+// target is also added to the allowlist (one decision per target, not
+// per connection) before the proxy proceeds.
+type Decider interface {
+	AuthorizeEgress(ctx context.Context, hostport string) bool
+}
+
 type Proxy struct {
-	mu      sync.RWMutex
-	allowed map[string]bool // "host:port", lowercased
+	mu       sync.RWMutex
+	allowed  map[string]bool // "host:port", lowercased
+	allowAll bool            // --yolo: every target permitted (no allowlist gate)
+	decider  Decider         // optional interactive fallback on a denied target
 
 	ln  net.Listener
 	srv *http.Server
@@ -53,10 +76,51 @@ func (p *Proxy) Allow(hostport string) {
 	p.allowed[hostport] = true
 }
 
+// AllowAll switches the proxy to allow-all: every CONNECT/HTTP target is
+// permitted and the per-target allowlist is bypassed. This is the --yolo
+// posture — the box stays structurally sealed and all traffic still flows
+// through (and is observable at) this host proxy, but the default-deny
+// gate is off. Once set it is not unset for the proxy's lifetime.
+func (p *Proxy) AllowAll() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.allowAll = true
+}
+
+// SetDecider installs the interactive fallback consulted on a target
+// that is not (yet) on the allowlist. Idempotent; set once at wiring.
+func (p *Proxy) SetDecider(d Decider) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.decider = d
+}
+
 func (p *Proxy) isAllowed(hostport string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.allowed[strings.ToLower(hostport)]
+	return p.allowAll || p.allowed[strings.ToLower(hostport)]
+}
+
+// gate decides whether target may be reached: the static allowlist
+// (or allow-all) first, then — only if a Decider is installed — an
+// interactive prompt. A granted interactive decision is promoted to
+// the allowlist so the rest of this connection and any retries to the
+// same target don't re-prompt. No decider ⇒ pure default-deny.
+func (p *Proxy) gate(ctx context.Context, target string) bool {
+	if p.isAllowed(target) {
+		return true
+	}
+	p.mu.RLock()
+	d := p.decider
+	p.mu.RUnlock()
+	if d == nil {
+		return false
+	}
+	if d.AuthorizeEgress(ctx, target) {
+		p.Allow(target)
+		return true
+	}
+	return false
 }
 
 // Allowed reports whether hostport is currently on the allowlist.
@@ -114,7 +178,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	if !strings.Contains(target, ":") {
 		target += ":80"
 	}
-	if !p.isAllowed(target) {
+	if !p.gate(r.Context(), target) {
 		http.Error(w, "egress denied: "+target+" not on the task allowlist", http.StatusForbidden)
 		return
 	}
@@ -136,7 +200,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	target := r.Host // CONNECT host:port
-	if !p.isAllowed(target) {
+	if !p.gate(r.Context(), target) {
 		http.Error(w, "egress denied: "+target+" not on the task allowlist", http.StatusForbidden)
 		return
 	}
