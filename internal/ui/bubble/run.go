@@ -94,7 +94,7 @@ func Run(opts Options) error {
 	// Exactly one execution path: LocalBackend (sandbox off) or
 	// PodmanBackend (sandbox on), both behind the seam. No in-process
 	// branch — the structural fix the whole effort exists for.
-	b, isol, bopts := host.SelectBackend(cfg)
+	b, isol, bopts := host.SelectBackend(cfg, opts.Yolo, true /* attended TUI: a denied egress can prompt the operator */)
 	return runTUIViaBackend(b, isol, bopts, opts, cwd, cfg, providers, defaultName)
 }
 

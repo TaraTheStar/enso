@@ -42,6 +42,15 @@ const (
 	// next turn out of order — the UI shows the count so the user
 	// knows their followups didn't make it through.
 	EventInputDiscarded
+
+	// EventEgressRequest fires when a network-sealed box tries to reach
+	// a target not on the static allowlist and the host-side
+	// InteractiveBroker needs a y/t/n decision. Payload is a
+	// *permissions.EgressPrompt carrying a live Respond channel. Like
+	// EventPermissionRequest it is HOST-LOCAL: the egress proxy and the
+	// broker both run host-side, so this never crosses the worker
+	// Channel and is deliberately absent from WireForm/FromWire.
+	EventEgressRequest
 )
 
 // Event is a typed message sent through the bus.
@@ -261,6 +270,8 @@ func eventTypeString(t EventType) string {
 		return "AgentIdle"
 	case EventInputDiscarded:
 		return "InputDiscarded"
+	case EventEgressRequest:
+		return "EgressRequest"
 	default:
 		return "Unknown"
 	}

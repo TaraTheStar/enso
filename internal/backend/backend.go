@@ -197,6 +197,14 @@ type IsolationSpec struct {
 	// note: "" / "container" (podman) vs "vm" (lima). Not a behavioral
 	// switch — purely how the worker describes its box to the model.
 	Kind string `json:"kind,omitempty"`
+
+	// EgressUnrestricted, when true, means the box is still structurally
+	// sealed (NetworkSealed) and host-mediated, but the host egress proxy
+	// is running allow-all: every host:port is permitted, the default-deny
+	// allowlist gate is off. Set only by --yolo. Purely an honesty signal
+	// for the # Environment note — the actual openness is enforced by the
+	// allow-all proxy, not this flag.
+	EgressUnrestricted bool `json:"egress_unrestricted,omitempty"`
 }
 
 // ---------------------------------------------------------------------
