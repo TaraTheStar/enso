@@ -332,22 +332,23 @@ also surfaces in-flight agent state at a glance.
 `[mcp.<name>]` in `config.toml`. Their tools surface as `mcp__<server>__<tool>`
 in `/tools` and the permission matcher.
 
-**Bash sandboxing** — `[bash] sandbox = "auto"` (or `"podman"` /
-`"docker"`) routes the `bash` tool through a per-project container.
+**Bash sandboxing** — `[backend] type = "podman"` (or `"lima"`)
+routes the agent through a per-project container/VM.
 Project cwd is bind-mounted at `/work`; the agent's shell can't see
 `~`, `~/.ssh`, sibling repos, or anything else outside cwd. File
 tools (`read`/`write`/`edit`/`grep`/`glob`) get a parallel
 cwd-confinement guard so they can't bypass the sandbox via path
-arguments. The container is named per-project (`enso-<basename>-<6hex>`)
-and persists across ensō runs — first start pays the image-pull +
-init cost, subsequent runs `podman start` instantly. Manage with
-`enso sandbox list / stop / rm / prune`.
+arguments. Each task runs in a fresh `podman run --rm` container
+(`enso-<basename>-<taskid>`); `init` runs in-container before the
+worker. Lima instead uses a persistent per-project VM, recreated
+automatically when its config changes. Reclaim stragglers (terminal
+podman workers, idle lima VMs) with `enso prune [--older-than]`.
 
 ```toml
-[bash]
-sandbox = "auto"            # "off" | "auto" | "podman" | "docker"
+[backend]
+type = "podman"             # "local" | "podman" | "lima"
 
-[bash.sandbox_options]
+[backend.podman]
 image = "alpine:latest"
 init  = ["apk add --no-cache git curl jq make"]
 network = ""                # "" inherits runtime default; "none" = offline
@@ -449,7 +450,7 @@ to defaults; it never blocks the TUI.
 
 **Daemon mode** — POSIX-only (Linux/macOS/BSD; Windows users run via WSL).
 The daemon path is intentionally narrower than the in-process path:
-**`lsp_*` tools and the `[bash] sandbox` are not registered for daemon
+**`lsp_*` tools and the sandbox backend are not registered for daemon
 sessions** — each `enso run --detach` can target a different cwd, but
 the registry is shared across sessions, and per-session LSP / sandbox
 managers are out of v1 scope. Use `enso run` or `enso tui` (in-process)

@@ -41,7 +41,6 @@ full package map. Quick orientation:
 | `internal/ui/`          | Framework-agnostic UI surface (Run / RunAttached / Options) plus the `bubble/` Bubble Tea backend. Only imported from `cmd/enso`. |
 | `internal/session/`     | SQLite store; persist-before-render writer.       |
 | `internal/permissions/` | Allowlist + matcher + ignore loader.              |
-| `internal/sandbox/`     | podman/docker manager.                            |
 | `internal/lsp/`         | LSP client (JSON-RPC + lifecycle).                |
 | `internal/mcp/`         | MCP client + tool adapter.                        |
 | `internal/workflow/`    | Declarative workflow parser + topo runner.        |

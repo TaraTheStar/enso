@@ -7,7 +7,7 @@ package permissions
 // egress: the only "remember" granularity that makes sense for a
 // per-task sealed box is "for the rest of this task" (there is no
 // durable egress allowlist file to persist into — that is the static
-// [bash.sandbox_options] egress list, edited up front, not here).
+// [backend.egress] allow list, edited up front, not here).
 type EgressDecision int
 
 const (

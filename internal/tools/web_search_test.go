@@ -202,6 +202,34 @@ func TestWebSearch_SearXNG_TLS_CACert(t *testing.T) {
 	}
 }
 
+// The sealed-backend path: the worker gets the CA as bytes (CACertPEM,
+// resolved host-side by Config.ResolveSearchSecrets) and trusts it with
+// NO filesystem access — CACert path is empty, as it is inside a guest
+// that never mounted the host config dir.
+func TestWebSearch_SearXNG_TLS_CACertPEM_NoPath(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"results":[{"title":"ok","url":"https://e/1","content":"c"}]}`))
+	}))
+	defer srv.Close()
+
+	cert := srv.Certificate()
+	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw})
+
+	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{
+		Endpoint:  srv.URL,
+		CACertPEM: pemBytes, // host-resolved; no CACert path available in-guest
+	}}
+	r := NewRegistry()
+	RegisterSearch(r, cfg)
+	res, err := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(res.LLMOutput, "ok") {
+		t.Errorf("expected result in output, got %q", res.LLMOutput)
+	}
+}
+
 func TestWebSearch_SearXNG_TLS_BadCACertFallsBack(t *testing.T) {
 	// Bad ca_cert path shouldn't crash startup — backend should still
 	// register and try to call (will fail at call time, but cleanly).

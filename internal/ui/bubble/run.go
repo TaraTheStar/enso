@@ -23,8 +23,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -162,7 +164,12 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		spec.SessionID = sessionID
 	}
 	// Credential-scrub invariant: the SCRUBBED config crosses the seam.
-	rc, err := json.Marshal(cfg.ScrubbedForWorker())
+	sc := cfg.ScrubbedForWorker()
+	// Resolve searxng ca_cert into bytes that survive the seam (a sealed
+	// worker has no host config dir mounted); a read failure warns on
+	// HOST stderr, uniformly visible for every backend.
+	sc.ResolveSearchSecrets(os.Stderr)
+	rc, err := json.Marshal(sc)
 	if err != nil {
 		return fmt.Errorf("serialize config: %w", err)
 	}
@@ -211,12 +218,15 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	sess, err := host.Start(ctx, b, spec, providers, busInst, bopts...)
-	if err != nil {
-		return fmt.Errorf("bubble: start worker: %w", err)
-	}
-	defer sess.Close()
-
+	// Session store/row/writer are set up BEFORE host.Start so the
+	// host-side writer can be threaded into the Session via
+	// host.WithWriter: an ISOLATED worker (podman/lima) cannot write
+	// the host DB itself, so it ships each append over the seam and the
+	// host applies it through this writer. The LOCAL worker still
+	// writes the shared DB directly (WithWriter is then inert — no
+	// persist envelopes arrive). resumed history is shipped to the
+	// worker via spec.ResumeHistory (an isolated worker's own guest DB
+	// is empty so it can't session.Load; the local worker ignores it).
 	if !opts.Ephemeral {
 		store, err = session.Open()
 		if err != nil {
@@ -230,9 +240,8 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 			}
 		} else {
 			// Host owns session-row creation (mirrors the legacy
-			// in-process bubble.Run). The worker attaches a
-			// message-append writer to this row; the host writer below
-			// is for session meta + the audit/events table.
+			// in-process bubble.Run). This host writer also serves
+			// session meta + the audit/events table.
 			if _, err = session.NewSessionWithID(store, sessionID, provider.Model, defaultName, cwd); err != nil {
 				return fmt.Errorf("create session: %w", err)
 			}
@@ -244,9 +253,42 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		if resuming && resumed.Interrupted {
 			_ = writer.MarkInterrupted(false)
 		}
+		if resumed != nil {
+			if rh, mErr := json.Marshal(resumed.History); mErr == nil {
+				spec.ResumeHistory = rh
+			}
+		}
+		bopts = append(bopts, host.WithWriter(writer))
 	}
 
-	printStartupBanner(provider, cfg, false, writer)
+	sess, err := host.Start(ctx, b, spec, providers, busInst, bopts...)
+	if err != nil {
+		return fmt.Errorf("bubble: start worker: %w", err)
+	}
+	defer sess.Close()
+
+	// SIGHUP (terminal/tab closed, parent shell exited) is NOT handled
+	// by bubbletea and its default action kills enso instantly, so the
+	// `defer sess.Close()` above never runs — and the backend worker
+	// process group was deliberately Setpgid'd off our terminal so a
+	// terminal SIGHUP wouldn't reach it. Net: nothing reaps it and the
+	// lima `limactl`/ssh session into the VM stays open. So on SIGHUP we
+	// run Teardown explicitly, then exit. (SIGINT/SIGTERM are left to
+	// bubbletea, which returns from p.Run() and restores the terminal,
+	// after which the deferred sess.Close() tears down — handling them
+	// here too would skip that terminal restore.)
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
+	go func() {
+		if _, ok := <-hup; !ok {
+			return
+		}
+		_ = sess.Close() // idempotent Teardown: reaps limactl + ssh
+		os.Exit(129)     // 128 + SIGHUP
+	}()
+
+	printStartupBanner(provider, cfg, writer)
 	if resumed != nil {
 		replayHistory(resumed.History)
 		if resumed.Interrupted {
@@ -423,7 +465,8 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 	// directly. Done before any session-switch exec so a switch can't
 	// strand the diverged copy.
 	if overlayWS != nil {
-		_ = workspace.Resolve(context.Background(), overlayWS, true, os.Stdin, os.Stdout)
+		_ = workspace.Resolve(context.Background(), overlayWS, true, os.Stdin, os.Stdout,
+			workspace.WithDiffStyler(StyleDiffBlob))
 	}
 
 	if runErr != nil {
@@ -489,9 +532,10 @@ func pickDefaultProvider(providers map[string]*llm.Provider, requested string) (
 
 // printStartupBanner prints a one-or-two-line banner describing the
 // session that's about to start. The banner is the user's first
-// confirmation that MCP/LSP/sandbox are spinning up; the same data
-// is also reachable on demand via /info or the Ctrl-Space overlay.
-func printStartupBanner(provider *llm.Provider, cfg *config.Config, sandboxOn bool, writer *session.Writer) {
+// confirmation that MCP/LSP and the isolation backend are spinning up;
+// the same data is also reachable on demand via /info or the
+// Ctrl-Space overlay.
+func printStartupBanner(provider *llm.Provider, cfg *config.Config, writer *session.Writer) {
 	header := asstStyle.Render("enso") + "  " + provider.Model
 	if writer != nil {
 		header += statusStyle.Render("  · " + shortID(writer.SessionID()))
@@ -515,8 +559,8 @@ func printStartupBanner(provider *llm.Provider, cfg *config.Config, sandboxOn bo
 		}
 		bits = append(bits, fmt.Sprintf("lsp: %s", strings.Join(names, ", ")))
 	}
-	if sandboxOn {
-		bits = append(bits, "sandbox: on")
+	if be := cfg.ResolveBackend(); be != config.BackendLocal {
+		bits = append(bits, "backend: "+string(be))
 	}
 	if len(bits) > 0 {
 		fmt.Println(statusStyle.Render("→ " + strings.Join(bits, " · ")))

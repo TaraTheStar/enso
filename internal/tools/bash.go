@@ -36,14 +36,12 @@ func (t BashTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 		return Result{}, fmt.Errorf("bash: cmd required")
 	}
 
-	if ac.Sandbox != nil {
-		return runBashSandboxed(ctx, cmdStr, ac)
-	}
 	return runBashHost(ctx, cmdStr, ac)
 }
 
-// runBashHost is the original direct-exec path: `sh -c <cmd>` with cwd
-// set to the project root. Used when no sandbox is configured.
+// runBashHost runs `sh -c <cmd>` with cwd at the project root.
+// Isolation (container/VM) is the Backend the whole worker runs in —
+// there is no separate in-process sandbox path.
 func runBashHost(ctx context.Context, cmdStr string, ac *AgentContext) (Result, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
 	cmd.Dir = ac.Cwd
@@ -88,46 +86,6 @@ func runBashHost(ctx context.Context, cmdStr string, ac *AgentContext) (Result, 
 		llm = "(exit 0, no output)"
 	}
 
-	return Result{
-		LLMOutput:  llm,
-		FullOutput: full,
-		Display:    strings.TrimSpace(truncated),
-		Meta:       ResultMeta{CacheKey: cacheKey},
-	}, nil
-}
-
-// runBashSandboxed routes through ac.Sandbox.Exec. The sandbox
-// implementation streams stdout+stderr through a single io.Writer (the
-// `<runtime> exec` CLI doesn't separate them via SSH-style stream
-// IDs), so we capture everything as combined output. That's a small
-// regression vs. the host path's separate buffers, but the truncation
-// + display logic doesn't actually use the split.
-func runBashSandboxed(ctx context.Context, cmdStr string, ac *AgentContext) (Result, error) {
-	var combined bytes.Buffer
-	w := newProgressWriter(&combined, ac.Bus, ac.CurrentToolID, "stdout")
-	runErr := ac.Sandbox.Exec(ctx, w, cmdStr)
-
-	output := combined.String()
-	cap := ac.OutputCaps.CapFor("bash")
-	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
-	cacheKey := bashCacheKey(cmdStr)
-
-	if runErr != nil {
-		exit := -1
-		if ee, ok := runErr.(*exec.ExitError); ok {
-			exit = ee.ExitCode()
-		}
-		return Result{
-			LLMOutput:  fmt.Sprintf("exit %d (sandbox: %s)\n%s", exit, ac.Sandbox.Runtime(), truncated),
-			FullOutput: fmt.Sprintf("exit %d (sandbox: %s/%s)\n%s", exit, ac.Sandbox.Runtime(), ac.Sandbox.ContainerName(), full),
-			Meta:       ResultMeta{CacheKey: cacheKey},
-		}, nil
-	}
-
-	llm := truncated
-	if llm == "" {
-		llm = "(exit 0, no output)"
-	}
 	return Result{
 		LLMOutput:  llm,
 		FullOutput: full,

@@ -138,26 +138,50 @@ func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.O
 	// Credential-scrub invariant: the SCRUBBED config crosses the seam,
 	// never the raw one. The worker rebuilds providers from
 	// spec.Providers + the host-proxied client; it gets no endpoint/key.
-	rc, err := json.Marshal(cfg.ScrubbedForWorker())
+	sc := cfg.ScrubbedForWorker()
+	// Resolve filesystem-backed search secrets (searxng ca_cert) into
+	// bytes that survive the seam: a sealed worker has no host config
+	// dir mounted. A read failure warns here, on HOST stderr — uniformly
+	// visible for every backend, unlike the worker's stderr which lima
+	// loses behind limactl/ssh noise.
+	sc.ResolveSearchSecrets(os.Stderr)
+	rc, err := json.Marshal(sc)
 	if err != nil {
 		return fmt.Errorf("serialize config: %w", err)
 	}
 	spec.ResolvedConfig = rc
 
-	// Host owns session-row creation (mirrors the legacy in-process
-	// runOnce, which created the row host-side): the worker only
-	// attaches a message writer to it. This keeps the row visible
-	// host-side immediately and avoids racing the worker's startup.
-	if !flagEphemeral && !resuming {
-		store, err := session.Open()
-		if err != nil {
-			return fmt.Errorf("open session store: %w", err)
+	// Host owns session persistence. LOCAL: the worker writes the
+	// shared DB directly (host.WithWriter is then inert — no persist
+	// envelopes arrive). ISOLATED (podman/lima): the worker can't reach
+	// the host DB, so it ships each append over the seam and the host
+	// applies it through this writer. Either way the row is created/
+	// visible host-side immediately; resume history is shipped to the
+	// worker via spec.ResumeHistory (an isolated worker's own guest DB
+	// is empty so it can't session.Load; the local worker ignores it).
+	// The store is kept open for the whole run (defer is fn-scoped).
+	if !flagEphemeral {
+		store, serr := session.Open()
+		if serr != nil {
+			return fmt.Errorf("open session store: %w", serr)
 		}
-		if _, err := session.NewSessionWithID(store, sessionID, providers[defaultName].Model, defaultName, cwd); err != nil {
-			store.Close()
-			return fmt.Errorf("create session: %w", err)
+		defer store.Close()
+		if resuming {
+			resumed, lerr := session.Load(store, sessionID)
+			if lerr != nil {
+				return fmt.Errorf("resume %s: %w", sessionID, lerr)
+			}
+			if rh, mErr := json.Marshal(resumed.History); mErr == nil {
+				spec.ResumeHistory = rh
+			}
+		} else if _, nerr := session.NewSessionWithID(store, sessionID, providers[defaultName].Model, defaultName, cwd); nerr != nil {
+			return fmt.Errorf("create session: %w", nerr)
 		}
-		store.Close()
+		writer, aerr := session.AttachWriter(store, sessionID)
+		if aerr != nil {
+			return fmt.Errorf("attach writer: %w", aerr)
+		}
+		bopts = append(bopts, host.WithWriter(writer))
 	}
 
 	busInst := bus.New()
@@ -223,11 +247,21 @@ func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.O
 	}
 
 	// SIGINT/SIGTERM cancels the in-flight turn cleanly (Ctrl-C
-	// equivalent), now routed over the Channel as MsgCancel.
+	// equivalent), routed over the Channel as MsgCancel — sess.Wait()
+	// then returns and the deferred sess.Close() tears down.
+	//
+	// SIGHUP (terminal/parent shell gone) has no graceful turn to
+	// cancel and its default action kills enso before the deferred
+	// sess.Close() can run — leaving the lima `limactl`/ssh worker
+	// session (deliberately off our process group) holding the VM open.
+	// So tear the worker down explicitly, then exit.
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
-		<-sigCh
+		if s := <-sigCh; s == syscall.SIGHUP {
+			_ = sess.Close() // idempotent Teardown: reaps limactl + ssh
+			os.Exit(129)     // 128 + SIGHUP
+		}
 		sess.Cancel()
 	}()
 

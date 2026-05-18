@@ -108,7 +108,43 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		writer  *session.Writer
 		resumed *session.State
 	)
-	if !spec.Ephemeral {
+	// sw is the writer the agent loop uses (tools.SessionWriter): nil
+	// (ephemeral), the concrete *session.Writer (LOCAL — host child,
+	// shared FS, unchanged), or the seam-backed remoteWriter (ISOLATED
+	// — podman/lima can't reach the host DB, so persistence is shipped
+	// to the host). Keep it an explicit interface var so a nil
+	// *session.Writer never becomes a non-nil typed-nil interface.
+	var sw tools.SessionWriter
+	var history []llm.Message
+
+	switch {
+	case spec.Ephemeral:
+		// No persistence.
+
+	case spec.Isolation.Kind != "":
+		// ISOLATED (Kind "container"/"vm"): the worker's filesystem is
+		// not the host's, so session.Open() here would write to a
+		// throwaway guest DB the host picker/--continue never see.
+		// Persist over the seam instead; the host applies to the host
+		// DB (it minted the session row pre-launch). Resume history is
+		// seeded from the host via spec.ResumeHistory — the guest DB is
+		// empty and irrelevant; never session.Open() on this path.
+		sid := spec.SessionID
+		if sid == "" {
+			sid = spec.ResumeSessionID
+		}
+		sw = &remoteWriter{s: s, sessionID: sid}
+		if len(spec.ResumeHistory) > 0 {
+			if err := json.Unmarshal(spec.ResumeHistory, &history); err != nil {
+				return fmt.Errorf("worker: decode resume history: %w", err)
+			}
+		}
+
+	default:
+		// LOCAL backend: the worker is a host child sharing the
+		// filesystem — write directly to the host DB exactly as before
+		// (no behavior change, no double-write since the host applies
+		// remote-persist envelopes only, which this path never sends).
 		store, err = session.Open()
 		if err != nil {
 			return fmt.Errorf("worker: open session store: %w", err)
@@ -124,23 +160,26 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 				return fmt.Errorf("worker: attach writer: %w", err)
 			}
 		} else if spec.SessionID != "" {
-			// The host (which mints the id and shares the filesystem
-			// under LocalBackend) already created the session row
-			// before launch — owning the row host-side keeps it visible
-			// for host audit/label/fork without racing the worker, and
-			// mirrors the legacy in-process paths. The worker only
-			// attaches a message-append writer to it.
+			// Host minted the id + created the row pre-launch (keeps it
+			// visible for host audit/label/fork without racing the
+			// worker); the worker only attaches a message-append writer.
 			writer, err = session.AttachWriter(store, spec.SessionID)
 			if err != nil {
 				return fmt.Errorf("worker: attach session %s: %w", spec.SessionID, err)
 			}
 		} else {
-			// No host-minted id (e.g. a caller that doesn't pre-create):
+			// No host-minted id (a caller that doesn't pre-create):
 			// fall back to creating the row worker-side.
 			writer, err = session.NewSessionWithID(store, "", provider.Model, provider.Name, spec.Cwd)
 			if err != nil {
 				return fmt.Errorf("worker: create session: %w", err)
 			}
+		}
+		if writer != nil {
+			sw = writer
+		}
+		if resumed != nil {
+			history = resumed.History
 		}
 	}
 
@@ -155,7 +194,7 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		Bus:                   busInst,
 		Registry:              registry,
 		Perms:                 checker,
-		Writer:                writer,
+		Writer:                sw,
 		Cwd:                   spec.Cwd,
 		MaxTurns:              maxTurns,
 		GitAttribution:        cfg.Git.Attribution,
@@ -175,14 +214,12 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		// contract — no accidental default-deny of normal operation.
 		acfg.Capabilities = s
 	}
-	if writer != nil {
-		acfg.SessionID = writer.SessionID()
+	if sw != nil {
+		acfg.SessionID = sw.SessionID()
 	}
-	if resumed != nil {
-		acfg.History = resumed.History
+	if len(history) > 0 {
+		acfg.History = history
 	}
-	// Sandbox stays nil: LocalBackend is no-isolation by definition;
-	// the container backend is a different Backend entirely.
 
 	agt, err := agent.New(acfg)
 	if err != nil {
@@ -300,6 +337,42 @@ func (s *seam) send(env backend.Envelope) error {
 	s.sendMu.Lock()
 	defer s.sendMu.Unlock()
 	return s.ch.Send(env)
+}
+
+// remoteWriter is the session.Writer substitute for an ISOLATED worker
+// (podman/lima): its filesystem is not the host's, so it cannot write
+// session rows the host picker/--continue read. Instead each append is
+// shipped over the seam (fire-and-forget, ordered — send is serialized,
+// the host loop applies in receipt order) and the HOST applies it to
+// the host DB via its own *session.Writer. It satisfies
+// tools.SessionWriter exactly (AppendMessage / AppendToolCall /
+// SessionID) — the only writer surface the agent loop uses. The local
+// backend never constructs this (it shares the host FS and keeps the
+// direct *session.Writer, unchanged).
+type remoteWriter struct {
+	s         *seam
+	sessionID string
+}
+
+func (rw *remoteWriter) SessionID() string { return rw.sessionID }
+
+func (rw *remoteWriter) AppendMessage(msg llm.Message, agentID string) error {
+	body, err := backend.NewBody(wire.PersistMessage{Msg: msg, AgentID: agentID})
+	if err != nil {
+		return err
+	}
+	return rw.s.send(backend.Envelope{Kind: backend.MsgPersistMessage, Body: body})
+}
+
+func (rw *remoteWriter) AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error {
+	body, err := backend.NewBody(wire.PersistToolCall{
+		CallID: callID, Name: name, Args: args,
+		LLMOutput: llmOutput, FullOutput: fullOutput, Status: status,
+	})
+	if err != nil {
+		return err
+	}
+	return rw.s.send(backend.Envelope{Kind: backend.MsgPersistToolCall, Body: body})
 }
 
 func (s *seam) nextCorr(prefix string) string {

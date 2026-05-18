@@ -83,13 +83,13 @@ func TestAllowlistBroker_AllowAllEgress(t *testing.T) {
 // allowlist or credentials (where the non-yolo path produces nothing).
 func TestEgressBrokerOpts_Yolo(t *testing.T) {
 	// No config, no yolo, non-interactive → no broker (default-deny stays).
-	if opts := egressBrokerOpts(config.BashSandboxOptions{}, false, false, func(string) {}); opts != nil {
+	if opts := egressBrokerOpts(config.EgressConfig{}, false, false, func(string) {}); opts != nil {
 		t.Fatal("no config, no yolo, headless: must yield no broker")
 	}
 
 	// No config, yolo → a broker + an injected allow-all proxy URL.
 	var injected string
-	opts := egressBrokerOpts(config.BashSandboxOptions{}, true, false, func(u string) { injected = u })
+	opts := egressBrokerOpts(config.EgressConfig{}, true, false, func(u string) { injected = u })
 	if opts == nil {
 		t.Fatal("yolo must yield a broker even with no config")
 	}
@@ -216,7 +216,7 @@ func TestEgressBrokerOpts_Interactive(t *testing.T) {
 	// No config, no yolo, but interactive → an InteractiveBroker plus a
 	// started (empty, default-deny) proxy wired as its decider.
 	var injected string
-	opts := egressBrokerOpts(config.BashSandboxOptions{}, false, true, func(u string) { injected = u })
+	opts := egressBrokerOpts(config.EgressConfig{}, false, true, func(u string) { injected = u })
 	if opts == nil {
 		t.Fatal("interactive must yield a broker even with no config")
 	}

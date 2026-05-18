@@ -35,43 +35,44 @@ deny = []
 # picker. Permission patterns still gate writes — this is informational.
 additional_directories = []
 
-[bash.sandbox_options]
-# Per-project container settings, used WHEN [backend] type = "podman".
-# Image to run. Pick whatever toolchain you
-# need; alpine is a small starting point.
-image = "alpine:latest"
-# Commands run once after container creation. Re-runs only when this
-# list (or image / mounts / env) changes — tracked via a label.
-init = []
-# Container --network flag. Empty = runtime default.
-# "none" = fully offline; "host" = share the host network.
-network = ""
-# Extra "-v src:dst[:opts]" mounts beyond the project cwd.
-extra_mounts = []
-# KEY=value entries injected into the container env.
-env = []
-
 [backend]
-# Where the agent core runs. This is the ONLY backend selector.
+# Where the agent core runs. This is the ONLY backend selector — flip
+# the type to switch.
 #   "local"  (default) = a host child process, no isolation.
 #   "podman" = the core runs inside a rootless container (overlay
 #              workspace, network-sealed, host-proxied inference).
 #   "lima"   = the core runs inside a persistent per-project VM
-#              (real-VM isolation); see [lima] below.
+#              (real-VM isolation).
 # Empty or unrecognized = "local" (fails safe).
 type = "local"
-# Container CLI for type = "podman": "auto" (default — prefer podman,
-# fall back to docker), "podman", or "docker". Ignored otherwise.
-# runtime = "auto"
-
-# Tunes the persistent per-project VM when [backend] type = "lima".
-# All optional; omitted fields use Lima defaults.
-[lima]
-# template     = "default"   # Lima template name, or a path/URL
-# cpus         = 4
-# memory       = "4GiB"
-# disk         = "20GiB"
-# extra_mounts = []           # extra host paths, mounted read-only
+# Throwaway-overlay toggle (backend-agnostic): "overlay" = the agent
+# writes to an ephemeral copy reconciled at task end; "" / "direct" =
+# writes hit the project in place.
+# workspace = "overlay"
+#
+# type and workspace above are the only backend keys that belong in
+# this (user) config — they are a personal/machine preference.
+#
+# Each backend's ENVIRONMENT (image, packages/init, lima template,
+# mounts, egress allowlist, hardening) is a property of the PROJECT and
+# must be reproducible from the repo, so it lives in that repo's
+# <repo>/.enso/config.toml — NOT here. Set there, e.g.:
+#
+#   [backend.podman]
+#   image = "golang:1.22"
+#   init  = ["apk add --no-cache git"]
+#
+#   [backend.lima]
+#   template = "alpine"   # guest image distro (default); host $HOME is
+#                         # never mounted into the VM
+#   init     = ["apk add --no-cache git"]
+#
+#   [backend.egress]            # shared by podman + lima
+#   allow       = ["proxy.golang.org", "github.com"]
+#   credentials = { GITHUB_TOKEN = "$ENSO_GITHUB_TOKEN" }
+#
+# These sub-tables are IGNORED (with a warning) if set in this user
+# config or the system config — see docs/config reference.
 
 [ui]
 # Theme name (default: "dark")

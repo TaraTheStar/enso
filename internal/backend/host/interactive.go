@@ -18,7 +18,7 @@ import (
 // not already grant, prompts the operator (y / this-task / no) over the
 // host bus — the same HITL shape as the tool-permission modal.
 // Default-deny and host-mediation still hold; the operator just grants
-// interactively instead of editing [bash.sandbox_options] egress up
+// interactively instead of editing [backend.egress] allow up
 // front.
 //
 // It is the single decision point for BOTH egress entry points, so they
@@ -135,7 +135,7 @@ func (b *InteractiveBroker) decide(ctx context.Context, target, reason string) b
 
 func (b *InteractiveBroker) denyReason(target string) string {
 	if !b.interactive {
-		return "egress to " + target + " denied (no interactive TTY; pass --yolo or add it to [bash.sandbox_options] egress)"
+		return "egress to " + target + " denied (no interactive TTY; pass --yolo or add it to [backend.egress] allow)"
 	}
 	return "egress to " + target + " denied by the operator"
 }

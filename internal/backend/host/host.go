@@ -33,6 +33,7 @@ import (
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/session"
 )
 
 // SelectBackend resolves the configured Backend and the IsolationSpec
@@ -66,11 +67,12 @@ func SelectBackend(cfg *config.Config, yolo, interactive bool) (backend.Backend,
 	switch cfg.ResolveBackend() {
 	case config.BackendLima:
 		lb := &lima.Backend{
-			Template:    cfg.Lima.Template,
-			CPUs:        cfg.Lima.CPUs,
-			Memory:      cfg.Lima.Memory,
-			Disk:        cfg.Lima.Disk,
-			ExtraMounts: cfg.Lima.ExtraMounts,
+			Template:    cfg.Backend.Lima.Template,
+			Init:        cfg.Backend.Lima.Init,
+			CPUs:        cfg.Backend.Lima.CPUs,
+			Memory:      cfg.Backend.Lima.Memory,
+			Disk:        cfg.Backend.Lima.Disk,
+			ExtraMounts: cfg.Backend.Lima.ExtraMounts,
 			Sealed:      true, // guest egress firewalled default-deny at launch
 			// MountSource (the per-project stable workspace copy) is
 			// wired by the run/TUI call site, which owns the overlay
@@ -82,14 +84,14 @@ func SelectBackend(cfg *config.Config, yolo, interactive bool) (backend.Backend,
 		// configured allowlist opens the box's only route out. NetworkSealed
 		// is honest because the seal is enforced, not merely asserted.
 		isol := backend.IsolationSpec{NetworkSealed: true, Kind: "vm", EgressUnrestricted: yolo}
-		opts := egressBrokerOpts(cfg.Bash.Sb, yolo, interactive, func(u string) { lb.EgressProxy = u })
+		opts := egressBrokerOpts(cfg.Backend.Egress, yolo, interactive, func(u string) { lb.EgressProxy = u })
 		return lb, isol, opts
 	case config.BackendPodman:
 		// fall through to the podman construction below
 	default:
 		return &local.Backend{}, backend.IsolationSpec{}, nil
 	}
-	sb := cfg.Bash.Sb
+	sb := cfg.Backend.Podman
 	img := sb.Image
 	if img == "" {
 		img = "docker.io/library/alpine:latest"
@@ -104,6 +106,7 @@ func SelectBackend(cfg *config.Config, yolo, interactive bool) (backend.Backend,
 		Network:     net,
 		ExtraMounts: sb.ExtraMounts,
 		Env:         sb.Env,
+		Init:        sb.Init,
 		UID:         sb.UID,
 		OCIRuntime:  sb.OCIRuntime(),
 		// MountSource (the throwaway workspace copy) is wired by the
@@ -113,12 +116,13 @@ func SelectBackend(cfg *config.Config, yolo, interactive bool) (backend.Backend,
 	isol := backend.IsolationSpec{
 		NetworkSealed:      net == "none",
 		Image:              img,
+		Kind:               "container", // worker FS is isolated → remote session persistence
 		ExtraMounts:        sb.ExtraMounts,
 		Runtime:            sb.OCIRuntime(),
 		EgressUnrestricted: yolo && net == "none",
 	}
 
-	opts := egressBrokerOpts(sb, yolo, interactive, func(u string) { b.EgressProxy = u })
+	opts := egressBrokerOpts(cfg.Backend.Egress, yolo, interactive, func(u string) { b.EgressProxy = u })
 	return b, isol, opts
 }
 
@@ -145,25 +149,25 @@ func SelectBackend(cfg *config.Config, yolo, interactive bool) (backend.Backend,
 // and grows by interactive grant). A non-interactive run keeps the old
 // behavior exactly: static broker only, proxy only when something
 // static can use it.
-func egressBrokerOpts(sb config.BashSandboxOptions, yolo, interactive bool, setProxy func(string)) []Option {
-	hasStatic := yolo || len(sb.Credentials) > 0 || len(sb.Egress) > 0
+func egressBrokerOpts(eg config.EgressConfig, yolo, interactive bool, setProxy func(string)) []Option {
+	hasStatic := yolo || len(eg.Credentials) > 0 || len(eg.Allow) > 0
 	if !hasStatic && !interactive {
 		return nil // nothing can ever grant → denyBroker default (== pre-feature)
 	}
 
 	static := &AllowlistBroker{
-		Creds:          sb.Credentials,
+		Creds:          eg.Credentials,
 		Egress:         map[string]bool{},
 		AllowAllEgress: yolo,
 	}
-	for _, e := range sb.Egress {
+	for _, e := range eg.Allow {
 		static.Egress[e] = true
 	}
 
 	// Start + inject the proxy whenever egress can be granted at all:
 	// statically (yolo / configured list) OR interactively (a grant with
 	// no proxy is a no-op — the box would stay sealed with no route out).
-	if yolo || len(sb.Egress) > 0 || interactive {
+	if yolo || len(eg.Allow) > 0 || interactive {
 		pr := egress.New()
 		if err := pr.Start(); err == nil {
 			if yolo {
@@ -208,6 +212,12 @@ type Session struct {
 	ctlPending map[string]chan wire.ControlResponse
 
 	broker CapabilityBroker
+
+	// writer, when set (WithWriter), is the HOST-side session writer an
+	// isolated worker's persist envelopes are applied to. nil for the
+	// local backend (the worker writes the shared host DB itself) and
+	// ephemeral sessions.
+	writer *session.Writer
 }
 
 // CapabilityBroker authorizes a network-sealed worker's tier-3
@@ -226,6 +236,14 @@ type Option func(*Session)
 // capability request is denied.
 func WithBroker(b CapabilityBroker) Option {
 	return func(s *Session) { s.broker = b }
+}
+
+// WithWriter installs the host-side session writer that an ISOLATED
+// worker's MsgPersistMessage/MsgPersistToolCall envelopes are applied
+// to (the worker can't reach the host DB itself). Not set for the local
+// backend (worker writes the shared DB directly) or ephemeral runs.
+func WithWriter(w *session.Writer) Option {
+	return func(s *Session) { s.writer = w }
 }
 
 // denyBroker is the default policy: deny all, with an auditable reason.
@@ -483,6 +501,25 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 			if json.Unmarshal(env.Body, &eb) == nil {
 				if ev, ok := bus.FromWire(eb.Type, eb.Payload); ok {
 					s.bus.Publish(ev)
+				}
+			}
+
+		case backend.MsgPersistMessage:
+			// An isolated worker can't write the host DB; apply its
+			// append here. Best-effort: a persist failure must not kill
+			// the session loop (the turn already happened).
+			if s.writer != nil {
+				var pm wire.PersistMessage
+				if json.Unmarshal(env.Body, &pm) == nil {
+					_ = s.writer.AppendMessage(pm.Msg, pm.AgentID)
+				}
+			}
+
+		case backend.MsgPersistToolCall:
+			if s.writer != nil {
+				var pt wire.PersistToolCall
+				if json.Unmarshal(env.Body, &pt) == nil {
+					_ = s.writer.AppendToolCall(pt.CallID, pt.Name, pt.Args, pt.LLMOutput, pt.FullOutput, pt.Status)
 				}
 			}
 

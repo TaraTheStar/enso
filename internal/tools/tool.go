@@ -4,7 +4,6 @@ package tools
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -122,11 +121,6 @@ type AgentContext struct {
 	// session package's import graph; *session.Writer satisfies it.
 	Writer SessionWriter
 
-	// Sandbox, when non-nil, routes the bash tool through a container
-	// instead of `os/exec` on the host. See internal/sandbox; *Manager
-	// satisfies SandboxRunner. Other tools are unaffected.
-	Sandbox SandboxRunner
-
 	// RestrictedRoots, when non-empty, gates file-touching tools
 	// (read/write/edit/grep/glob/lsp_*) so they refuse paths that
 	// don't resolve under one of these roots. Default-populated as
@@ -193,21 +187,6 @@ type SessionWriter interface {
 	AppendMessage(msg llm.Message, agentID string) error
 	AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error
 	SessionID() string
-}
-
-// SandboxRunner is the slice of `internal/sandbox.Manager` that the
-// bash tool needs. Defined here so the tools package doesn't pull in
-// sandbox. Nil on the AgentContext means "run bash on the host".
-//
-// Image and WorkdirMount are read by the agent when building the
-// system-prompt environment note so the model knows it is inside a
-// container and what its in-container cwd is.
-type SandboxRunner interface {
-	Exec(ctx context.Context, w io.Writer, cmd string) error
-	ContainerName() string
-	Runtime() string
-	Image() string
-	WorkdirMount() string
 }
 
 // Transcripts is a goroutine-safe map from agent id to that agent's full
