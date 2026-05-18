@@ -4,6 +4,39 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.4.0] - 2026-05-18
+
+### Added
+- **Unification of Egress Broker & Lima Isolation.** Finalized the
+  integration of the egress broker logic across all sealed backends
+  (podman and lima), ensuring consistent behavior for network
+  isolation and interactive egress prompting.
+- **Interactive Egress Prompting.** Implemented a new TUI interaction
+  for managing outbound network requests in attended sessions. Users
+  can now choose to `[y]es once`, `[t] this task` (memoize for the
+  session), or `[n]o` (refuse) when a sandboxed command attempts to
+  reach a non-allowlisted target.
+
+### Changed
+- **Lima Backend Network Sealing.** Upgraded Lima isolation from
+  "inference-only" protection to genuine network sealing. The guest
+  egress is now firewalled by default to prevent uncontrolled
+  outbound traffic, using a host-side proxy for any authorized
+  connections.
+- **Egress Proxy Architecture.** Introduced a unified `EgressProxy`
+  and `EgressBroker` system. This allows for a central, observable,
+  and policy-enforced gateway for all outbound traffic from sealed
+  sandboxes.
+- **Enhanced Documentation.** Updated `docs/content/docs/sandbox.md`
+  to include detailed information on the new Egress, Static
+  Allowlist, Interactive Prompting, and `--yolo` modes.
+
+### Fixed
+- **Lima Backend Shell Injection.** Fixed the worker launch process
+  to correctly inject `HTTPS_PROXY` and `HTTP_PROXY` environment
+  variables via `env`, enabling communication through the host
+  egress proxy.
+
 ## [v2.3.0] - 2026-05-16
 
 ### Added
@@ -182,9 +215,6 @@ operator ergonomics.
 - Bash deny rules are now segment-aware: `bash(rm -rf *)` correctly
   catches chained variants like `do_evil; rm -rf /`,
   `cd / && rm -rf *`, `ls | rm -rf *`, and newline-separated chains.
-  Command-substitution / backtick / `eval` bypasses are still open by
-  design — deny rules are guardrails, not walls; use
-  `[bash] sandbox = "auto"` for adversarial isolation.
 - System prompt now injects sandbox state and file-confinement details
   so the model knows which paths are reachable; sandbox-mode prompts
   include explicit Do/Don't path examples.
@@ -261,6 +291,7 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
+[v2.4.0]: https://github.com/TaraTheStar/enso/compare/v2.3.0...v2.4.0
 [v2.3.0]: https://github.com/TaraTheStar/enso/compare/v2.2.0...v2.3.0
 [v2.2.0]: https://github.com/TaraTheStar/enso/compare/v2.1.0...v2.2.0
 [v2.1.0]: https://github.com/TaraTheStar/enso/compare/v2.0.0...v2.1.0
