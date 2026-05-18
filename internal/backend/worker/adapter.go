@@ -647,8 +647,11 @@ func isolationNote(is backend.IsolationSpec) string {
 		return "none — this agent runs directly on the host; changes apply in place with no sandbox and no automatic rollback."
 	}
 	net := "network sealed (egress only via brokered, default-denied capabilities)"
-	if !is.NetworkSealed {
+	switch {
+	case !is.NetworkSealed:
 		net = "network NOT sealed — the agent has full, direct outbound internet access"
+	case is.EgressUnrestricted:
+		net = "network host-mediated but UNRESTRICTED (--yolo) — all outbound traffic still flows through the host proxy, but every destination is allowed (no default-deny egress gate)"
 	}
 	if is.Kind == "vm" {
 		// Lima: a real guest kernel/VM, not a shared-kernel container.

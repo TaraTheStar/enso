@@ -79,7 +79,7 @@ func runOnce(promptArgs []string) error {
 	// Worker behind a Backend (LocalBackend = sandbox off,
 	// PodmanBackend = sandbox on). No in-process branch — that is the
 	// structural fix the whole effort exists for.
-	b, isol, bopts := host.SelectBackend(cfg)
+	b, isol, bopts := host.SelectBackend(cfg, flagYolo, false /* enso run is headless: deny egress with reason, never prompt */)
 	return runViaBackend(b, isol, bopts, prompt, cwd, cfg, providers, defaultName)
 }
 

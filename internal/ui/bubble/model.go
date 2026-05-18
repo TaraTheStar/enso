@@ -112,6 +112,11 @@ type model struct {
 	// inline y/n/a/t resolver instead of the regular input handler.
 	perm *permPending
 
+	// egress is the in-flight interactive egress prompt, if any. Same
+	// modal-key discipline as perm: the host InteractiveBroker blocks on
+	// req.Respond until a y/t/n keystroke resolves it.
+	egress *egressPending
+
 	// permCheckerCwd carries the checker + cwd into permPending when a
 	// new request arrives. Set once at construction.
 	permCheckerCwd struct {
@@ -252,6 +257,18 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// doesn't pin the tea event loop.
 		go func() { req.Respond <- decision }()
 		return m, cmd
+	}
+
+	// Interactive egress prompt: same intercept discipline as perm.
+	if m.egress != nil {
+		decision, decided := resolveEgress(msg.String())
+		if !decided {
+			return m, nil
+		}
+		req := m.egress.req
+		m.egress = nil
+		go func() { req.Respond <- decision }()
+		return m, nil
 	}
 
 	// Session-inspector overlay handling: Ctrl-Space toggles, Esc
@@ -568,6 +585,21 @@ func (m *model) handleBusEvent(ev bus.Event) (tea.Model, tea.Cmd) {
 		// Defensive: if a prompt is already in flight, deny this one
 		// so the agent doesn't wedge.
 		go func() { req.Respond <- permissions.Deny }()
+		return m, nil
+	}
+
+	// Interactive egress prompt (host InteractiveBroker blocked on a
+	// denied target). Same one-at-a-time discipline as permissions.
+	if ev.Type == bus.EventEgressRequest {
+		req, ok := ev.Payload.(*permissions.EgressPrompt)
+		if !ok || req == nil {
+			return m, nil
+		}
+		if m.egress == nil && m.perm == nil {
+			m.egress = &egressPending{req: req}
+			return m, startEgressPrompt(req)
+		}
+		go func() { req.Respond <- permissions.EgressDeny }()
 		return m, nil
 	}
 

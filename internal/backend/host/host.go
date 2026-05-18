@@ -41,7 +41,19 @@ import (
 // host.Start — no in-process branch. "Sandbox off" is the degenerate
 // LocalBackend; "sandbox on" is PodmanBackend. Single host-side place
 // this mapping is made so the call sites cannot drift.
-func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, []Option) {
+// yolo (the launch-time --yolo flag) widens egress: the box stays
+// structurally sealed and host-mediated, but the egress proxy runs
+// allow-all (no default-deny gate). It keys off the launch flag, not the
+// runtime /yolo toggle — a `--network none` container / sealed VM can't
+// be re-plumbed mid-task, so runtime /yolo still only affects permission
+// prompts. The unsealed LocalBackend ignores yolo (already open).
+//
+// interactive (true only for the attended TUI; false for `enso run` /
+// any headless path) decides whether a denied egress prompts the
+// operator or fails closed with a reason. A sealed box with a TTY thus
+// becomes usable for research/build without a pre-enumerated allowlist;
+// a headless one stays strictly default-deny.
+func SelectBackend(cfg *config.Config, yolo, interactive bool) (backend.Backend, backend.IsolationSpec, []Option) {
 	// Failing safe to local is fine; doing it silently is not. An
 	// unrecognized [backend] type means the isolation the user asked
 	// for is ABSENT — flag it visibly (stderr, not just the log file)
@@ -69,8 +81,8 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, 
 		// same static broker + egress proxy podman uses are wired in so a
 		// configured allowlist opens the box's only route out. NetworkSealed
 		// is honest because the seal is enforced, not merely asserted.
-		isol := backend.IsolationSpec{NetworkSealed: true, Kind: "vm"}
-		opts := egressBrokerOpts(cfg.Bash.Sb, func(u string) { lb.EgressProxy = u })
+		isol := backend.IsolationSpec{NetworkSealed: true, Kind: "vm", EgressUnrestricted: yolo}
+		opts := egressBrokerOpts(cfg.Bash.Sb, yolo, interactive, func(u string) { lb.EgressProxy = u })
 		return lb, isol, opts
 	case config.BackendPodman:
 		// fall through to the podman construction below
@@ -99,13 +111,14 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, 
 		// end-of-task commit/discard prompt.
 	}
 	isol := backend.IsolationSpec{
-		NetworkSealed: net == "none",
-		Image:         img,
-		ExtraMounts:   sb.ExtraMounts,
-		Runtime:       sb.OCIRuntime(),
+		NetworkSealed:      net == "none",
+		Image:              img,
+		ExtraMounts:        sb.ExtraMounts,
+		Runtime:            sb.OCIRuntime(),
+		EgressUnrestricted: yolo && net == "none",
 	}
 
-	opts := egressBrokerOpts(sb, func(u string) { b.EgressProxy = u })
+	opts := egressBrokerOpts(sb, yolo, interactive, func(u string) { b.EgressProxy = u })
 	return b, isol, opts
 }
 
@@ -117,25 +130,58 @@ func SelectBackend(cfg *config.Config) (backend.Backend, backend.IsolationSpec, 
 // all). When an egress allowlist is configured it also starts the host
 // allowlist proxy and hands its URL back via setProxy so the backend
 // can make it the box's only route out. Nil result → no broker.
-func egressBrokerOpts(sb config.BashSandboxOptions, setProxy func(string)) []Option {
-	if len(sb.Credentials) == 0 && len(sb.Egress) == 0 {
-		return nil
+//
+// yolo (launch-time --yolo) widens this to allow-all: the proxy is
+// started unconditionally and put in allow-all mode (the box's only
+// route out, but ungated), and the broker grants every egress. The box
+// stays structurally sealed and all traffic still passes through this
+// host proxy — only the default-deny gate is lifted. Config credentials
+// remain explicit even under yolo.
+//
+// interactive wraps the static broker in an InteractiveBroker so a
+// denied egress prompts the operator instead of hard-failing — and
+// because a granted egress needs a route out, the proxy is started even
+// with no pre-configured allowlist (it just begins empty/default-deny
+// and grows by interactive grant). A non-interactive run keeps the old
+// behavior exactly: static broker only, proxy only when something
+// static can use it.
+func egressBrokerOpts(sb config.BashSandboxOptions, yolo, interactive bool, setProxy func(string)) []Option {
+	hasStatic := yolo || len(sb.Credentials) > 0 || len(sb.Egress) > 0
+	if !hasStatic && !interactive {
+		return nil // nothing can ever grant → denyBroker default (== pre-feature)
 	}
-	broker := &AllowlistBroker{
-		Creds:  sb.Credentials,
-		Egress: map[string]bool{},
+
+	static := &AllowlistBroker{
+		Creds:          sb.Credentials,
+		Egress:         map[string]bool{},
+		AllowAllEgress: yolo,
 	}
 	for _, e := range sb.Egress {
-		broker.Egress[e] = true
+		static.Egress[e] = true
 	}
-	if len(sb.Egress) > 0 {
+
+	// Start + inject the proxy whenever egress can be granted at all:
+	// statically (yolo / configured list) OR interactively (a grant with
+	// no proxy is a no-op — the box would stay sealed with no route out).
+	if yolo || len(sb.Egress) > 0 || interactive {
 		pr := egress.New()
 		if err := pr.Start(); err == nil {
-			broker.Proxy = pr
+			if yolo {
+				pr.AllowAll()
+			}
+			static.Proxy = pr
 			setProxy(pr.ProxyURL()) // box's only route out
 		}
 	}
-	return []Option{WithBroker(broker)}
+
+	if !interactive {
+		return []Option{WithBroker(static)}
+	}
+	ib := NewInteractiveBroker(static, true)
+	if static.Proxy != nil {
+		static.Proxy.SetDecider(ib) // covers bash + proxied web_* uniformly
+	}
+	return []Option{WithBroker(ib)}
 }
 
 // Session is a running worker driven over the Channel. Its lifetime
@@ -200,6 +246,12 @@ type AllowlistBroker struct {
 	Egress map[string]bool   // CapEgress "host:port" -> allowed
 	Proxy  *egress.Proxy     // optional; live-allowed on egress grants
 	TTL    int               // advisory seconds on grants (0 = unset)
+
+	// AllowAllEgress (--yolo) grants every CapEgress request regardless of
+	// the Egress allowlist. Credentials are unaffected — they remain
+	// explicit, since "all network" does not mean "all secrets". The
+	// matching allow-all proxy is what actually carries the traffic.
+	AllowAllEgress bool
 }
 
 func (a *AllowlistBroker) Authorize(_ context.Context, req wire.CapabilityRequest) wire.CapabilityGrant {
@@ -210,7 +262,7 @@ func (a *AllowlistBroker) Authorize(_ context.Context, req wire.CapabilityReques
 		}
 		return wire.CapabilityGrant{Reason: "credential " + req.Name + " not on allowlist"}
 	case wire.CapEgress:
-		if a.Egress[req.Name] {
+		if a.AllowAllEgress || a.Egress[req.Name] {
 			if a.Proxy != nil {
 				a.Proxy.Allow(req.Name)
 			}
@@ -319,6 +371,12 @@ func Start(
 	}
 	if s.broker == nil {
 		s.broker = denyBroker{}
+	}
+	// The interactive broker prompts over the host bus, which does not
+	// exist at SelectBackend time — bind it now, before the worker can
+	// issue any request (the handshake below gates that).
+	if bb, ok := s.broker.(interface{ BindBus(*bus.Bus) }); ok {
+		bb.BindBus(busInst)
 	}
 	// Seed from the spec so Telemetry() is populated in the brief
 	// window between MsgWorkerReady and the worker's first
