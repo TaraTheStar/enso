@@ -281,8 +281,10 @@ needs `/dev/kvm`), and Windows (wsl2). Install: macOS
 Same seam as the other backends: the worker runs `enso __worker`
 inside the guest, dials no model (inference is host-proxied over the
 `limactl shell` channel), and the project is mounted at its **real
-path** so there is one filesystem namespace. Sealed by default;
-guest-egress allowlisting is a planned follow-up.
+path** so there is one filesystem namespace. Genuinely network-sealed
+by default — the guest's outbound traffic is firewalled to the host
+egress proxy only (see [Egress](#egress) below), not merely sealed by
+inference being host-proxied.
 
 **Substrate model — persistent per-project VM.** A cold per-task VM
 boot (image download + tens of seconds) is impractical, so the VM is
@@ -314,6 +316,53 @@ isolation — an explicit `type = "lima"` is never quietly weakened.
 boots a VM (tens of seconds to minutes). Subsequent tasks reuse the
 running/stopped VM and start quickly — that reuse is the whole reason
 for the persistent-substrate design.
+
+## Egress
+
+Every sealed backend (podman, Lima) is **default-deny outbound**: the
+box has no route to the internet except a host-side allowlist proxy,
+and inference never needs it (it is host-proxied over the control
+channel). There are three ways a task reaches the network, in order of
+precedence:
+
+1. **Static allowlist** — pre-authorize exact targets in config. The
+   proxy starts with these open; nothing else is.
+
+   ```toml
+   [bash.sandbox_options]
+   egress      = ["api.github.com:443", "pypi.org:443", "files.pythonhosted.org:443"]
+   credentials = { GH_TOKEN = "ghp_…" }   # brokered to the box, never in its env
+   ```
+
+2. **Interactive prompt** — in the attended TUI, a connection to a
+   target that is *not* on the static allowlist pauses and asks:
+
+   ```
+   ? Allow network egress to github.com:443?
+     a sandboxed command tried to reach the network
+     [y]es once  [t] this task  [n]o
+   ```
+
+   `y` allows that one connection; `t` allows that target for the rest
+   of the task (memoised — no re-prompt); `n` refuses it (the command
+   sees a `403`). This covers `bash` (`curl`, `git`, `pip`/`npm`/`go`)
+   and the `web_fetch` / `web_search` tools uniformly, because they all
+   egress through the same injected proxy. The box stays structurally
+   sealed throughout — a grant just opens that one target on the host
+   proxy; all traffic remains observable there.
+
+3. **`--yolo`** — lifts the gate entirely: the proxy runs allow-all, so
+   every destination is permitted with no prompts. The box is still
+   structurally sealed and all traffic still flows through (and is
+   observable at) the host proxy; only the default-deny decision is
+   removed. Configured `credentials` stay explicit even under `--yolo`
+   ("all network" never means "all secrets").
+
+**Headless runs fail closed.** `enso run` and any non-interactive path
+have no TTY to answer a prompt, so an off-allowlist egress is **denied
+with a reason** (never hangs). Use the static allowlist or `--yolo`
+for unattended work. Raw non-HTTP TCP (e.g. SSH `git@…`) is not
+proxyable — use HTTPS remotes inside a sealed box.
 
 ## Failure modes
 
