@@ -17,7 +17,7 @@ import (
 // PER-PROJECT by design (the locked substrate decision): a Stopped enso
 // VM is the carried-forward substrate, NOT garbage. So the startup
 // sweep is deliberately a no-op — reclaiming a persistent VM is only
-// ever explicit, via `enso sandbox prune` (age-thresholded).
+// ever explicit, via `enso prune` (age-thresholded).
 //
 // enso VMs are identified by the `enso-` name prefix (Lima has no
 // label concept like podman); age is the instance dir's mtime.
@@ -28,7 +28,7 @@ var sweepOnce sync.Once
 // per-project VM must survive host reboots and idle gaps between
 // sessions (that is the whole point of substrate reuse). Kept for
 // signature parity with podman; reclamation is the manual,
-// age-thresholded `enso sandbox prune` path only.
+// age-thresholded `enso prune` path only.
 func startupSweep(_ string) {
 	sweepOnce.Do(func() {})
 }
@@ -36,7 +36,7 @@ func startupSweep(_ string) {
 // Sweep stops and deletes enso-managed Lima VMs (the `enso-` name
 // prefix). olderThan>0 restricts removal to instances whose instance
 // dir has not been modified within that window (stale projects); 0
-// removes every enso VM. It is the `enso sandbox prune` backstop —
+// removes every enso VM. It is the `enso prune` backstop —
 // never called implicitly, because persistent VMs are not garbage.
 // Best-effort: a per-VM failure is skipped, not fatal. Returns how many
 // VMs were deleted.

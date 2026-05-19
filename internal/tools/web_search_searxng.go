@@ -57,22 +57,36 @@ func newSearXNGBackend(cfg config.SearchConfig) *searxngBackend {
 // configured a ca_cert or insecure_skip_verify; nil means "use the
 // default". ca_cert is appended to the system roots, not replacing
 // them, so public CAs still verify.
+//
+// The CA bundle is preferentially taken from CACertPEM — bytes the host
+// resolved via Config.ResolveSearchSecrets so a sealed worker (podman/
+// lima, no host config dir mounted) needs no filesystem access. Only
+// when those are absent (the local backend, where the path is valid in
+// this very process) does it fall back to reading CACert by path.
 func searxngTransport(cfg config.SearXNGConfig) (*http.Transport, error) {
-	if cfg.CACert == "" && !cfg.InsecureSkipVerify {
+	if cfg.CACert == "" && len(cfg.CACertPEM) == 0 && !cfg.InsecureSkipVerify {
 		return nil, nil
 	}
 	tlsCfg := &tls.Config{InsecureSkipVerify: cfg.InsecureSkipVerify} //nolint:gosec // opt-in via config
-	if cfg.CACert != "" {
-		pem, err := os.ReadFile(cfg.CACert)
-		if err != nil {
-			return nil, fmt.Errorf("read ca_cert %q: %w", cfg.CACert, err)
+	if cfg.CACert != "" || len(cfg.CACertPEM) > 0 {
+		pem := cfg.CACertPEM
+		if len(pem) == 0 {
+			b, err := os.ReadFile(cfg.CACert)
+			if err != nil {
+				return nil, fmt.Errorf("read ca_cert %q: %w", cfg.CACert, err)
+			}
+			pem = b
 		}
 		pool, err := x509.SystemCertPool()
 		if err != nil || pool == nil {
 			pool = x509.NewCertPool()
 		}
 		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("ca_cert %q: no PEM certificates found", cfg.CACert)
+			src := fmt.Sprintf("%q", cfg.CACert)
+			if cfg.CACert == "" {
+				src = "(host-resolved)"
+			}
+			return nil, fmt.Errorf("ca_cert %s: no PEM certificates found", src)
 		}
 		tlsCfg.RootCAs = pool
 	}

@@ -39,9 +39,9 @@ self-describing in the tool list).
   code.
 
 **Running things**
-- `bash` — shell commands. May run inside a per-project container if
-  the user has enabled `[bash] sandbox`. Capture and truncate long
-  output; don't paste megabytes of build logs.
+- `bash` — shell commands. May run inside a container or VM if the
+  user has set `[backend] type` to `podman` or `lima`. Capture and
+  truncate long output; don't paste megabytes of build logs.
 
 **Web**
 - `web_fetch` — pull a URL and read its content. Use sparingly; cite

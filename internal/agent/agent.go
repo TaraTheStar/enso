@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -19,7 +20,6 @@ import (
 	"github.com/TaraTheStar/enso/internal/instructions"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -44,7 +44,7 @@ type Agent struct {
 	Registry  *tools.Registry
 	Perms     *permissions.Checker
 	AgentCtx  *tools.AgentContext
-	Writer    *session.Writer // optional; nil = ephemeral
+	Writer    tools.SessionWriter // optional; nil = ephemeral (or a remote, seam-backed writer for isolated backends)
 	MaxTurns  int
 	Hooks     *hooks.Hooks // optional; on_session_end fires from Run's defer
 
@@ -291,7 +291,7 @@ type Config struct {
 	Bus       *bus.Bus
 	Registry  *tools.Registry
 	Perms     *permissions.Checker
-	Writer    *session.Writer
+	Writer    tools.SessionWriter
 	History   []llm.Message // optional; if non-nil, replaces the default system prompt
 	Cwd       string
 	SessionID string
@@ -339,10 +339,6 @@ type Config struct {
 	// so this is informational unless paired with permission patterns.
 	AdditionalDirectories []string
 
-	// Sandbox, when non-nil, is forwarded to AgentContext so the bash
-	// tool routes through the container instead of the host.
-	Sandbox tools.SandboxRunner
-
 	// RestrictedRoots, when non-empty, is forwarded to AgentContext so
 	// file-touching tools refuse paths outside the allowed roots. Wired
 	// from `cwd + cfg.Permissions.AdditionalDirectories` by the host
@@ -379,12 +375,31 @@ type Config struct {
 	IsolationNote string
 }
 
+// normalizeWriter collapses a typed-nil SessionWriter (a nil
+// *session.Writer — or any nil pointer — assigned by a caller into the
+// interface) to a true nil interface. Without this, such a value is
+// non-nil as an interface, so the `if Writer != nil` guards in the
+// agent loop pass and AppendMessage dereferences nil (CI segfault via
+// internal/workflow). One defensive point covers every caller.
+func normalizeWriter(w tools.SessionWriter) tools.SessionWriter {
+	if w == nil {
+		return nil
+	}
+	if rv := reflect.ValueOf(w); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return nil
+	}
+	return w
+}
+
 // New creates an Agent with a system prompt built from the three-tier loader.
 // If cfg.History is non-empty it is used verbatim (e.g. when resuming).
 func New(cfg Config) (*Agent, error) {
 	if len(cfg.Providers) == 0 {
 		return nil, fmt.Errorf("agent: at least one provider required")
 	}
+	// cfg is by value; normalizing here makes every downstream use
+	// (ac.Writer, a.Writer, spawned children) safe in one place.
+	cfg.Writer = normalizeWriter(cfg.Writer)
 	defaultName, err := pickDefaultProvider(cfg.Providers, cfg.DefaultProvider)
 	if err != nil {
 		return nil, err
@@ -458,7 +473,6 @@ func New(cfg Config) (*Agent, error) {
 		AgentRole:          cfg.AgentRole,
 		Transcripts:        cfg.Transcripts,
 		Writer:             cfg.Writer,
-		Sandbox:            cfg.Sandbox,
 		RestrictedRoots:    cfg.RestrictedRoots,
 		FileEditHook:       fileEditHookOf(cfg.Hooks),
 		WebFetchAllowHosts: cfg.WebFetchAllowHosts,
@@ -740,7 +754,19 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	}
 	release()
 
-	asst := llm.Message{Role: "assistant", Content: content.String()}
+	contentStr := content.String()
+	// Fallback for GGUF chat templates (Qwen3/Hermes-style on llama.cpp)
+	// that leak tool calls into the assistant text instead of the
+	// structured tool_calls channel. Only when the API channel gave us
+	// nothing — a well-behaved provider's structured calls always win.
+	if len(toolCalls) == 0 {
+		if cleaned, inline := llm.ParseInlineToolCalls(contentStr); len(inline) > 0 {
+			contentStr = cleaned
+			toolCalls = inline
+		}
+	}
+
+	asst := llm.Message{Role: "assistant", Content: contentStr}
 	if len(toolCalls) > 0 {
 		asst.ToolCalls = toolCalls
 	}

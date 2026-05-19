@@ -31,8 +31,10 @@ proxies user input + permission decisions back. **Slash commands**
 (`internal/slash`) layer built-ins + file-loaded skills on top of the
 input handler. **LSP** (`internal/lsp`) is a hand-rolled JSON-RPC
 client that exposes language-server features as `lsp_*` tools.
-**Sandbox** (`internal/sandbox`) runs `bash` inside a per-project
-podman/docker container.
+**Isolation** is the Backend the whole worker runs in
+(`internal/backend/{podman,lima}`) — a per-task `podman run --rm`
+container or a persistent per-project Lima VM. There is no separate
+in-process sandbox.
 
 ## Package layout
 
@@ -46,7 +48,7 @@ cmd/enso/
   worktree.go                    --worktree git-worktree creation
   export.go                      enso export
   stats.go                       enso stats
-  sandbox_cmd.go                 enso sandbox list|stop|rm|prune
+  prune_cmd.go                   enso prune [--older-than]
 
 internal/
   agent/                         chat→tool loop, compaction, spawn

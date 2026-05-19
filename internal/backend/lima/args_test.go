@@ -24,6 +24,12 @@ func TestBuildVMConfig_Posture(t *testing.T) {
 		!strings.Contains(y, "writable: true") {
 		t.Errorf("project must mount writable at its real path 1:1, got:\n%s", y)
 	}
+	// Host $HOME must NOT be mounted: the image-only base inherits no
+	// `~` mount and we emit none, so the agent can't read ~/.ssh,
+	// ~/.config/enso, sibling repos. This is the isolation guarantee.
+	if strings.Contains(y, `location: "~"`) {
+		t.Errorf("host $HOME must NOT be mounted (confidentiality), got:\n%s", y)
+	}
 	if strings.Contains(y, "/work") {
 		t.Errorf("the /work split-brain mount must not exist, got:\n%s", y)
 	}
@@ -40,9 +46,13 @@ func TestBuildVMConfig_Posture(t *testing.T) {
 	if strings.Contains(y, "loadDotSSH") {
 		t.Errorf("must not emit ssh.loadDotSSH (Lima schema warning), got:\n%s", y)
 	}
-	// Tunables applied; base template inherited.
-	if !strings.Contains(y, `base: "template://default"`) {
-		t.Errorf("default base template must be template://default, got:\n%s", y)
+	// Default base is the IMAGE-ONLY Alpine sub-template (no mounts in
+	// its base chain → no inherited $HOME mount). NOT template:default.
+	if !strings.Contains(y, `base: "template:_images/alpine"`) {
+		t.Errorf("default base must be the image-only template:_images/alpine, got:\n%s", y)
+	}
+	if strings.Contains(y, "template:default") || strings.Contains(y, "template://") {
+		t.Errorf("must not inherit a full template (pulls _default/mounts → $HOME), got:\n%s", y)
 	}
 	if !strings.Contains(y, "cpus: 4") || !strings.Contains(y, `memory: "4GiB"`) || !strings.Contains(y, `disk: "20GiB"`) {
 		t.Errorf("cpus/memory/disk must be pinned, got:\n%s", y)
@@ -60,15 +70,84 @@ func TestBuildVMConfig_OverlayAndTemplate(t *testing.T) {
 		!strings.Contains(y, `mountPoint: "`+cwd+`"`) {
 		t.Errorf("overlay copy must bind at the real project path, got:\n%s", y)
 	}
-	// Bare template name → template:// scheme.
-	if !strings.Contains(y, `base: "template://debian"`) {
-		t.Errorf("bare template name must become template://, got:\n%s", y)
+	// Bare distro name → IMAGE-ONLY sub-template, never the full
+	// template:debian (which would re-mount $HOME via _default/mounts).
+	if !strings.Contains(y, `base: "template:_images/debian"`) {
+		t.Errorf("bare distro name must resolve to template:_images/<name>, got:\n%s", y)
+	}
+	if strings.Contains(y, `location: "~"`) {
+		t.Errorf("custom bare distro must still not mount $HOME, got:\n%s", y)
 	}
 
-	// A path/URL template is used verbatim as base.
+	// A path/URL template is used verbatim as base (advanced; user owns
+	// the posture).
 	y2 := (&Backend{Template: "/opt/my.yaml"}).buildVMConfig(cwd, "/e/enso")
 	if !strings.Contains(y2, `base: "/opt/my.yaml"`) {
 		t.Errorf("path template must be used verbatim, got:\n%s", y2)
+	}
+}
+
+func TestBuildVMConfig_IptablesBootstrap(t *testing.T) {
+	cwd := "/p"
+
+	// Sealed + Alpine (default): enso prepends an apk iptables bootstrap
+	// as its OWN system provision step, ordered BEFORE user init, since
+	// the Alpine cloud image ships no iptables and the seal needs it.
+	y := (&Backend{Sealed: true, Init: []string{"echo user-step"}}).buildVMConfig(cwd, "/e/enso")
+	boot := strings.Index(y, "apk add --no-cache iptables")
+	user := strings.Index(y, "echo user-step")
+	if boot < 0 {
+		t.Errorf("sealed Alpine must bootstrap iptables, got:\n%s", y)
+	}
+	if boot >= 0 && user >= 0 && boot > user {
+		t.Errorf("iptables bootstrap must precede user init, got:\n%s", y)
+	}
+	// Two separate system steps (a broken user init can't strand the seal).
+	if strings.Count(y, "  - mode: system") != 2 {
+		t.Errorf("expected 2 system provision steps (bootstrap + init), got:\n%s", y)
+	}
+
+	// Sealed but NOT Alpine: Ubuntu/Debian images already carry
+	// iptables — no bootstrap injected.
+	yu := (&Backend{Sealed: true, Template: "ubuntu"}).buildVMConfig(cwd, "/e/enso")
+	if strings.Contains(yu, "apk add") {
+		t.Errorf("non-Alpine sealed must NOT inject an apk bootstrap, got:\n%s", yu)
+	}
+
+	// Unsealed Alpine: no seal → no bootstrap needed.
+	yn := (&Backend{Sealed: false}).buildVMConfig(cwd, "/e/enso")
+	if strings.Contains(yn, "apk add") || strings.Contains(yn, "provision:") {
+		t.Errorf("unsealed must not bootstrap iptables, got:\n%s", yn)
+	}
+}
+
+func TestBuildVMConfig_ProvisionInit(t *testing.T) {
+	// No Init → no provision block at all (Lima default behaviour
+	// unchanged for the common case).
+	bare := (&Backend{}).buildVMConfig("/p", "/e/enso")
+	if strings.Contains(bare, "provision:") {
+		t.Errorf("empty Init must emit no provision block, got:\n%s", bare)
+	}
+
+	b := &Backend{Init: []string{
+		"apt-get update",
+		"apt-get install -y git build-essential",
+	}}
+	y := b.buildVMConfig("/p", "/e/enso")
+
+	// One system-mode provision script, set -e so a failed install
+	// aborts loudly, every Init line indented under the block scalar.
+	for _, want := range []string{
+		"provision:",
+		"  - mode: system",
+		"    script: |",
+		"      set -e",
+		"      apt-get update",
+		"      apt-get install -y git build-essential",
+	} {
+		if !strings.Contains(y, want) {
+			t.Errorf("provision YAML missing %q, got:\n%s", want, y)
+		}
 	}
 }
 

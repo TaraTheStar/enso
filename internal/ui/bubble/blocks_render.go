@@ -170,6 +170,18 @@ func renderDiffLine(line string) string {
 	}
 }
 
+// StyleDiffBlob colorizes a whole unified-diff string line-by-line with
+// the same palette the in-TUI scrollback uses. Exported so the
+// post-session workspace overlay can render its diff identically
+// without the workspace package depending on the UI layer.
+func StyleDiffBlob(s string) string {
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		lines[i] = renderDiffLine(ln)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // markdownDefaultWidth is the wrap width used when the caller has no
 // terminal width available (replay scripts, tests, etc.). Wide enough
 // to look natural, narrow enough to not overrun an 80-col terminal.

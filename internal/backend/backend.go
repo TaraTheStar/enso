@@ -290,6 +290,15 @@ const (
 	// taxonomy is stable; not served until the broker lands.
 	MsgCapabilityRequest MsgKind = "capability_request" // worker -> host
 	MsgCapabilityGrant   MsgKind = "capability_grant"   // host -> worker
+
+	// Session-persistence leg: an isolated worker (podman/lima) has its
+	// own filesystem, so it cannot write session rows to the host DB.
+	// Instead it ships each append over the Channel and the host
+	// applies it to the host store. Fire-and-forget, ordered (the seam
+	// send is serialized, the host loop processes in receipt order),
+	// same shape discipline as MsgEvent. Body in wire (needs llm).
+	MsgPersistMessage  MsgKind = "persist_message"   // worker -> host (wire.PersistMessage)
+	MsgPersistToolCall MsgKind = "persist_tool_call" // worker -> host (wire.PersistToolCall)
 )
 
 // Envelope is the single wire unit. Body holds the kind-specific
