@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -374,12 +375,31 @@ type Config struct {
 	IsolationNote string
 }
 
+// normalizeWriter collapses a typed-nil SessionWriter (a nil
+// *session.Writer — or any nil pointer — assigned by a caller into the
+// interface) to a true nil interface. Without this, such a value is
+// non-nil as an interface, so the `if Writer != nil` guards in the
+// agent loop pass and AppendMessage dereferences nil (CI segfault via
+// internal/workflow). One defensive point covers every caller.
+func normalizeWriter(w tools.SessionWriter) tools.SessionWriter {
+	if w == nil {
+		return nil
+	}
+	if rv := reflect.ValueOf(w); rv.Kind() == reflect.Pointer && rv.IsNil() {
+		return nil
+	}
+	return w
+}
+
 // New creates an Agent with a system prompt built from the three-tier loader.
 // If cfg.History is non-empty it is used verbatim (e.g. when resuming).
 func New(cfg Config) (*Agent, error) {
 	if len(cfg.Providers) == 0 {
 		return nil, fmt.Errorf("agent: at least one provider required")
 	}
+	// cfg is by value; normalizing here makes every downstream use
+	// (ac.Writer, a.Writer, spawned children) safe in one place.
+	cfg.Writer = normalizeWriter(cfg.Writer)
 	defaultName, err := pickDefaultProvider(cfg.Providers, cfg.DefaultProvider)
 	if err != nil {
 		return nil, err
