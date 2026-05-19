@@ -383,6 +383,17 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.lastEscAt = time.Now()
 		return m, nil
 
+	case "shift+enter", "alt+enter", "ctrl+j":
+		// Insert a literal newline instead of submitting. shift+enter is
+		// the asked-for binding but only reaches us when the terminal
+		// supports the Kitty keyboard protocol (bubbletea negotiates it);
+		// alt+enter and ctrl+j are reliable fallbacks for terminals that
+		// fold shift+enter into a bare enter. The input soft-wraps and
+		// scrolls up to maxInputLines rows so multi-line text stays
+		// usable.
+		m.input.insertString("\n")
+		return m, nil
+
 	case "enter":
 		text := m.input.trimSpace()
 		if text == "" {
@@ -393,7 +404,16 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Slash commands run in-process; their output goes to scrollback
 		// without touching the agent's input channel.
 		if strings.HasPrefix(text, "/") && m.slashReg != nil && m.slashCtx != nil {
-			return m, dispatchSlash(m.slashReg, m.slashCtx, text)
+			cmd := dispatchSlash(m.slashReg, m.slashCtx, text)
+			// A command may have switched the active provider (e.g.
+			// /model). dispatchSlash runs the handler synchronously, so
+			// Provider() already reflects the switch — refresh the
+			// status-line model name so the chrome doesn't keep showing
+			// the stale startup model.
+			if p := m.slashCtx.agt.Provider(); p != nil && p.Model != "" {
+				m.modelName = p.Model
+			}
+			return m, cmd
 		}
 
 		// Submit to agent. The buffered channel makes this almost-never
