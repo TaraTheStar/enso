@@ -240,24 +240,30 @@ func TestPasteMsg(t *testing.T) {
 	})
 }
 
-// TestInputRenderNeverOverflows: the input line must never exceed the
-// terminal width regardless of buffer length or cursor position (the
-// bug: typing past the edge ran off-screen), and the cursor must stay
-// within the visible window so you can see what you're typing.
+// TestInputRenderNeverOverflows: long input soft-wraps onto at most
+// maxInputLines rows; no individual row may exceed the terminal width
+// (the bug: typing past the edge ran off-screen), the input never grows
+// past maxInputLines rows, and the cursor's row must stay within the
+// visible window so you can see what you're typing.
 func TestInputRenderNeverOverflows(t *testing.T) {
 	long := strings.Repeat("x", 500)
 	for _, width := range []int{20, 40, 80, 120} {
 		for _, cur := range []int{0, 1, 250, 499, 500} {
 			s := &inputState{buf: long, cursor: cur}
 			out := s.render(width)
-			if w := ansi.StringWidth(out); w > width {
-				t.Fatalf("width=%d cursor=%d: rendered width %d exceeds terminal", width, cur, w)
+			lines := strings.Split(out, "\n")
+			if len(lines) > maxInputLines {
+				t.Fatalf("width=%d cursor=%d: %d rows exceeds maxInputLines %d", width, cur, len(lines), maxInputLines)
 			}
-			if !strings.Contains(out, "\x1b[7m") && !strings.Contains(out, "\x1b[invert") {
-				// reverse-video cursor cell must be present (visible).
-				if ansi.StringWidth(out) == 0 {
-					t.Fatalf("width=%d cursor=%d: empty render", width, cur)
+			for _, ln := range lines {
+				if w := ansi.StringWidth(ln); w > width {
+					t.Fatalf("width=%d cursor=%d: row width %d exceeds terminal %d: %q", width, cur, w, width, ln)
 				}
+			}
+			// reverse-video cursor cell must be present (visible) so the
+			// user can see where they're typing within the window.
+			if !strings.Contains(out, "\x1b[7m") && !strings.Contains(out, "\x1b[invert") {
+				t.Fatalf("width=%d cursor=%d: cursor cell not visible in render %q", width, cur, out)
 			}
 		}
 	}
