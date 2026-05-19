@@ -243,36 +243,70 @@ allow = ["web_search(*)"]              # any query
 ask   = ["web_search(* exploit *)"]    # prompt for queries containing "exploit"
 ```
 
-## `[backend]`, `[lima]`, and `[bash.sandbox_options]`
+## `[backend]`
+
+`[backend] type` is the sole backend selector — flip it to switch.
+
+**Config scoping is enforced.** `type` and `workspace` are
+selection/safety knobs — a personal or machine-admin preference — and
+are read from any layer (system, user, or project). The per-backend
+**environment** sub-tables (`[backend.podman]`, `[backend.lima]`,
+`[backend.egress]`) describe what *the project* needs and must be
+reproducible from the repo, so they are honored **only** from
+project-scoped config: the repo's `.enso/config.toml` /
+`.enso/config.local.toml`, or an explicit `-c` file. Set them in the
+user or system config and they are **stripped with a warning** — never
+composed across scopes.
+
+User (or system) config — selection only:
 
 ```toml
 [backend]
-type    = "local"          # "local" (default) | "podman" | "lima"
-runtime = "auto"           # type=podman only: "auto" | "podman" | "docker"
+type      = "local"        # "local" (default) | "podman" | "lima"
+workspace = ""             # "overlay" = throwaway copy + resolve (any backend)
+```
 
-[lima]                      # type = "lima" only; all optional
-template     = "default"   # Lima template name, or a path/URL
-cpus         = 4
-memory       = "4GiB"
-disk         = "20GiB"
-extra_mounts = []           # extra host paths, mounted read-only
+The repo's `.enso/config.toml` — the environment:
 
-[bash.sandbox_options]      # type = "podman" only
+```toml
+[backend.egress]            # shared by podman + lima
+allow       = []            # ["host[:port]", ...] outbound allowlist
+credentials = {}            # { NAME = "$ENSO_SECRET" } brokered secrets
+
+[backend.podman]            # type = "podman" only
 image         = "alpine:latest"
-init          = []                          # commands to run once after creation
+init          = []                          # commands run once after creation
 network       = ""                          # "" inherits; "none" / "host" / named
+runtime       = "auto"                      # "auto" | "podman" | "docker"
 extra_mounts  = []                          # ["src:dst[:opts]", ...]
 env           = []                          # ["KEY=value", ...]
 name          = ""                          # override auto-generated name
 uid           = ""                          # --user value (rarely needed)
-workspace     = ""                          # "overlay" = throwaway copy + resolve
 hardening     = ""                          # "gvisor" / "runsc"
+
+[backend.lima]              # type = "lima" only; all optional
+template     = "alpine"    # guest IMAGE distro (default alpine) or a path/URL
+init         = []           # shell lines run once at VM provisioning
+cpus         = 4
+memory       = "4GiB"
+disk         = "20GiB"
+extra_mounts = []           # extra host paths, mounted read-only
 ```
 
-`[backend] type` is the sole backend selector. `[bash] sandbox` is
-**removed** (breaking) — delete it from old configs; the key is now
-silently ignored. See the CHANGELOG and
-[Sandbox]({{< relref "../docs/sandbox.md" >}}).
+Host `$HOME` is **not** mounted into the lima guest: the VM inherits an
+image-only base (`template:_images/<distro>`), so the agent can't read
+`~/.ssh`, `~/.config/enso`, or sibling repos. `template` picks the
+image distro (`alpine`/`debian`/`ubuntu`/…), not a full Lima template;
+a path/URL is used verbatim (you then own the mount posture). Extra
+guest packages go in `init`, not a custom template. VMs created before
+this change must be recreated (`limactl delete <vm>`) — enso prints a
+one-time notice.
+
+The pre-unification keys (`[bash.sandbox_options]`, `[lima]`,
+`[backend] runtime`) are **removed** (breaking) — they are now silently
+ignored by the TOML decoder, so a stale config runs with *default*
+settings until migrated. See the CHANGELOG for the exact migration
+mapping and [Sandbox]({{< relref "../docs/sandbox.md" >}}).
 
 ## `[git]`
 

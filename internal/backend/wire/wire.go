@@ -27,6 +27,27 @@ type InferenceRequest struct {
 	Request  llm.ChatRequest `json:"request"`
 }
 
+// PersistMessage is the body of MsgPersistMessage: one session message
+// an isolated worker asks the host to append to the host DB. Mirrors
+// session.Writer.AppendMessage(msg, agentID) — AgentID is "" for the
+// top-level agent, the sub-agent's id otherwise.
+type PersistMessage struct {
+	Msg     llm.Message `json:"msg"`
+	AgentID string      `json:"agent_id,omitempty"`
+}
+
+// PersistToolCall is the body of MsgPersistToolCall: mirrors
+// session.Writer.AppendToolCall(callID, name, args, llmOutput,
+// fullOutput, status).
+type PersistToolCall struct {
+	CallID     string                 `json:"call_id"`
+	Name       string                 `json:"name"`
+	Args       map[string]interface{} `json:"args,omitempty"`
+	LLMOutput  string                 `json:"llm_output,omitempty"`
+	FullOutput string                 `json:"full_output,omitempty"`
+	Status     string                 `json:"status"`
+}
+
 // LLMEvent is the serializable form of llm.Event, whose Error is an
 // `error` (not JSON-safe) and whose Type is an unexported-friendly int.
 // It is the body of a MsgInferenceEvent.

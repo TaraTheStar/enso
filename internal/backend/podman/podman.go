@@ -34,8 +34,8 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/enso/internal/backend"
+	"github.com/TaraTheStar/enso/internal/backend/exestage"
 	"github.com/TaraTheStar/enso/internal/paths"
-	"github.com/TaraTheStar/enso/internal/sandbox"
 )
 
 // Backend launches each task's Worker in a fresh `podman run --rm`
@@ -49,7 +49,7 @@ type Backend struct {
 	Exe string
 
 	// Runtime is "podman", "docker", or "auto" (resolved via the same
-	// resolver `enso sandbox prune` uses, so they cannot disagree).
+	// resolver `enso prune` uses, so they cannot disagree).
 	Runtime string
 
 	Image       string   // container image; required
@@ -57,6 +57,16 @@ type Backend struct {
 	ExtraMounts []string // additional -v entries (host:container[:opts])
 	Env         []string // -e KEY=VALUE: explicit opt-in only (never host env)
 	UID         string   // --user value; "" → runtime default
+
+	// Init are shell lines run once in the container BEFORE the worker
+	// starts (the container is the worker: there is no persistent box
+	// to exec into, so init is wrapped into the entrypoint). Output is
+	// redirected to stderr so it can't corrupt the binary Channel on
+	// stdout; `set -e` so a failed init fails the task rather than
+	// running a half-provisioned box. Because each task is a fresh
+	// `podman run --rm`, init re-runs per task — keep it cheap (package
+	// installs), or bake heavy tooling into the image.
+	Init []string
 
 	// MountSource is the host path bind-mounted at the project's REAL
 	// path inside the container. Empty → the project dir itself
@@ -95,11 +105,11 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 		return nil, fmt.Errorf(
 			"podman: OCI runtime %q not found on PATH — gVisor isolation requires it. "+
 				"Install gVisor (https://gvisor.dev/docs/user_guide/install/) and configure "+
-				"%q as a podman runtime, or unset bash.sandbox_options.hardening. "+
+				"%q as a podman runtime, or unset [backend.podman] hardening. "+
 				"Refusing to run unhardened.", b.OCIRuntime, b.OCIRuntime)
 	}
 
-	runtime, err := sandbox.ResolveRuntimeBinary(sandbox.Runtime(b.Runtime))
+	runtime, err := resolveRuntimeBinary(b.Runtime)
 	if err != nil {
 		return nil, fmt.Errorf("podman: %w", err)
 	}
@@ -108,6 +118,13 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 		if exe, err = os.Executable(); err != nil {
 			return nil, fmt.Errorf("podman: resolve executable: %w", err)
 		}
+	}
+	// Bind-mount an IMMUTABLE content-addressed snapshot, not the
+	// host's live build output: a rebuild overwriting it in place can
+	// corrupt the running container's mmap of the binary (invalid
+	// runtime symbol table). Content-addressed → copied at most once.
+	if exe, err = exestage.Stage(exe); err != nil {
+		return nil, fmt.Errorf("podman: stage executable: %w", err)
 	}
 	if b.Image == "" {
 		return nil, fmt.Errorf("podman: no image configured")
@@ -314,7 +331,23 @@ func (b *Backend) buildRunArgs(name, taskID, exe, cwd, ociRuntime string) []stri
 	for _, e := range b.Env { // explicit opt-in only; never host env
 		args = append(args, "-e", e)
 	}
-	args = append(args, b.Image, "/usr/local/bin/enso", "__worker")
+	if len(b.Init) > 0 {
+		// No persistent container to exec into — the container IS the
+		// worker. Wrap: run init (stderr-redirected so it can't corrupt
+		// the framed Channel on stdout; `set -e` so a failure aborts
+		// before the worker), then exec the worker as the container's
+		// process so signals/teardown still target it directly.
+		var s strings.Builder
+		s.WriteString("set -e\n{\n")
+		for _, ln := range b.Init {
+			s.WriteString(ln)
+			s.WriteString("\n")
+		}
+		s.WriteString("} 1>&2\nexec /usr/local/bin/enso __worker\n")
+		args = append(args, b.Image, "sh", "-c", s.String())
+	} else {
+		args = append(args, b.Image, "/usr/local/bin/enso", "__worker")
+	}
 	return args
 }
 
@@ -368,7 +401,7 @@ func (w *podmanWorker) StartupDiagnostic() string {
 				"usually needs: cgroup v2, runsc installed for this user, and\n" +
 				"the kernel allowing unprivileged userns (sysctl\n" +
 				"kernel.unprivileged_userns_clone=1). To run without gVisor,\n" +
-				"unset bash.sandbox_options.hardening. See docs: Sandbox →\n" +
+				"unset [backend.podman] hardening. See docs: Sandbox →\n" +
 				"gVisor hardening.")
 	}
 	return strings.TrimSpace(b.String())

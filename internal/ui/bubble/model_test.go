@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/ui/blocks"
 )
@@ -194,4 +196,45 @@ func TestBackspaceRespectsUTF8(t *testing.T) {
 			t.Errorf("backspace(%q): cursor=%d want %d", tc.in, s.cursor, tc.wantPos)
 		}
 	}
+}
+
+// TestPasteMsg covers the bracketed-paste path (Ctrl-Shift-V / Cmd-V /
+// middle-click PRIMARY): content reaches the buffer, multi-line is
+// flattened to spaces (single-line input), and a modal/vim-normal
+// state suppresses it like typed text.
+func TestPasteMsg(t *testing.T) {
+	t.Run("inserts at cursor", func(t *testing.T) {
+		m := &model{}
+		m.Update(tea.PasteMsg{Content: "hello world"})
+		if m.input.buf != "hello world" {
+			t.Fatalf("buf=%q want %q", m.input.buf, "hello world")
+		}
+	})
+
+	t.Run("flattens newlines", func(t *testing.T) {
+		m := &model{}
+		m.Update(tea.PasteMsg{Content: "a\nb\r\nc\rd"})
+		if m.input.buf != "a b c d" {
+			t.Fatalf("buf=%q want %q (newlines→spaces)", m.input.buf, "a b c d")
+		}
+	})
+
+	t.Run("suppressed by a modal", func(t *testing.T) {
+		m := &model{}
+		m.overlayOpen = true
+		m.Update(tea.PasteMsg{Content: "nope"})
+		if m.input.buf != "" {
+			t.Fatalf("paste must be ignored while an overlay owns the keyboard, got %q", m.input.buf)
+		}
+	})
+
+	t.Run("suppressed in vim normal mode", func(t *testing.T) {
+		m := &model{}
+		m.input.vim = true
+		m.input.vimNormal = true
+		m.Update(tea.PasteMsg{Content: "nope"})
+		if m.input.buf != "" {
+			t.Fatalf("paste must be ignored in vim-normal, got %q", m.input.buf)
+		}
+	})
 }

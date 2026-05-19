@@ -15,12 +15,12 @@ import (
 // the owning enso process is gone:
 //
 //	enso.managed=true   every enso-created container
-//	enso.task=<id>      marks the new per-task Workers (vs the legacy
-//	                    per-project bash sandbox `enso sandbox` manages)
+//	enso.task=<id>      marks the per-task Worker container
 //	enso.created=<unix> creation time, for age-thresholded pruning
 //
-// GC targets the enso.task workers specifically so it never disturbs a
-// legacy per-project sandbox a user might still drive via `enso sandbox`.
+// Every enso podman container is a per-task `--rm` Worker (the legacy
+// persistent per-project sandbox was removed); GC reclaims terminal
+// orphans left when a SIGKILLed run's `--rm` never fired.
 
 var sweepOnce sync.Once
 
@@ -42,21 +42,28 @@ func startupSweep(runtime string) {
 // a terminal state, plus dangling anonymous volumes they left behind.
 // olderThan>0 additionally restricts removal to containers whose
 // enso.created timestamp is at least that old (the manual
-// `enso sandbox prune --older-than` backstop); 0 removes every terminal
+// `enso prune --older-than` backstop); 0 removes every terminal
 // orphan. Running containers are never touched. Returns how many
 // containers were removed. Best-effort: a per-container failure is
 // skipped, not fatal.
 func Sweep(ctx context.Context, runtime string, olderThan time.Duration) (int, error) {
+	// State is filtered in Go, not via `--filter status=`: the valid
+	// status values diverge across runtimes (podman has no `dead`; a
+	// `status=dead` filter makes `podman ps` itself exit 125 and abort
+	// the whole sweep). Asking for every enso.task container and judging
+	// terminality from .State here is runtime-agnostic and keeps the
+	// "never touch a running container" invariant intact.
 	out, err := exec.CommandContext(ctx, runtime,
 		"ps", "-a",
 		"--filter", "label=enso.task",
-		"--filter", "status=exited",
-		"--filter", "status=dead",
-		"--format", `{{.Names}}|{{ index .Labels "enso.created" }}`,
+		"--format", `{{.Names}}|{{.State}}|{{ index .Labels "enso.created" }}`,
 	).Output()
 	if err != nil {
 		return 0, err
 	}
+	// Terminal (reclaimable) states across podman & docker. Anything
+	// else — running, paused, created, removing, … — is left alone.
+	terminal := map[string]bool{"exited": true, "stopped": true, "dead": true}
 	cutoff := time.Time{}
 	if olderThan > 0 {
 		cutoff = time.Now().Add(-olderThan)
@@ -67,8 +74,9 @@ func Sweep(ctx context.Context, runtime string, olderThan time.Duration) (int, e
 		if line == "" {
 			continue
 		}
-		name, created, _ := strings.Cut(line, "|")
-		if name == "" {
+		name, rest, _ := strings.Cut(line, "|")
+		state, created, _ := strings.Cut(rest, "|")
+		if name == "" || !terminal[strings.TrimSpace(state)] {
 			continue
 		}
 		if !cutoff.IsZero() {

@@ -38,7 +38,7 @@ func TestPodmanRuntime(t *testing.T) {
 	cases := map[string]string{"": "auto", "  ": "auto", "AUTO": "auto", "podman": "podman", " Docker ": "docker"}
 	for in, want := range cases {
 		c := &Config{}
-		c.Backend.Runtime = in
+		c.Backend.Podman.Runtime = in
 		if got := c.PodmanRuntime(); got != want {
 			t.Errorf("PodmanRuntime(%q) = %q, want %q", in, got, want)
 		}

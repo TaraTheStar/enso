@@ -46,13 +46,14 @@ files in `.ensoignore` + network = "none".
 
 ```toml
 [backend]
-type    = "podman"        # "local" (default) | "podman" | "lima"
-# runtime = "auto"        # type=podman only: "auto" | "podman" | "docker"
+type      = "podman"      # "local" (default) | "podman" | "lima"
+# workspace = "overlay"   # throwaway copy + resolve (any backend)
 
-[bash.sandbox_options]     # used when type = "podman"
+[backend.podman]           # used when type = "podman"
 image        = "alpine:latest"
 init         = ["apk add --no-cache git curl jq make"]
 network      = ""         # "" inherits runtime default; "none" = offline
+# runtime    = "auto"     # "auto" | "podman" | "docker"
 extra_mounts = ["~/.cache/go-build:/root/.cache/go-build:rw"]
 env          = []
 # name       = "..."      # override auto-generated name
@@ -60,20 +61,36 @@ env          = []
 # workdir_mount = "/work"
 ```
 
-`[backend] type` is the **single** backend selector — `"local"` (no
-isolation, the default), `"podman"` (container), or `"lima"`
-(full-VM). An empty or unrecognized value falls safe to `"local"`.
+`[backend] type` is the **single** backend selector — flip it to
+switch. `"local"` (no isolation, the default), `"podman"` (container),
+or `"lima"` (full-VM). An empty or unrecognized value falls safe to
+`"local"`. Each backend's environment lives under its own
+`[backend.<name>]` sub-table.
 
-With `type = "podman"`, `[backend] runtime` chooses the container CLI:
-`"auto"` (default) prefers podman (rootless, no daemon) and falls back
-to docker; pin one with `"podman"` or `"docker"`.
+**Scoping (enforced).** `type` and `workspace` are a personal/machine
+preference — set them wherever you like (user config is typical). The
+per-backend *environment* (`[backend.podman]`, `[backend.lima]`,
+`[backend.egress]` — image, packages/`init`, template, mounts, egress,
+hardening) describes what the **project** needs and must be
+reproducible for teammates and CI, so it is read **only** from the
+repo's `.enso/config.toml` (or `.enso/config.local.toml`, or an
+explicit `-c` file). Put it in the user or system config and it is
+**stripped with a warning** — there is deliberately no user-global
+backend environment, so a user's `init` can never silently collide with
+a repo's.
 
-> **Migration (breaking):** `[bash] sandbox` has been **removed** — it
-> no longer selects anything and the key is ignored. Delete it and set
-> `[backend] type` (`"podman"` or `"lima"`) plus, if needed,
-> `[backend] runtime`. If you were relying on `sandbox =
-> "podman"`/`"auto"` for isolation, you are running with **no
-> isolation** until you set `[backend] type`. See the CHANGELOG.
+With `type = "podman"`, `[backend.podman] runtime` chooses the
+container CLI: `"auto"` (default) prefers podman (rootless, no daemon)
+and falls back to docker; pin one with `"podman"` or `"docker"`.
+
+> **Migration (breaking):** the per-backend config was unified. The old
+> `[bash.sandbox_options]` / `[lima]` / `[backend] runtime` keys are
+> **removed** and silently ignored, so a stale config runs with
+> *default* settings (e.g. `alpine:latest`, no `init`) until migrated.
+> Move container settings to `[backend.podman]`, VM settings to
+> `[backend.lima]`, the egress allowlist/credentials to
+> `[backend.egress]` (`egress` → `allow`), and the overlay toggle to
+> `[backend] workspace`. See the CHANGELOG for the full mapping.
 
 ## Per-project containers
 
@@ -138,17 +155,23 @@ Symbolic links are *not* followed for the confinement check — a
 symlink at `./.env` pointing at `/etc/passwd` is rejected based on
 the lexical path, not the resolved one.
 
-## Managing containers
+## Managing sandboxes
+
+Podman containers are per-task and `--rm`: they clean themselves up
+when the task ends, so there is nothing to start/stop/remove by hand.
+Lima VMs are persistent per project and are recreated automatically
+when their config changes. The one maintenance command reclaims
+stragglers — terminal podman workers (and their anonymous volumes)
+plus enso-managed lima VMs and accumulated workspace review copies:
 
 ```bash
-enso sandbox list      # show every enso-managed container, all projects
-enso sandbox stop      # stop the current project's container (keeps state)
-enso sandbox rm        # stop and remove the current project's container
-enso sandbox prune     # remove every enso-managed container, all projects
+enso prune                  # reclaim everything enso-managed, all projects
+enso prune --older-than 168h   # only instances idle ≥ 7 days
 ```
 
-`list` filters by the `enso.managed=true` label; you'll never see
-unrelated containers in the output.
+(The legacy `enso sandbox list|stop|rm` commands and the persistent
+per-project podman container they managed were removed — podman is now
+strictly per-task.)
 
 `prune` only touches containers with the `enso.managed=true` label, so
 your dev databases, redis, postgres, etc. are safe.
@@ -161,7 +184,7 @@ the container land as your user on the host. No special config needed.
 
 On Linux with **docker** (root daemon), bind-mount writes default to
 root-owned. Set `uid = "1000:1000"` (or whichever your UID is) in
-`[bash.sandbox_options]` to make new files match your host user.
+`[backend.podman]` to make new files match your host user.
 
 On macOS Docker Desktop: handles UID translation automatically; no
 config needed.
@@ -169,7 +192,7 @@ config needed.
 ## Workspace overlay
 
 ```toml
-[bash.sandbox_options]
+[backend]
 workspace = "overlay"
 ```
 
@@ -216,7 +239,7 @@ By default the container uses the runtime's normal OCI runtime
 (`runc`/`crun`), which shares the host kernel. Set:
 
 ```toml
-[bash.sandbox_options]
+[backend.podman]
 hardening = "gvisor"   # alias: "runsc"
 ```
 
@@ -264,13 +287,37 @@ it explicitly:
 [backend]
 type = "lima"             # "local" | "podman" | "lima"
 
-[lima]
-# template     = "default"      # Lima template name, or a path/URL
+[backend.lima]
+# template     = "alpine"       # guest IMAGE (alpine default | debian | ubuntu …)
+# init         = ["apk add --no-cache git"]   # extra guest packages
 # cpus         = 4
 # memory       = "4GiB"
 # disk         = "20GiB"
 # extra_mounts = ["~/.cache/go-build"]   # mounted read-only
 ```
+
+**Host `$HOME` is never mounted into the lima guest.** The VM inherits
+an *image-only* base (`template:_images/<distro>`, default Alpine) — not
+a full Lima template, whose base chain would bind your home directory
+read-only into the guest. So the agent cannot read `~/.ssh`,
+`~/.config/enso` (your provider API keys), or sibling repos; it sees
+only the project copy (writable at its real path) and the read-only
+enso binary. `template` selects the guest **image distro**, not an
+arbitrary Lima template; a path/URL is still accepted verbatim but then
+*you* own the mount posture.
+
+> **Recreate existing VMs.** A persistent per-project VM created before
+> this fix still mounts `$HOME`. enso reuses a running VM as-is, so it
+> prints a one-time notice; apply the fix with
+> `limactl stop <vm> && limactl delete <vm>` (the VM is rebuilt on the
+> next run).
+
+`[backend.lima] init` runs once during VM provisioning (rendered into
+the generated instance YAML's `provision:` block as a `mode: system`
+script with `set -e`) — the podman `init` analogue for installing
+toolchains the image lacks. On the default Alpine image enso also
+auto-installs `iptables` (the cloud image omits it; the egress seal
+requires it) as a separate provisioning step ahead of your `init`.
 
 Lima is **not** macOS-only (Colima is the separate macOS container
 wrapper, not Lima). It runs on macOS (vz/qemu), Linux (qemu+KVM —
@@ -304,8 +351,8 @@ garbage-collected automatically (no startup sweep, no teardown
 delete). Remove enso VMs explicitly:
 
 ```sh
-enso sandbox prune                 # delete all enso lima VMs
-enso sandbox prune --older-than 168h   # only VMs idle ≥ 7 days
+enso prune                 # delete all enso lima VMs
+enso prune --older-than 168h   # only VMs idle ≥ 7 days
 ```
 
 **Fail-safe.** If `limactl` isn't on `PATH`, ensō *refuses to start*
@@ -329,8 +376,8 @@ precedence:
    proxy starts with these open; nothing else is.
 
    ```toml
-   [bash.sandbox_options]
-   egress      = ["api.github.com:443", "pypi.org:443", "files.pythonhosted.org:443"]
+   [backend.egress]   # shared by podman + lima
+   allow       = ["api.github.com:443", "pypi.org:443", "files.pythonhosted.org:443"]
    credentials = { GH_TOKEN = "ghp_…" }   # brokered to the box, never in its env
    ```
 
@@ -371,10 +418,10 @@ proxyable — use HTTPS remotes inside a sealed box.
 - **Image pull fails**: ensō surfaces the runtime error and exits.
   Common causes: registry rate limits, no internet, invalid image
   name.
-- **Init script fails**: container is removed and ensō reports which
-  init line failed.
-- **Container survives across ensō runs but you want to nuke it**:
-  `enso sandbox rm` (current project) or `enso sandbox prune` (all).
+- **Init fails**: `set -e` aborts before the worker starts, the task
+  fails, and the init stderr is surfaced in the startup diagnostic.
+- **A lima VM or stale podman worker is lingering**: `enso prune`
+  (add `--older-than` to keep recent ones).
 
 ## Daemon mode caveat
 

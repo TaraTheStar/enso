@@ -42,9 +42,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/TaraTheStar/enso/internal/backend"
+	"github.com/TaraTheStar/enso/internal/backend/exestage"
 	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/paths"
 )
@@ -61,9 +63,15 @@ type Backend struct {
 	// which are static).
 	Exe string
 
-	// Template is a Lima template: a bare name ("default", "debian")
-	// → template://<name>, or a path/URL used verbatim as the YAML
-	// `base:`. Empty → "default".
+	// Template selects the guest IMAGE, not a full Lima template. A
+	// bare distro name ("alpine", "debian", "ubuntu") resolves to the
+	// image-only sub-template template:_images/<name> — deliberately
+	// NOT template:<name>, whose base chain pulls template:_default/
+	// mounts and would bind host $HOME into the guest. Empty →
+	// "alpine". A path or URL is used verbatim as the YAML `base:`
+	// (advanced: the user then owns the mount posture / iptables).
+	// Extra guest packages belong in [backend.lima] init, not a custom
+	// template.
 	Template string
 
 	CPUs   int    // VM vCPUs; 0 → Lima default
@@ -80,6 +88,13 @@ type Backend struct {
 	// ExtraMounts are additional host paths mounted read-only into the
 	// VM (Lima `mounts:` entries).
 	ExtraMounts []string
+
+	// Init are shell script lines run once during VM provisioning,
+	// rendered into the generated instance YAML's `provision:` block
+	// (mode: system, so they run as root before the worker starts).
+	// The podman `init` analogue — the place to install toolchains the
+	// base template lacks. Empty → no provision block.
+	Init []string
 
 	// Sealed makes the guest network egress default-deny: a per-task
 	// firewall (Start → sealGuestEgress) drops all new outbound from the
@@ -142,6 +157,15 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 	if err != nil {
 		return nil, fmt.Errorf("lima: abs executable: %w", err)
 	}
+	// Exec an IMMUTABLE content-addressed snapshot, never the host's
+	// live build output: a persistent VM 9p-mounts this dir read-only,
+	// and a host rebuild overwriting the original in place would
+	// corrupt the running guest's mmap (invalid runtime symbol table).
+	// A rebuilt binary hashes differently → new path → buildVMConfig
+	// changes → drift-recreate rebuilds the VM cleanly.
+	if exe, err = exestage.Stage(exe); err != nil {
+		return nil, fmt.Errorf("lima: stage executable: %w", err)
+	}
 	if spec.Cwd == "" {
 		return nil, fmt.Errorf("lima: empty cwd")
 	}
@@ -166,19 +190,32 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 	proxyURL := ""
 	if b.Sealed {
 		proxyURL = guestProxyURL(b.EgressProxy)
+		fmt.Fprintln(os.Stderr, "enso: sealing the guest network…")
 		if err := sealGuestEgress(ctx, limactl, name, proxyURL); err != nil {
 			return nil, fmt.Errorf(
 				"lima: could not seal guest egress on %q: %w — refusing to "+
 					"run a VM that is not sealed while isolation claims it is. "+
-					"The guest needs iptables (default Lima images have it); "+
-					"or set [backend] type to \"podman\"/\"local\".", name, err)
+					"The guest needs iptables: enso bootstraps it on the default "+
+					"Alpine image, but a custom path/URL [backend.lima] template "+
+					"must provide it (or set [backend] type to \"podman\"/\"local\").",
+				name, err)
 		}
 	}
+
+	fmt.Fprintln(os.Stderr, "enso: Lima VM ready — starting the agent…")
 
 	// Not CommandContext: shutdown is an ordered Teardown (close the
 	// Channel → worker winds down), not an abrupt mid-frame kill. The
 	// persistent VM is NOT stopped per task (only GC stops/deletes it).
 	cmd := exec.Command(limactl, buildShellArgs(name, spec.Cwd, exe, proxyURL)...)
+	// Own process group: `limactl shell` forks an ssh child, and a bare
+	// Kill() of the limactl leader (the old Teardown) left that ssh
+	// orphaned — it kept the SSH session into the VM open, so the
+	// in-guest worker never EOFed, the VM stayed busy, and the user's
+	// terminal saw a lingering process until the VM was manually
+	// stopped. A dedicated group lets Teardown signal limactl+ssh
+	// together and decouples them from a terminal-close SIGHUP to enso.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	diag := &ringBuffer{max: 8 << 10}
 	cmd.Stderr = io.MultiWriter(os.Stderr, diag)
 
@@ -203,36 +240,93 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 // correct mounts: created (from generated YAML) if absent, resumed if
 // stopped, left alone if already running.
 func (b *Backend) ensureRunning(ctx context.Context, limactl, name, cwd, exe string) error {
+	dir, err := paths.RuntimeDir()
+	if err != nil {
+		return fmt.Errorf("lima: runtime dir: %w", err)
+	}
+	ldir := filepath.Join(dir, "lima")
+	yp := filepath.Join(ldir, name+".yaml")
+	desired := b.buildVMConfig(cwd, exe)
+
 	status := vmStatus(ctx, limactl, name)
+	if status != "" && configDrifted(yp, desired) {
+		// The per-project VM's mounts/image/provisioning no longer
+		// match the effective config (workspace toggled, lima settings
+		// changed, or the enso mount layout itself changed across an
+		// upgrade). The generated config is authoritative ("regenerated
+		// per project"), so REBUILD rather than silently run a stale VM
+		// whose project mount may be wrong or empty. Safe to destroy:
+		// the workspace overlay keeps project state on the host stage
+		// dir, and the VM is reproducible from init/provisioning.
+		fmt.Fprintf(os.Stderr,
+			"enso: lima VM %q config changed — recreating it to apply the new settings\n", name)
+		_ = exec.CommandContext(ctx, limactl, "stop", "--force", name).Run()
+		_ = exec.CommandContext(ctx, limactl, "delete", "--force", name).Run()
+		status = ""
+	}
+
 	switch status {
 	case "Running":
 		return nil
-	case "": // does not exist → create from generated YAML
-		yaml := b.buildVMConfig(cwd, exe)
-		dir, err := paths.RuntimeDir()
-		if err != nil {
-			return fmt.Errorf("lima: runtime dir: %w", err)
-		}
-		ldir := filepath.Join(dir, "lima")
+	case "": // absent (or just deleted for drift) → create from generated YAML
 		if err := os.MkdirAll(ldir, 0o755); err != nil {
 			return fmt.Errorf("lima: mkdir %s: %w", ldir, err)
 		}
-		yp := filepath.Join(ldir, name+".yaml")
-		if err := os.WriteFile(yp, []byte(yaml), 0o644); err != nil {
+		if err := os.WriteFile(yp, []byte(desired), 0o644); err != nil {
 			return fmt.Errorf("lima: write VM config: %w", err)
 		}
+		fmt.Fprintf(os.Stderr,
+			"enso: creating Lima VM %q — first run downloads the Alpine image and "+
+				"provisions the guest; this can take a few minutes…\n", name)
 		return runLimactl(ctx, limactl, buildStartArgs(name, yp))
-	default: // Stopped / Broken-but-recoverable → resume in place
+	default: // Stopped / recoverable, config matches → resume in place
+		fmt.Fprintf(os.Stderr, "enso: resuming Lima VM %q…\n", name)
 		return runLimactl(ctx, limactl, []string{"start", "--tty=false", name})
 	}
 }
 
-// runLimactl runs a limactl lifecycle command, surfacing its combined
-// output on failure (VM bring-up errors are otherwise opaque).
+// configDrifted reports whether the VM's last-written generated config
+// differs from what enso would generate now. A missing/unreadable
+// stored YAML counts as drift: we cannot prove a match, and rebuilding
+// from the current config is the safe, correct action for a VM that is
+// "regenerated per project".
+func configDrifted(yp, desired string) bool {
+	data, err := os.ReadFile(yp)
+	if err != nil {
+		return true
+	}
+	return string(data) != desired
+}
+
+// capWriter keeps only the last max bytes written — a bounded tail for
+// an error message, without unbounded buffering of (potentially MBs of)
+// image-download progress.
+type capWriter struct {
+	max int
+	buf []byte
+}
+
+func (w *capWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	if len(w.buf) > w.max {
+		w.buf = w.buf[len(w.buf)-w.max:]
+	}
+	return len(p), nil
+}
+
+// runLimactl runs a limactl lifecycle command. Its output is STREAMED
+// live to stderr (Lima's own image-download / boot / provisioning
+// progress — otherwise a cold first run looks hung for minutes), and a
+// bounded tail is kept so a failure still yields an actionable error.
+// The TUI has not started yet at bring-up time, so stderr is the user's
+// terminal; json stdout stays clean.
 func runLimactl(ctx context.Context, limactl string, args []string) error {
 	c := exec.CommandContext(ctx, limactl, args...)
-	if out, err := c.CombinedOutput(); err != nil {
-		return fmt.Errorf("lima: %s: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+	tail := &capWriter{max: 8 << 10}
+	c.Stdout = io.MultiWriter(os.Stderr, tail)
+	c.Stderr = c.Stdout
+	if err := c.Run(); err != nil {
+		return fmt.Errorf("lima: %s: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(tail.buf)))
 	}
 	return nil
 }
@@ -248,30 +342,46 @@ func vmStatus(ctx context.Context, limactl, name string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// resolveBase maps the Template knob to a Lima `base:` value, and
+// reports whether the resolved guest is Alpine. A bare distro name
+// selects the IMAGE-ONLY internal sub-template
+// (template:_images/<name>) — deliberately NOT template:<name>, whose
+// `base:` chain pulls template:_default/mounts and would bind host
+// $HOME into the guest. Empty → "alpine". A path/URL is used verbatim
+// (advanced; the user then owns the mount posture and must provide
+// iptables for the seal).
+func resolveBase(tmpl string) (base string, alpine bool) {
+	tmpl = strings.TrimSpace(tmpl)
+	if tmpl == "" {
+		tmpl = "alpine"
+	}
+	if strings.Contains(tmpl, "://") || strings.HasPrefix(tmpl, "/") {
+		return tmpl, false // custom: distro unknown, posture is the user's
+	}
+	return "template:_images/" + tmpl, strings.EqualFold(tmpl, "alpine")
+}
+
 // buildVMConfig is the pure Lima instance-YAML builder (unit-tested
-// without limactl). It inherits a base template for the image/defaults
-// and pins only what isolation/identity requires:
+// without limactl). It inherits ONLY an image (template:_images/<distro>
+// — no mounts) and pins exactly what isolation/identity requires:
 //
 //   - one filesystem namespace: MountSource (the per-task overlay copy)
 //     mounted WRITABLE at the project's REAL path; the worker cwd is
 //     that path — never /work;
 //   - the static enso binary's dir mounted READ-ONLY at its real path
 //     so the guest execs it 1:1 (no image rebuild);
+//   - host $HOME is NOT mounted. The image-only base inherits no `~`
+//     mount, so the agent cannot read ~/.ssh, ~/.aws, ~/.config/enso
+//     (provider API keys) or sibling repos. With no `~` parent there
+//     is also no mount to shadow the writable project, so the old
+//     read-only-workspace bug cannot occur — its CAUSE is removed, not
+//     worked around;
 //   - no containerd — a plain, minimal VM;
 //   - sealed: the worker dials no model (inference is host-proxied over
 //     the Channel) and the guest egress is firewalled default-deny at
-//     launch (Start → sealGuestEgress); the network config itself is
-//     left to the base template (Lima's user-mode net is needed for the
-//     host's inbound SSH Channel — the seal is on OUTPUT, not the NIC).
+//     launch (Start → sealGuestEgress).
 func (b *Backend) buildVMConfig(cwd, exe string) string {
-	tmpl := strings.TrimSpace(b.Template)
-	if tmpl == "" {
-		tmpl = "default"
-	}
-	base := tmpl
-	if !strings.Contains(tmpl, "://") && !strings.HasPrefix(tmpl, "/") {
-		base = "template://" + tmpl
-	}
+	base, alpine := resolveBase(b.Template)
 
 	src := cwd
 	if b.MountSource != "" {
@@ -291,11 +401,42 @@ func (b *Backend) buildVMConfig(cwd, exe string) string {
 		fmt.Fprintf(&sb, "disk: %q\n", b.Disk)
 	}
 	sb.WriteString("containerd:\n  system: false\n  user: false\n")
+	// Mounts: project WRITABLE at its real path + enso binary dir
+	// READ-ONLY. No `~`: host $HOME is never exposed (see the doc
+	// comment). ExtraMounts are project-declared, read-only.
 	sb.WriteString("mounts:\n")
 	fmt.Fprintf(&sb, "  - location: %q\n    mountPoint: %q\n    writable: true\n", src, cwd)
 	fmt.Fprintf(&sb, "  - location: %q\n    writable: false\n", filepath.Dir(exe))
 	for _, m := range b.ExtraMounts {
 		fmt.Fprintf(&sb, "  - location: %q\n    writable: false\n", m)
+	}
+	// Provisioning. Each entry is a `mode: system` script (root, before
+	// the worker starts) with `set -e` so a failure aborts loudly:
+	//   1. iptables bootstrap — sealed + Alpine only. The Alpine cloud
+	//      image ships no iptables, but Start→sealGuestEgress needs it
+	//      or it REFUSES to launch. Ubuntu/Debian images already carry
+	//      it, so this is skipped there. It is a separate, earlier step
+	//      than user init so a broken user init can't strand the seal.
+	//   2. user [backend.lima] init — all lines in one script so a
+	//      `cd`/env set carries across them.
+	var scripts []string
+	if b.Sealed && alpine {
+		scripts = append(scripts, "apk add --no-cache iptables")
+	}
+	if len(b.Init) > 0 {
+		scripts = append(scripts, strings.Join(b.Init, "\n"))
+	}
+	if len(scripts) > 0 {
+		sb.WriteString("provision:\n")
+		for _, s := range scripts {
+			sb.WriteString("  - mode: system\n")
+			sb.WriteString("    script: |\n")
+			sb.WriteString("      #!/bin/sh\n")
+			sb.WriteString("      set -e\n")
+			for _, phys := range strings.Split(s, "\n") {
+				fmt.Fprintf(&sb, "      %s\n", phys)
+			}
+		}
 	}
 	return sb.String()
 }
@@ -450,16 +591,33 @@ func (w *limaWorker) Wait(ctx context.Context) error {
 }
 
 // Teardown closes the Channel (EOF → worker winds down) and ends the
-// shell. The persistent per-project VM is deliberately NOT stopped or
-// deleted here — that is its whole point (substrate reuse). VM
-// reclamation is GC's job (Sweep / `enso sandbox prune`). Idempotent;
-// safe after Wait.
+// shell. It signals the worker's whole process GROUP (limactl + its ssh
+// child), not just the limactl leader: a bare leader kill orphaned the
+// ssh, which held the VM's SSH session open so the in-guest worker
+// never EOFed and the terminal saw a lingering process. SIGTERM first
+// so limactl/ssh close the session cleanly (in-guest worker EOFs, VM
+// goes idle), SIGKILL the group as a backstop. The persistent
+// per-project VM is deliberately NOT stopped or deleted here — that is
+// its whole point (substrate reuse); VM reclamation is GC's job
+// (Sweep / `enso prune`). Idempotent; safe after Wait.
 func (w *limaWorker) Teardown(ctx context.Context) error {
 	w.once.Do(func() {
 		_ = w.ch.Close()
-		if w.cmd.Process != nil {
-			_ = w.cmd.Process.Kill()
-			_ = w.cmd.Wait()
+		p := w.cmd.Process
+		if p == nil {
+			return
+		}
+		// Setpgid at Start ⇒ pgid == leader pid; negative pid signals
+		// the whole group. ESRCH (already reaped) is benign.
+		pgid := p.Pid
+		_ = syscall.Kill(-pgid, syscall.SIGTERM)
+		done := make(chan struct{})
+		go func() { _ = w.cmd.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+			<-done
 		}
 	})
 	return nil
@@ -507,7 +665,7 @@ func StageDir(cwd string) (string, error) {
 
 // SweepStageKept bounds accumulated workspace review copies across
 // every project's lima stage dir: it enforces the same keptCap as a
-// fresh task would, so a `enso sandbox prune` reclaims old superseded
+// fresh task would, so a `enso prune` reclaims old superseded
 // merged.kept-* without ever destroying the most recent (possibly
 // still-unreviewed) ones. Best-effort.
 func SweepStageKept(out io.Writer) {

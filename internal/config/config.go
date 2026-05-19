@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
@@ -35,9 +36,7 @@ type Config struct {
 	UI           UIConfig                  `toml:"ui"`
 	Git          GitConfig                 `toml:"git"`
 	LSP          map[string]LSPConfig      `toml:"lsp"`
-	Bash         BashConfig                `toml:"bash"`
 	Backend      BackendConfig             `toml:"backend"`
-	Lima         LimaConfig                `toml:"lima"`
 	Hooks        HooksConfig               `toml:"hooks"`
 	WebFetch     WebFetchConfig            `toml:"web_fetch"`
 	Search       SearchConfig              `toml:"search"`
@@ -445,6 +444,45 @@ type SearXNGConfig struct {
 	Timeout            int      `toml:"timeout"`              // seconds; 0 → 15
 	CACert             string   `toml:"ca_cert"`              // path to PEM bundle to trust (self-hosted CA); appended to system roots
 	InsecureSkipVerify bool     `toml:"insecure_skip_verify"` // disables TLS verification entirely — only for ad-hoc self-signed setups
+
+	// CACertPEM is the ca_cert file's CONTENTS, resolved host-side and
+	// carried across the worker seam. A sealed backend (podman/lima)
+	// runs the worker with the host's config dir UNMOUNTED, so the
+	// worker cannot read CACert by path; the host reads it here so a
+	// self-hosted CA is still trusted inside the box. toml:"-" keeps it
+	// operator-invisible (set only by ResolveSearchSecrets); it has no
+	// worker:"deny" tag, so it survives ScrubbedForWorker to the worker.
+	CACertPEM []byte `toml:"-"`
+}
+
+// ResolveSearchSecrets resolves filesystem-backed search secrets into
+// values that survive the worker seam. Today that is the SearXNG
+// ca_cert: a sealed backend (podman/lima) runs the worker with the
+// host's config dir UNMOUNTED, so the worker cannot read cfg.CACert by
+// path. Reading it HOST-side into CACertPEM lets searxngTransport trust
+// a self-hosted CA inside the box without any host filesystem access.
+//
+// A read failure is reported to warn — host stderr, uniformly visible
+// for EVERY backend, unlike the worker's own stderr which the lima
+// backend multiplexes behind limactl/ssh noise and easily loses — and
+// leaves CACertPEM empty: searxng then falls back to default TLS trust
+// exactly as before, but the operator is told why. Idempotent; a no-op
+// when no ca_cert is configured or it was already resolved.
+func (c *Config) ResolveSearchSecrets(warn io.Writer) {
+	sx := &c.Search.SearXNG
+	if sx.CACert == "" || len(sx.CACertPEM) > 0 {
+		return
+	}
+	pem, err := os.ReadFile(sx.CACert)
+	if err != nil {
+		if warn != nil {
+			fmt.Fprintf(warn, "enso: searxng ca_cert %q unreadable host-side: %v "+
+				"— web_search will fall back to default TLS trust (a self-hosted CA will NOT be trusted)\n",
+				sx.CACert, err)
+		}
+		return
+	}
+	sx.CACertPEM = pem
 }
 
 // HooksConfig holds the two supported lifecycle commands. Empty
@@ -558,88 +596,6 @@ type GitConfig struct {
 	AttributionName string `toml:"attribution_name"`
 }
 
-// BashConfig holds the bash tool's container settings, applied when
-// [backend] type = "podman" (see BackendConfig). An unknown `[bash]
-// sandbox` key in a config is simply ignored by the TOML decoder.
-type BashConfig struct {
-	Sb BashSandboxOptions `toml:"sandbox_options"`
-}
-
-// BashSandboxOptions are the per-project container settings.
-type BashSandboxOptions struct {
-	// Image to run; defaults to "alpine:latest". Pick whatever
-	// language toolchain your project needs (e.g. "golang:1.22").
-	Image string `toml:"image"`
-	// Init runs once after container creation. Re-runs only when this
-	// list (or image / mounts / env) change — tracked via a label on
-	// the container. Each line is a `sh -c` invocation.
-	Init []string `toml:"init"`
-	// Network passes through to the runtime's --network flag. Empty
-	// uses the runtime's default. Use "none" for fully offline; a
-	// named network for podman pods; "host" to share the host net.
-	Network string `toml:"network"`
-	// ExtraMounts are additional `-v src:dst[:opts]` entries. The
-	// project cwd is always mounted at workdir_mount.
-	ExtraMounts []string `toml:"extra_mounts"`
-	// Env injects KEY=value pairs into the container.
-	Env []string `toml:"env"`
-	// Name overrides the auto-generated container name. Empty leaves
-	// it as `enso-<basename>-<6-hex>`.
-	Name string `toml:"name"`
-	// WorkdirMount is the path inside the container where the
-	// project cwd is mounted. Defaults to `/work`.
-	WorkdirMount string `toml:"workdir_mount"`
-	// UID is the `--user` value (e.g. "1000:1000"). Empty defaults to
-	// the runtime's normal behaviour: rootless podman remaps the
-	// host user automatically; docker runs as root inside the
-	// container, which can leave root-owned files in the bind mount.
-	UID string `toml:"uid"`
-
-	// Workspace = "overlay" makes the project mount a throwaway podman
-	// overlay: the agent sees the real tree but every write lands in
-	// an ephemeral upper layer discarded at task end (automatic
-	// one-command rollback). Empty/"direct" = writes hit
-	// the project in place (today's behaviour).
-	Workspace string `toml:"workspace"`
-
-	// Egress is the per-task outbound allowlist ("host:port", or bare
-	// "host" for :80+:443). A network-sealed worker reaches ONLY these,
-	// via the host allowlist proxy, and only after the tier-3 broker
-	// grants the matching capability. Empty = fully sealed.
-	Egress []string `toml:"egress"`
-
-	// Credentials maps a logical secret name the worker may broker
-	// (CapCredential) to its value; ENSO_-prefixed env refs are
-	// expanded like provider api_key. The worker env is otherwise
-	// empty — this is the only way a secret reaches a sealed box.
-	Credentials map[string]string `toml:"credentials"`
-
-	// Hardening selects a hardened OCI runtime for the container.
-	// "gvisor" (alias "runsc") runs it under gVisor — syscalls are
-	// intercepted by a userspace kernel, shrinking the host kernel
-	// attack surface, at a syscall-heavy performance cost. Linux only;
-	// requires runsc installed and configured as a podman runtime. If
-	// set but unavailable enso REFUSES to run rather than silently
-	// dropping to unhardened isolation. Empty = the default runtime.
-	Hardening string `toml:"hardening"`
-}
-
-// OCIRuntime maps the user-facing Hardening knob to the `--runtime`
-// value podman expects. "" stays empty (default runtime); the gvisor
-// alias resolves to runsc; any other non-empty value is passed through
-// verbatim so an unknown/misconfigured choice fails the availability
-// check loudly instead of silently running unhardened.
-func (o BashSandboxOptions) OCIRuntime() string {
-	switch strings.ToLower(strings.TrimSpace(o.Hardening)) {
-	case "":
-		return ""
-	case "gvisor", "runsc":
-		return "runsc"
-	default:
-		return strings.TrimSpace(o.Hardening)
-	}
-}
-
 // BackendKind selects where the agent core runs. There is exactly one
 // execution path: the core always runs as a Worker behind a Backend.
 type BackendKind string
@@ -662,44 +618,143 @@ const (
 // BackendConfig selects the execution backend. `type` is layered like
 // every other config key, so a project can override the user/global
 // default.
+// BackendConfig selects the execution backend and holds each backend's
+// environment. `type` is the only switch a user changes to move between
+// backends; every backend's settings stay defined side-by-side under
+// their own sub-table, so flipping `type` is a one-line, lossless
+// switch.
+//
+// Scoping: `type` and `workspace` are SELECTION/safety knobs — a
+// legitimate personal or machine-admin preference — and are honored
+// from any config layer (system, user, or project). The per-backend
+// ENVIRONMENT sub-tables (Podman, Lima, Egress) define what the
+// project needs and must be reproducible from the repo, so they are
+// honored ONLY from project-scoped config (the repo's
+// .enso/config.toml[.local] or an explicit -c file). Set in the system
+// or user config they are stripped with a warning by the loader (see
+// stripBackendEnv) — never composed across scopes.
 type BackendConfig struct {
 	// Type: "local" (default), "podman", or "lima". Empty or
 	// unrecognized resolves to "local" (the no-isolation default).
 	Type string `toml:"type"`
 
-	// Runtime selects the container CLI for type = "podman":
-	// "auto" (default — prefer podman, fall back to docker),
-	// "podman", or "docker". Ignored for local/lima.
+	// Workspace = "overlay" makes the project mount a throwaway overlay:
+	// the agent sees the real tree but every write lands in an ephemeral
+	// layer discarded (or interactively committed) at task end.
+	// Backend-agnostic. Empty/"direct" = writes hit the project in place.
+	Workspace string `toml:"workspace"`
+
+	// Egress is the outbound policy shared by every sealed backend
+	// (podman + lima). The capability broker is built from this the same
+	// way for both, so it lives once here, not per-backend.
+	Egress EgressConfig `toml:"egress"`
+
+	// Podman holds [backend.podman] — used only when type = "podman".
+	Podman PodmanBackendConfig `toml:"podman"`
+
+	// Lima holds [backend.lima] — used only when type = "lima".
+	Lima LimaBackendConfig `toml:"lima"`
+}
+
+// EgressConfig is [backend.egress]: the outbound allowlist + brokered
+// secrets a network-sealed worker may reach. Shared across podman/lima.
+type EgressConfig struct {
+	// Allow is the per-task outbound allowlist ("host:port", or bare
+	// "host" for :80+:443). A sealed worker reaches ONLY these, via the
+	// host allowlist proxy, after the tier-3 broker grants the matching
+	// capability. Empty = fully sealed.
+	Allow []string `toml:"allow"`
+
+	// Credentials maps a logical secret name the worker may broker
+	// (CapCredential) to its value; ENSO_-prefixed env refs are expanded
+	// like provider api_key. The worker env is otherwise empty — this is
+	// the only way a secret reaches a sealed box.
+	Credentials map[string]string `toml:"credentials"`
+}
+
+// PodmanBackendConfig is [backend.podman]: the container environment
+// applied when [backend] type = "podman".
+type PodmanBackendConfig struct {
+	// Image to run; defaults to "alpine:latest". Pick whatever
+	// language toolchain your project needs (e.g. "golang:1.22").
+	Image string `toml:"image"`
+	// Init runs once after container creation (re-runs when this list /
+	// image / mounts / env change). Each line is a `sh -c` invocation.
+	Init []string `toml:"init"`
+	// Network passes through to the runtime's --network flag. Empty uses
+	// the runtime's default. "none" for fully offline; a named network
+	// for podman pods; "host" to share the host net.
+	Network string `toml:"network"`
+	// Runtime selects the container CLI: "auto" (default — prefer
+	// podman, fall back to docker), "podman", or "docker".
 	Runtime string `toml:"runtime"`
+	// ExtraMounts are additional `-v src:dst[:opts]` entries. The
+	// project cwd is always mounted at workdir_mount.
+	ExtraMounts []string `toml:"extra_mounts"`
+	// Env injects KEY=value pairs into the container.
+	Env []string `toml:"env"`
+	// Name overrides the auto-generated container name. Empty leaves it
+	// as `enso-<basename>-<6-hex>`.
+	Name string `toml:"name"`
+	// WorkdirMount is the path inside the container where the project
+	// cwd is mounted. Defaults to `/work`.
+	WorkdirMount string `toml:"workdir_mount"`
+	// UID is the `--user` value (e.g. "1000:1000"). Empty defaults to
+	// the runtime's normal behaviour.
+	UID string `toml:"uid"`
+	// Hardening selects a hardened OCI runtime. "gvisor" (alias "runsc")
+	// runs the container under gVisor. Linux only; requires runsc
+	// configured as a podman runtime. If set but unavailable enso
+	// REFUSES rather than silently dropping to unhardened isolation.
+	// Empty = the default runtime.
+	Hardening string `toml:"hardening"`
+}
+
+// OCIRuntime maps the user-facing Hardening knob to the `--runtime`
+// value podman expects. "" stays empty (default runtime); the gvisor
+// alias resolves to runsc; any other non-empty value is passed through
+// verbatim so an unknown/misconfigured choice fails the availability
+// check loudly instead of silently running unhardened.
+func (o PodmanBackendConfig) OCIRuntime() string {
+	switch strings.ToLower(strings.TrimSpace(o.Hardening)) {
+	case "":
+		return ""
+	case "gvisor", "runsc":
+		return "runsc"
+	default:
+		return strings.TrimSpace(o.Hardening)
+	}
 }
 
 // PodmanRuntime is the resolved container CLI selector for the podman
-// backend: the configured [backend] runtime, or "auto" when unset.
+// backend: the configured [backend.podman] runtime, or "auto" when
+// unset.
 func (c *Config) PodmanRuntime() string {
-	r := strings.ToLower(strings.TrimSpace(c.Backend.Runtime))
+	r := strings.ToLower(strings.TrimSpace(c.Backend.Podman.Runtime))
 	if r == "" {
 		return "auto"
 	}
 	return r
 }
 
-// LimaConfig is the optional [lima] block tuning the persistent
-// per-project VM that BackendLima provisions. Every field is optional;
-// zero values resolve to sane defaults in host.SelectBackend. Layered
-// like every other config key so a project can override the
-// user/global default.
-type LimaConfig struct {
+// LimaBackendConfig is [backend.lima]: the per-project VM environment
+// applied when [backend] type = "lima". Every field is optional; zero
+// values resolve to sane defaults in host.SelectBackend.
+type LimaBackendConfig struct {
 	// Template is a Lima template name (e.g. "default", "debian",
 	// "ubuntu") or a path/URL to a template YAML. Empty → a built-in
 	// minimal default suitable for the enso worker.
 	Template string `toml:"template"`
+	// Init runs once during VM provisioning (rendered into the
+	// generated Lima instance YAML's `provision:` block, mode: system).
+	// Each entry is a shell script line — the podman `init` analogue.
+	Init []string `toml:"init"`
 	// CPUs allocated to the VM. 0 → Lima default.
 	CPUs int `toml:"cpus"`
 	// Memory is a Lima memory string (e.g. "4GiB"). Empty → Lima
 	// default.
 	Memory string `toml:"memory"`
-	// Disk is a Lima disk string (e.g. "20GiB"). Empty → Lima
-	// default.
+	// Disk is a Lima disk string (e.g. "20GiB"). Empty → Lima default.
 	Disk string `toml:"disk"`
 	// ExtraMounts are additional host paths to mount into the VM
 	// (read-only unless suffixed per Lima's mount syntax).
@@ -709,10 +764,9 @@ type LimaConfig struct {
 // ResolveBackend returns the selected BackendKind from the explicit
 // [backend] type. Empty or unrecognized resolves to BackendLocal — the
 // no-isolation default; an unknown value fails safe to local rather
-// than silently picking a container/VM. [bash] sandbox no longer
-// selects the backend (that back-compat derivation was removed); it
-// only picks the container runtime (podman/docker/auto) once
-// [backend] type = "podman".
+// than silently picking a container/VM. [backend] type is the sole
+// backend selector; each backend's environment lives under its own
+// [backend.<name>] sub-table.
 func (c *Config) ResolveBackend() BackendKind {
 	switch strings.ToLower(strings.TrimSpace(c.Backend.Type)) {
 	case string(BackendPodman):
@@ -992,6 +1046,26 @@ func UserConfigPath() (string, error) {
 // `enso config init --print` to show or pipe the template.
 func DefaultTOML() string { return defaultTOML }
 
+// stripBackendEnv removes the project-scoped backend environment
+// sub-tables ([backend.podman|lima|egress]) from a non-project config
+// layer, leaving the selection knobs ([backend] type / workspace)
+// intact. Returns the dotted names removed (for the warning); nil when
+// the layer had none. Mutates layer in place.
+func stripBackendEnv(layer map[string]any) []string {
+	b, ok := layer["backend"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	var stripped []string
+	for _, k := range []string{"podman", "lima", "egress"} {
+		if _, present := b[k]; present {
+			delete(b, k)
+			stripped = append(stripped, "backend."+k)
+		}
+	}
+	return stripped
+}
+
 // Load reads and merges every config file in SearchPaths(cwd, explicit). If
 // no file exists and `explicit` was empty, a default config is written to the
 // user config path and then loaded. If `explicit` was supplied but the file
@@ -1008,6 +1082,25 @@ func Load(cwd, explicit string) (*Config, error) {
 // provider.
 func LoadWithFirstRun(cwd, explicit string) (*Config, bool, error) {
 	paths := SearchPaths(cwd, explicit)
+
+	// Backend ENVIRONMENT (image/init/template/mounts/egress/hardening)
+	// is a property of the project being worked on, not of the person —
+	// it must be reproducible from the repo for teammates and CI. Only
+	// the SELECTION knobs ([backend] type / workspace) are a legitimate
+	// personal/admin preference. So the [backend.podman|lima|egress]
+	// sub-tables are honored ONLY from project-scoped layers (the repo's
+	// .enso/config.toml[.local] and an explicit -c file); set in the
+	// system or user config they are stripped with a one-time warning,
+	// rather than silently composing across scopes (the "inevitable
+	// weirdness" between a user's backend init and a repo's).
+	projectScoped := map[string]bool{}
+	if cwd != "" {
+		projectScoped[filepath.Join(cwd, ".enso", "config.toml")] = true
+		projectScoped[filepath.Join(cwd, ".enso", "config.local.toml")] = true
+	}
+	if explicit != "" {
+		projectScoped[explicit] = true
+	}
 
 	merged := map[string]any{}
 	foundAny := false
@@ -1026,6 +1119,14 @@ func LoadWithFirstRun(cwd, explicit string) (*Config, bool, error) {
 		var layer map[string]any
 		if err := toml.Unmarshal(data, &layer); err != nil {
 			return nil, false, fmt.Errorf("parse %s: %w", p, err)
+		}
+		if !projectScoped[p] {
+			if stripped := stripBackendEnv(layer); len(stripped) > 0 {
+				slog.Warn("config: backend environment is project-scoped; "+
+					"ignoring keys set outside a project config — move them to "+
+					"<repo>/.enso/config.toml",
+					"file", p, "ignored", stripped)
+			}
 		}
 		mergeMaps(merged, layer)
 	}
@@ -1072,8 +1173,8 @@ func LoadWithFirstRun(cwd, explicit string) (*Config, bool, error) {
 		cfg.Providers[name] = p
 	}
 	cfg.Search.SearXNG.APIKey = ExpandEnsoEnv(cfg.Search.SearXNG.APIKey)
-	for k, v := range cfg.Bash.Sb.Credentials {
-		cfg.Bash.Sb.Credentials[k] = ExpandEnsoEnv(v)
+	for k, v := range cfg.Backend.Egress.Credentials {
+		cfg.Backend.Egress.Credentials[k] = ExpandEnsoEnv(v)
 	}
 	return &cfg, freshlyWritten, nil
 }
