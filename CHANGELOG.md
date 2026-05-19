@@ -4,6 +4,51 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.5.1] - 2026-05-19
+
+### Fixed
+- **Terminal/shell hung after a Lima-backed session.** Closing the
+  terminal or running `exit` after using enso on a Lima VM would block
+  indefinitely. Root cause (proven via `/proc/<pid>/fd`): the
+  persistent-VM `limactl hostagent` — a daemon that by design outlives
+  enso — was launched as a plain child of enso and kept the user's
+  controlling terminal (`/dev/tty`, fd 4) open, so the shell's pty was
+  never released even though enso itself had exited. `runLimactl` (the
+  `limactl start`/resume path) now starts limactl in its own session
+  with no controlling terminal (`Setsid`) and `/dev/null` stdin, so
+  neither limactl nor the hostagent it daemonizes can inherit the
+  shell's terminal. Live bring-up progress is unaffected (stdout/stderr
+  remain enso-owned pipes). The persistent VM and its `ssh.sock` mux
+  still outlive the session by design and are reclaimed by `enso prune`.
+- **enso did not exit on a normal TUI quit with an isolated backend.**
+  TUI shutdown sent the worker a shutdown message and then waited,
+  unbounded, for the in-guest worker to EOF the Channel. With the Lima
+  backend that Channel is an SSH session multiplexed over Lima's
+  persistent ControlMaster mux, so if the worker did not wind down
+  promptly the wait never returned and enso never exited (the launching
+  shell never got its prompt back). The graceful wind-down is now
+  bounded: on timeout the idempotent worker teardown — which
+  force-closes the Channel and reaps the `limactl`+ssh process group —
+  runs immediately, guaranteeing the seam loop returns and enso exits.
+  The non-interactive `enso run` path is intentionally unchanged (there
+  a worker finishing *is* normal completion).
+- **`limactl shell` worker could wedge `cmd.Wait()` during teardown.**
+  The Lima worker passed an `io.Writer` as the command's stderr, so
+  `os/exec` spawned a copy goroutine that `cmd.Wait()` joins on. Lima's
+  `ControlPersist` ssh master (in its own session, intentionally not in
+  enso's reaped process group) inherits and holds that stderr pipe's
+  write end open for the life of the VM, so the goroutine never EOF'd
+  and `cmd.Wait()` could block forever. The worker now owns the stderr
+  pipe as an `*os.File` (no `os/exec` join goroutine) and copies it
+  itself, closing the read end in teardown to end its own copier.
+- **Qwen3 tool calls were silently dropped on llama.cpp.** Qwen3
+  thinking-style templates wrap the tool call *inside* the reasoning
+  channel, so it reached neither the content stream nor the structured
+  `tool_calls` channel and the model appeared to do nothing. The agent
+  now falls back to parsing inline tool calls out of the reasoning text
+  as a last resort (the cleaned reasoning is still never persisted to
+  history).
+
 ## [v2.5.0] - 2026-05-18
 
 ### Changed (BREAKING — config migration required)

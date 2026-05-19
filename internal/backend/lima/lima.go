@@ -354,6 +354,24 @@ func runLimactl(ctx context.Context, limactl string, args []string) error {
 	tail := &capWriter{max: 8 << 10}
 	c.Stdout = io.MultiWriter(os.Stderr, tail)
 	c.Stderr = c.Stdout
+	// Setsid: run limactl (and the long-lived hostagent it daemonizes)
+	// in its OWN session with NO controlling terminal. `limactl start`
+	// forks the persistent-VM `limactl hostagent`, which — by design
+	// for a persistent VM — outlives this call AND enso. Lima does not
+	// fully detach it: the hostagent keeps `/dev/tty` (fd 4) of
+	// whatever session launched it. Inherited from a plain child of
+	// enso, that is the user's shell pts, so the hostagent pins the
+	// terminal open and `exit`/terminal-close hangs until the VM is
+	// stopped — even though enso itself exited cleanly. A new session
+	// means there is no controlling tty to inherit, so the hostagent's
+	// open("/dev/tty") finds nothing of ours. Stdout/Stderr are
+	// explicitly our own pipes, so Setsid does not affect the live
+	// progress stream; stdin is /dev/null so nothing reads the tty.
+	c.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if devnull, err := os.Open(os.DevNull); err == nil {
+		c.Stdin = devnull
+		defer devnull.Close()
+	}
 	if err := c.Run(); err != nil {
 		return fmt.Errorf("lima: %s: %v\n%s", strings.Join(args, " "), err, strings.TrimSpace(string(tail.buf)))
 	}
