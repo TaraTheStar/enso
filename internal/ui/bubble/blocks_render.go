@@ -12,6 +12,7 @@ import (
 
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/TaraTheStar/enso/internal/ui/blocks"
 	"github.com/TaraTheStar/enso/internal/ui/theme"
@@ -62,10 +63,22 @@ func renderBlock(b blocks.Block, width int, finalized bool) string {
 		if finalized {
 			return prefix + renderMarkdown(text, width)
 		}
-		// Live streaming: raw text. Partial fenced blocks would render
-		// as broken markdown, and re-parsing on every delta would burn
-		// CPU for no visual gain.
-		return prefix + text
+		// Live streaming: no markdown parse (partial fenced blocks
+		// would render broken, and re-parsing every delta is wasteful),
+		// but still hard-wrap to the terminal width so the in-flight
+		// text doesn't run off the right edge before it graduates.
+		// Continuation lines hang-indent under the prefix.
+		lines := strings.Split(liveWrap(text, width, markdownPrefixWidth), "\n")
+		var ab strings.Builder
+		ab.WriteString(prefix)
+		ab.WriteString(lines[0])
+		pad := strings.Repeat(" ", markdownPrefixWidth)
+		for _, ln := range lines[1:] {
+			ab.WriteByte('\n')
+			ab.WriteString(pad)
+			ab.WriteString(ln)
+		}
+		return ab.String()
 
 	case *blocks.Reasoning:
 		bar := reasoningBar()
@@ -76,8 +89,11 @@ func renderBlock(b blocks.Block, width int, finalized bool) string {
 		var out strings.Builder
 		text := strings.TrimRight(v.Text, "\n")
 		if text != "" {
-			lines := strings.Split(text, "\n")
-			for i, ln := range lines {
+			// Wrap to the width left of the bar so long thoughts don't
+			// overflow while streaming (graduated reasoning is the same
+			// recede column, just with a footer).
+			wrapped := liveWrap(text, width, ansi.StringWidth(bar))
+			for i, ln := range strings.Split(wrapped, "\n") {
 				if i > 0 {
 					out.WriteByte('\n')
 				}
@@ -115,6 +131,13 @@ func renderBlock(b blocks.Block, width int, finalized bool) string {
 			// edit/write tool results are scannable; everything else
 			// stays in the recede status colour.
 			diffMode := looksLikeDiff(body)
+			if !diffMode {
+				// Wrap to the width left of the 2-cell indent so wide
+				// tool output (file reads, ls) doesn't overflow. Diffs
+				// are left raw — wrapping a unified diff is worse than
+				// letting the terminal clip it (git behaves the same).
+				body = liveWrap(body, width, 2)
+			}
 			for i, ln := range strings.Split(body, "\n") {
 				if i > 0 {
 					out.WriteByte('\n')
@@ -193,6 +216,25 @@ const markdownDefaultWidth = 100
 // reported terminal width by this much to keep the *first* wrapped
 // line from running past the terminal edge.
 const markdownPrefixWidth = 7
+
+// liveWrap hard-wraps streaming text so a live (in-flight) block never
+// runs off the right terminal edge before it graduates to the
+// glamour-wrapped scrollback. limit mirrors renderMarkdown's effective
+// content width (terminal width minus the block's prefix) so live and
+// finalized output break at the same column. Hardwrap (not word-wrap)
+// is deliberate: it guarantees no line exceeds limit even for an
+// unbreakable token (a long URL/path), which is exactly the overflow
+// we're preventing. No markdown parsing — cheap enough per delta.
+func liveWrap(s string, width, prefixCells int) string {
+	if width <= 0 {
+		width = markdownDefaultWidth
+	}
+	limit := width - prefixCells
+	if limit < 20 {
+		limit = 20
+	}
+	return ansi.Hardwrap(s, limit, false)
+}
 
 // renderMarkdown turns assistant markdown into glamour-rendered output:
 // fenced ```lang``` blocks pick up syntax highlighting via chroma,

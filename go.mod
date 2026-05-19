@@ -8,6 +8,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.3
 	github.com/adrg/frontmatter v0.2.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v0.53.0
 	github.com/pelletier/go-toml/v2 v2.3.1
@@ -23,7 +24,6 @@ require (
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260428153724-66037269d7be // indirect
-	github.com/charmbracelet/x/ansi v0.11.7 // indirect
 	github.com/charmbracelet/x/exp/slice v0.0.0-20260503005035-c113ba3d2310 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/charmbracelet/x/termios v0.1.1 // indirect
