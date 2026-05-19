@@ -456,7 +456,24 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 	close(inputCh)
 	<-submitDone
 	sess.CloseInput()
-	<-workerDone
+	// CloseInput only SENDS MsgShutdown; it does not close the Channel.
+	// workerDone closes only when sess.Wait() returns, i.e. when the
+	// in-guest worker EOFs the Channel. With an isolated backend that
+	// transport is an SSH session multiplexed over Lima's persistent
+	// ControlMaster mux: if the worker doesn't wind down promptly the
+	// limactl-shell stdout pipe never EOFs and this blocks FOREVER —
+	// enso never returns from main and the launching shell can't get
+	// its prompt back ("exit hangs"). The forced Channel close + pgroup
+	// kill that breaks that deadlock lives in Teardown (deferred
+	// sess.Close()), which is scheduled AFTER this wait — so bound the
+	// graceful wind-down and, on timeout, run the idempotent Teardown
+	// here to force the seam loop's Channel read to return.
+	select {
+	case <-workerDone:
+	case <-time.After(3 * time.Second):
+		_ = sess.Close() // idempotent; closes Channel + reaps limactl+ssh
+		<-workerDone
+	}
 	busInst.Close()
 	<-auditDone
 
