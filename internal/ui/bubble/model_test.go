@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/ui/blocks"
@@ -237,4 +238,51 @@ func TestPasteMsg(t *testing.T) {
 			t.Fatalf("paste must be ignored in vim-normal, got %q", m.input.buf)
 		}
 	})
+}
+
+// TestInputRenderNeverOverflows: the input line must never exceed the
+// terminal width regardless of buffer length or cursor position (the
+// bug: typing past the edge ran off-screen), and the cursor must stay
+// within the visible window so you can see what you're typing.
+func TestInputRenderNeverOverflows(t *testing.T) {
+	long := strings.Repeat("x", 500)
+	for _, width := range []int{20, 40, 80, 120} {
+		for _, cur := range []int{0, 1, 250, 499, 500} {
+			s := &inputState{buf: long, cursor: cur}
+			out := s.render(width)
+			if w := ansi.StringWidth(out); w > width {
+				t.Fatalf("width=%d cursor=%d: rendered width %d exceeds terminal", width, cur, w)
+			}
+			if !strings.Contains(out, "\x1b[7m") && !strings.Contains(out, "\x1b[invert") {
+				// reverse-video cursor cell must be present (visible).
+				if ansi.StringWidth(out) == 0 {
+					t.Fatalf("width=%d cursor=%d: empty render", width, cur)
+				}
+			}
+		}
+	}
+	// Short buffer fits → unchanged fast path (whole buffer shown).
+	s := &inputState{buf: "hello", cursor: 5}
+	if out := s.render(80); !strings.Contains(out, "hello") {
+		t.Fatalf("short buffer must render verbatim, got %q", out)
+	}
+}
+
+// TestLiveBlockWrapsToWidth: streaming (non-finalized) blocks must wrap
+// to the terminal width — no line may exceed it (the off-the-edge bug).
+func TestLiveBlockWrapsToWidth(t *testing.T) {
+	const width = 40
+	cases := []blocks.Block{
+		&blocks.Assistant{Text: strings.Repeat("a", 300) + "\nshort"},
+		&blocks.Reasoning{Text: strings.Repeat("b", 300)},
+		&blocks.Tool{Call: "bash", Output: strings.Repeat("c", 300)},
+	}
+	for _, b := range cases {
+		out := renderBlock(b, width, false /* live */)
+		for _, ln := range strings.Split(out, "\n") {
+			if w := ansi.StringWidth(ln); w > width {
+				t.Fatalf("%T live line width %d exceeds %d: %q", b, w, width, ln)
+			}
+		}
+	}
 }

@@ -823,7 +823,7 @@ func (m *model) View() tea.View {
 	// the typing area has a bit of breathing room above it.
 	sb.WriteString("\n\n")
 
-	sb.WriteString(m.input.render())
+	sb.WriteString(m.input.render(m.width))
 	return tea.NewView(sb.String())
 }
 

@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // inputState owns the live input buffer, cursor position, and vim-mode
@@ -154,7 +155,13 @@ func isWordSep(r rune) bool {
 //
 // vimMode = true causes the prompt to carry a NORMAL/INSERT badge so the
 // user knows which mode they're in.
-func (s *inputState) render() string {
+// render draws the prompt + a width-bounded window of the buffer with
+// the cursor visualised in reverse video. The window horizontally
+// scrolls so the cursor is always on-screen: without this, typing past
+// the terminal edge runs the line off the right side and you can't see
+// what you're typing. width is the terminal width (m.width); <=0 (no
+// WindowSizeMsg yet) falls back to 80.
+func (s *inputState) render(width int) string {
 	prompt := promptStyle.Render("› ")
 	if s.vim {
 		var label string
@@ -166,13 +173,44 @@ func (s *inputState) render() string {
 		prompt = label + prompt
 	}
 
+	// Body = buffer with the cursor cell reverse-videoed (no prompt).
 	cursor := lipgloss.NewStyle().Reverse(true)
+	var body string
+	var cursorCol int // cursor's display column within body
 	if s.cursor >= len(s.buf) {
-		// Cursor at end: render a reversed space as the marker.
-		return prompt + s.buf + cursor.Render(" ")
+		body = s.buf + cursor.Render(" ")
+		cursorCol = ansi.StringWidth(s.buf)
+	} else {
+		r, size := utf8.DecodeRuneInString(s.buf[s.cursor:])
+		body = s.buf[:s.cursor] + cursor.Render(string(r)) + s.buf[s.cursor+size:]
+		cursorCol = ansi.StringWidth(s.buf[:s.cursor])
 	}
-	r, size := utf8.DecodeRuneInString(s.buf[s.cursor:])
-	return prompt + s.buf[:s.cursor] + cursor.Render(string(r)) + s.buf[s.cursor+size:]
+
+	if width <= 0 {
+		width = 80 // pre-WindowSizeMsg fallback
+	}
+	avail := width - ansi.StringWidth(prompt)
+	if avail < 8 {
+		avail = 8 // degenerate-narrow guard; still bounded
+	}
+	bodyW := ansi.StringWidth(body)
+	if bodyW <= avail {
+		return prompt + body // fits — fast path, unchanged behaviour
+	}
+
+	// Scroll so the cursor stays visible. Stateless: derive the window
+	// offset from the cursor column each frame (jump-scrolls rather
+	// than smooth-scrolls, but the cursor is never off-screen and the
+	// line never overflows). ansi.Cut is ANSI-aware so the cursor's
+	// reverse-video SGR is preserved/closed across the cut.
+	offset := 0
+	if cursorCol >= avail {
+		offset = cursorCol - avail + 1
+	}
+	if max := bodyW - avail; offset > max {
+		offset = max
+	}
+	return prompt + ansi.Cut(body, offset, offset+avail)
 }
 
 // atIsTokenStart reports whether inserting `@` at the current cursor
