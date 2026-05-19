@@ -4,7 +4,7 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v2.5.0] - 2026-05-18
 
 ### Changed (BREAKING — config migration required)
 - **Unified backend configuration.** Every backend's environment now
@@ -93,20 +93,6 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Because podman containers are per-task `--rm`, init re-runs each
   task — keep it cheap (package installs) or bake heavy tooling into
   the image.
-- **lima overlay write-back fixed (persistent-VM inode stability).** The
-  workspace overlay's `merged` directory now keeps a stable inode for
-  the life of the per-project VM. Previously `workspace.NewAt` rotated
-  its inode every run (rename-aside / `RemoveAll` + `MkdirAll`), but a
-  persistent Lima VM 9p-exports `merged` by the inode it had at boot
-  (qemu virtfs doesn't re-resolve the path). So on any run that reused
-  the VM, the guest mount was stranded on the orphaned old inode: the
-  project showed empty/stale, agent writes never reached the host, and
-  the end-of-task commit/discard/keep prompt never appeared (zero
-  changes detected → silent discard) — most visibly right after a
-  `commit`, whose `Cleanup()` removed `merged` outright. Now contents
-  are refreshed in place and `Cleanup()` clears the lima copy without
-  rmdir'ing it. Covered by a real-VM regression test exercising the
-  reuse path (`TestOverlayReuseAndDrift_RealVM`).
 - **lima VM auto-recreate on config drift.** A persistent per-project
   lima VM is also rebuilt automatically when the generated instance
   config no longer matches the effective config (workspace toggled,
@@ -148,11 +134,39 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
     provisioning step ahead of your `init`.
   - Persistent per-project VMs created before this release still mount
     `$HOME`, but enso now **auto-recreates** any lima VM whose
-    generated config no longer matches (see "lima VM auto-recreate"
-    below) — the stale `$HOME`-mounting VM is rebuilt on the next run
+    generated config no longer matches (see "lima VM auto-recreate" in
+    Added) — the stale `$HOME`-mounting VM is rebuilt on the next run
     with no action required.
 
 ### Fixed
+- **TUI text overflowed the right edge of the terminal.** Streaming
+  model output (assistant + reasoning) and wide tool output were
+  emitted raw until they graduated to the (glamour-wrapped) scrollback,
+  and the single-line input had no width awareness — so typing past the
+  terminal edge ran off-screen and you couldn't see what you were
+  typing. Live blocks now hard-wrap to the terminal width (no markdown
+  parse — cheap per delta; assistant continuation lines hang-indent
+  under the prefix; unified diffs left raw, as git does). The input
+  line is now a width-bounded, horizontally-scrolling window that keeps
+  the cursor visible (ANSI/display-width aware via
+  `github.com/charmbracelet/x/ansi`, so wide/CJK runes are handled).
+  Regression tests assert no rendered line ever exceeds the terminal
+  width.
+- **lima overlay write-back / empty-project / missing commit prompt
+  (persistent-VM inode stability).** The workspace overlay's `merged`
+  directory now keeps a stable inode for the life of the per-project
+  VM. Previously `workspace.NewAt` rotated its inode every run
+  (rename-aside / `RemoveAll` + `MkdirAll`), but a persistent Lima VM
+  9p-exports `merged` by the inode it had at boot (qemu virtfs doesn't
+  re-resolve the path). So on any run that reused the VM, the guest
+  mount was stranded on the orphaned old inode: the project showed
+  empty/stale, agent writes never reached the host, and the end-of-task
+  commit/discard/keep prompt never appeared (zero changes detected →
+  silent discard) — most visibly right after a `commit`, whose
+  `Cleanup()` removed `merged` outright. Now contents are refreshed in
+  place and `Cleanup()` clears the lima copy without rmdir'ing it.
+  Covered by a real-VM regression test exercising the reuse path
+  (`TestOverlayReuseAndDrift_RealVM`).
 - **`fatal error: invalid runtime symbol table` mid-session
   (lima/podman).** The isolated backends 9p/bind-mounted the host's
   *live* enso binary into the guest and exec'd it 1:1; a persistent
@@ -499,6 +513,7 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
+[v2.5.0]: https://github.com/TaraTheStar/enso/compare/v2.4.0...v2.5.0
 [v2.4.0]: https://github.com/TaraTheStar/enso/compare/v2.3.0...v2.4.0
 [v2.3.0]: https://github.com/TaraTheStar/enso/compare/v2.2.0...v2.3.0
 [v2.2.0]: https://github.com/TaraTheStar/enso/compare/v2.1.0...v2.2.0
