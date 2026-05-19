@@ -24,9 +24,13 @@ func TestStage_ContentAddressedImmutable(t *testing.T) {
 	srcDir := t.TempDir()
 
 	src := writeExe(t, srcDir, "enso", "BINARY-V1")
-	p1, err := Stage(src)
+	p1, root1, err := Stage(src)
 	if err != nil {
 		t.Fatalf("Stage v1: %v", err)
+	}
+	// The mount root is the stable exe/ parent of the snapshot.
+	if root1 != filepath.Dir(filepath.Dir(p1)) {
+		t.Fatalf("root %q must be the parent of the <hash> dir of %q", root1, p1)
 	}
 	if b, _ := os.ReadFile(p1); string(b) != "BINARY-V1" {
 		t.Fatalf("staged content = %q, want BINARY-V1", b)
@@ -36,7 +40,7 @@ func TestStage_ContentAddressedImmutable(t *testing.T) {
 	}
 
 	// Same content again → same path, copied at most once.
-	p1b, err := Stage(src)
+	p1b, _, err := Stage(src)
 	if err != nil {
 		t.Fatalf("Stage v1 again: %v", err)
 	}
@@ -51,12 +55,17 @@ func TestStage_ContentAddressedImmutable(t *testing.T) {
 	if err := os.WriteFile(src, []byte("BINARY-V2-REBUILT"), 0o755); err != nil {
 		t.Fatalf("rebuild src: %v", err)
 	}
-	p2, err := Stage(src)
+	p2, root2, err := Stage(src)
 	if err != nil {
 		t.Fatalf("Stage v2: %v", err)
 	}
 	if p2 == p1 {
 		t.Fatalf("rebuilt (different) binary must get a new path, got the same: %q", p2)
+	}
+	// The mount root is INVARIANT across the rebuild — this is what
+	// keeps the lima VM YAML from drifting and forcing a cold reboot.
+	if root2 != root1 {
+		t.Fatalf("mount root must be stable across rebuilds: %q vs %q", root2, root1)
 	}
 	if b, _ := os.ReadFile(p1); string(b) != "BINARY-V1" {
 		t.Fatalf("old snapshot mutated to %q — immutability violated", b)
@@ -73,8 +82,8 @@ func TestSweep(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	srcDir := t.TempDir()
 
-	a, _ := Stage(writeExe(t, srcDir, "a", "AAA"))
-	b, _ := Stage(writeExe(t, srcDir, "b", "BBB"))
+	a, _, _ := Stage(writeExe(t, srcDir, "a", "AAA"))
+	b, _, _ := Stage(writeExe(t, srcDir, "b", "BBB"))
 	if a == "" || b == "" || a == b {
 		t.Fatalf("setup: distinct snapshots expected (%q, %q)", a, b)
 	}

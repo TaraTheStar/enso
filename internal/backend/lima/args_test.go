@@ -15,7 +15,9 @@ func joinArgs(a []string) string { return strings.Join(a, " ") }
 func TestBuildVMConfig_Posture(t *testing.T) {
 	cwd := "/home/u/proj"
 	b := &Backend{Memory: "4GiB", CPUs: 4, Disk: "20GiB"}
-	y := b.buildVMConfig(cwd, "/host/bin/enso")
+	// 2nd arg is the STABLE exestage mount ROOT (exe/ parent), mounted
+	// verbatim — invariant across host rebuilds (no drift-recreate).
+	y := b.buildVMConfig(cwd, "/host/state/exe")
 
 	// One namespace: project mounted WRITABLE at its REAL path; cwd is
 	// that path. No /work split-brain mount.
@@ -33,9 +35,10 @@ func TestBuildVMConfig_Posture(t *testing.T) {
 	if strings.Contains(y, "/work") {
 		t.Errorf("the /work split-brain mount must not exist, got:\n%s", y)
 	}
-	// enso binary dir mounted READ-ONLY (no image rebuild).
-	if !strings.Contains(y, `location: "/host/bin"`) || !strings.Contains(y, "writable: false") {
-		t.Errorf("enso binary dir must be mounted read-only, got:\n%s", y)
+	// enso snapshot ROOT mounted READ-ONLY, verbatim (no filepath.Dir
+	// derivation — the root IS the mount, stable across rebuilds).
+	if !strings.Contains(y, `location: "/host/state/exe"`) || !strings.Contains(y, "writable: false") {
+		t.Errorf("enso snapshot root must be mounted read-only, got:\n%s", y)
 	}
 	// Minimal VM: no containerd. (No ssh.loadDotSSH — that key trips
 	// Lima's schema check on some versions and is irrelevant to a
@@ -62,7 +65,7 @@ func TestBuildVMConfig_Posture(t *testing.T) {
 func TestBuildVMConfig_OverlayAndTemplate(t *testing.T) {
 	cwd := "/p"
 	b := &Backend{Template: "debian", MountSource: "/var/lib/enso/stage/abcd/merged"}
-	y := b.buildVMConfig(cwd, "/e/enso")
+	y := b.buildVMConfig(cwd, "/e/exe")
 
 	// Overlay = the stable host copy bound at the REAL project path
 	// (the real project is never the mount source here).
@@ -81,7 +84,7 @@ func TestBuildVMConfig_OverlayAndTemplate(t *testing.T) {
 
 	// A path/URL template is used verbatim as base (advanced; user owns
 	// the posture).
-	y2 := (&Backend{Template: "/opt/my.yaml"}).buildVMConfig(cwd, "/e/enso")
+	y2 := (&Backend{Template: "/opt/my.yaml"}).buildVMConfig(cwd, "/e/exe")
 	if !strings.Contains(y2, `base: "/opt/my.yaml"`) {
 		t.Errorf("path template must be used verbatim, got:\n%s", y2)
 	}
@@ -90,50 +93,65 @@ func TestBuildVMConfig_OverlayAndTemplate(t *testing.T) {
 func TestBuildVMConfig_IptablesBootstrap(t *testing.T) {
 	cwd := "/p"
 
-	// Sealed + Alpine (default): enso prepends an apk iptables bootstrap
-	// as its OWN system provision step, ordered BEFORE user init, since
-	// the Alpine cloud image ships no iptables and the seal needs it.
-	y := (&Backend{Sealed: true, Init: []string{"echo user-step"}}).buildVMConfig(cwd, "/e/enso")
+	// Sealed + Alpine (default): three ordered system provision steps —
+	// the cosmetic boot-speedup, THEN the apk iptables bootstrap (the
+	// Alpine cloud image ships no iptables and the seal needs it), THEN
+	// user init. Each is its own step so a broken later one can't
+	// strand the seal.
+	y := (&Backend{Sealed: true, Init: []string{"echo user-step"}}).buildVMConfig(cwd, "/e/exe")
+	speed := strings.Index(y, "set timeout=0")
 	boot := strings.Index(y, "apk add --no-cache iptables")
 	user := strings.Index(y, "echo user-step")
-	if boot < 0 {
-		t.Errorf("sealed Alpine must bootstrap iptables, got:\n%s", y)
+	if speed < 0 || boot < 0 {
+		t.Errorf("sealed Alpine must emit boot-speedup AND iptables bootstrap, got:\n%s", y)
 	}
-	if boot >= 0 && user >= 0 && boot > user {
-		t.Errorf("iptables bootstrap must precede user init, got:\n%s", y)
+	if !(speed < boot && boot < user) {
+		t.Errorf("order must be speedup < iptables < user init, got:\n%s", y)
 	}
-	// Two separate system steps (a broken user init can't strand the seal).
-	if strings.Count(y, "  - mode: system") != 2 {
-		t.Errorf("expected 2 system provision steps (bootstrap + init), got:\n%s", y)
+	if strings.Count(y, "  - mode: system") != 3 {
+		t.Errorf("expected 3 system provision steps (speedup + bootstrap + init), got:\n%s", y)
 	}
 
 	// Sealed but NOT Alpine: Ubuntu/Debian images already carry
-	// iptables — no bootstrap injected.
-	yu := (&Backend{Sealed: true, Template: "ubuntu"}).buildVMConfig(cwd, "/e/enso")
-	if strings.Contains(yu, "apk add") {
-		t.Errorf("non-Alpine sealed must NOT inject an apk bootstrap, got:\n%s", yu)
+	// iptables, and the boot-speedup is Alpine-only — no provision at
+	// all without user init.
+	yu := (&Backend{Sealed: true, Template: "ubuntu"}).buildVMConfig(cwd, "/e/exe")
+	if strings.Contains(yu, "apk add") || strings.Contains(yu, "set timeout=0") || strings.Contains(yu, "provision:") {
+		t.Errorf("non-Alpine sealed must inject no provision, got:\n%s", yu)
 	}
 
-	// Unsealed Alpine: no seal → no bootstrap needed.
-	yn := (&Backend{Sealed: false}).buildVMConfig(cwd, "/e/enso")
-	if strings.Contains(yn, "apk add") || strings.Contains(yn, "provision:") {
+	// Unsealed Alpine: no seal → no iptables bootstrap, but the
+	// Alpine-only boot-speedup is still applied (it is not gated on
+	// Sealed — boot time is not a security property).
+	yn := (&Backend{Sealed: false}).buildVMConfig(cwd, "/e/exe")
+	if strings.Contains(yn, "apk add") {
 		t.Errorf("unsealed must not bootstrap iptables, got:\n%s", yn)
+	}
+	if !strings.Contains(yn, "set timeout=0") {
+		t.Errorf("Alpine boot-speedup must apply even unsealed, got:\n%s", yn)
 	}
 }
 
 func TestBuildVMConfig_ProvisionInit(t *testing.T) {
-	// No Init → no provision block at all (Lima default behaviour
-	// unchanged for the common case).
-	bare := (&Backend{}).buildVMConfig("/p", "/e/enso")
+	// No Init, non-Alpine → no provision block at all (Lima default
+	// behaviour unchanged for the common non-Alpine case).
+	bare := (&Backend{Template: "ubuntu"}).buildVMConfig("/p", "/e/exe")
 	if strings.Contains(bare, "provision:") {
-		t.Errorf("empty Init must emit no provision block, got:\n%s", bare)
+		t.Errorf("empty Init on non-Alpine must emit no provision block, got:\n%s", bare)
 	}
 
-	b := &Backend{Init: []string{
+	// No Init, Alpine → exactly the cosmetic boot-speedup step, nothing
+	// user-supplied.
+	alp := (&Backend{}).buildVMConfig("/p", "/e/exe")
+	if !strings.Contains(alp, "set timeout=0") || strings.Count(alp, "  - mode: system") != 1 {
+		t.Errorf("Alpine no-init must emit exactly the boot-speedup step, got:\n%s", alp)
+	}
+
+	b := &Backend{Template: "ubuntu", Init: []string{
 		"apt-get update",
 		"apt-get install -y git build-essential",
 	}}
-	y := b.buildVMConfig("/p", "/e/enso")
+	y := b.buildVMConfig("/p", "/e/exe")
 
 	// One system-mode provision script, set -e so a failed install
 	// aborts loudly, every Init line indented under the block scalar.
