@@ -80,7 +80,7 @@ func TestOverlayReuseAndDrift_RealVM(t *testing.T) {
 		t.Fatalf("NewAt run1: %v", err)
 	}
 	b.MountSource = ov.Copy
-	if err := b.ensureRunning(ctx, limactl, name, proj, exe); err != nil {
+	if err := b.ensureRunning(ctx, limactl, name, proj, filepath.Dir(exe)); err != nil {
 		t.Skipf("Lima VM could not be brought up (environment, not enso): %v", err)
 	}
 	if err := guestWrite("r1.txt", "run1"); err != nil {
@@ -103,7 +103,7 @@ func TestOverlayReuseAndDrift_RealVM(t *testing.T) {
 		t.Fatalf("NewAt run2: %v", err)
 	}
 	b.MountSource = ov.Copy
-	if err := b.ensureRunning(ctx, limactl, name, proj, exe); err != nil {
+	if err := b.ensureRunning(ctx, limactl, name, proj, filepath.Dir(exe)); err != nil {
 		t.Fatalf("run2 ensureRunning (reuse) failed: %v", err)
 	}
 	if st := vmStatus(ctx, limactl, name); st != "Running" {
@@ -124,7 +124,7 @@ func TestOverlayReuseAndDrift_RealVM(t *testing.T) {
 	if err := os.MkdirAll(other, 0o755); err != nil {
 		t.Fatalf("mk other: %v", err)
 	}
-	if err := b.ensureRunning(ctx, limactl, name, proj, exe); err != nil {
+	if err := b.ensureRunning(ctx, limactl, name, proj, filepath.Dir(exe)); err != nil {
 		t.Fatalf("run3 drift recreate failed: %v", err)
 	}
 	if err := guestWrite("r3.txt", "run3"); err != nil {
