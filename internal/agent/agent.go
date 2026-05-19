@@ -765,6 +765,16 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 			toolCalls = inline
 		}
 	}
+	// Second fallback: Qwen3 thinking-style templates on llama.cpp wrap the
+	// tool call *inside* the reasoning channel, so it never reaches content
+	// (and the structured tool_calls channel stays empty too). Recover it
+	// from reasoning as a last resort. We discard the cleaned reasoning text
+	// either way — reasoning is intentionally never persisted to history.
+	if len(toolCalls) == 0 && reasoning.Len() > 0 {
+		if _, inline := llm.ParseInlineToolCalls(reasoning.String()); len(inline) > 0 {
+			toolCalls = inline
+		}
+	}
 
 	asst := llm.Message{Role: "assistant", Content: contentStr}
 	if len(toolCalls) > 0 {
