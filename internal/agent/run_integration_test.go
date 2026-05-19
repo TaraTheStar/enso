@@ -325,3 +325,62 @@ func TestRunOneShot_DenyPatternBlocksTool(t *testing.T) {
 		t.Errorf("denied tool must not run, but got %d calls", got)
 	}
 }
+
+// TestRunOneShot_InlineToolCallLeakedIntoReasoning is a regression test
+// for Qwen3 thinking-style chat templates on llama.cpp that emit the
+// tool call as pseudo-XML inside the reasoning_content channel instead
+// of via the structured tool_calls channel or even the content channel.
+// Before the second fallback in turn(), this surfaced as "model produced
+// no visible response" because the inline parser only ran over content.
+// The recovered call must execute and the turn must complete normally.
+func TestRunOneShot_InlineToolCallLeakedIntoReasoning(t *testing.T) {
+	mock := llmtest.NewT(t)
+
+	// Turn 1: no Text, no structured ToolCalls — the call only exists
+	// as inline pseudo-XML buried in the reasoning stream.
+	mock.Push(llmtest.Script{Reasoning: "Let me echo that.\n" +
+		"<tool_call>\n" +
+		"<function=echo>\n" +
+		"<parameter=text>hi from reasoning</parameter>\n" +
+		"</function>\n" +
+		"</tool_call>\n"})
+	// Turn 2: model produces the final reply.
+	mock.Push(llmtest.Script{Text: "tool said: echoed: hi from reasoning"})
+
+	tool := &recordTool{}
+	registry := tools.NewRegistry()
+	registry.Register(tool)
+
+	checker := permissions.NewChecker(nil, nil, nil, "allow")
+
+	a, err := New(Config{
+		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		DefaultProvider: "test",
+		Bus:             bus.New(),
+		Registry:        registry,
+		Perms:           checker,
+		Cwd:             t.TempDir(),
+		MaxTurns:        10,
+	})
+	if err != nil {
+		t.Fatalf("new agent: %v", err)
+	}
+
+	final, err := a.RunOneShot(context.Background(), "please echo hi")
+	if err != nil {
+		t.Fatalf("RunOneShot: %v", err)
+	}
+
+	if got := len(tool.calls); got != 1 {
+		t.Fatalf("inline call leaked into reasoning was not recovered: want 1 tool call, got %d", got)
+	}
+	if tool.calls[0]["text"] != "hi from reasoning" {
+		t.Errorf("tool args lost in reasoning recovery: %+v", tool.calls[0])
+	}
+	if !strings.Contains(final, "echoed: hi from reasoning") {
+		t.Errorf("final answer missing tool output: %q", final)
+	}
+	if mock.CallCount() != 2 {
+		t.Errorf("want 2 model turns, got %d", mock.CallCount())
+	}
+}
