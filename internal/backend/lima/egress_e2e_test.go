@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -68,7 +69,7 @@ func TestSealedGuestEgress_RealVM(t *testing.T) {
 	defer cancel()
 
 	b := &Backend{Sealed: true}
-	if err := b.ensureRunning(ctx, limactl, name, proj, exe); err != nil {
+	if err := b.ensureRunning(ctx, limactl, name, proj, filepath.Dir(exe)); err != nil {
 		// Bring-up failure is an environment limit (image download,
 		// KVM, lima too old), NOT a seal bug — the seal is unit-tested.
 		t.Skipf("Lima VM could not be brought up on this host (environment, not enso): %v", err)

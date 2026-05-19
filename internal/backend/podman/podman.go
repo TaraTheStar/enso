@@ -123,7 +123,7 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 	// host's live build output: a rebuild overwriting it in place can
 	// corrupt the running container's mmap of the binary (invalid
 	// runtime symbol table). Content-addressed → copied at most once.
-	if exe, err = exestage.Stage(exe); err != nil {
+	if exe, _, err = exestage.Stage(exe); err != nil {
 		return nil, fmt.Errorf("podman: stage executable: %w", err)
 	}
 	if b.Image == "" {

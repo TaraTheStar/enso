@@ -158,12 +158,17 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 		return nil, fmt.Errorf("lima: abs executable: %w", err)
 	}
 	// Exec an IMMUTABLE content-addressed snapshot, never the host's
-	// live build output: a persistent VM 9p-mounts this dir read-only,
-	// and a host rebuild overwriting the original in place would
-	// corrupt the running guest's mmap (invalid runtime symbol table).
-	// A rebuilt binary hashes differently → new path → buildVMConfig
-	// changes → drift-recreate rebuilds the VM cleanly.
-	if exe, err = exestage.Stage(exe); err != nil {
+	// live build output: a host rebuild overwriting the original in
+	// place would corrupt a running guest's mmap (invalid runtime
+	// symbol table). We 9p-mount the STABLE snapshot ROOT (exeMount,
+	// constant across rebuilds) read-only and exec the content-addressed
+	// path WITHIN it. The mount is in the drift-keyed YAML; the exec
+	// path is only the shell argv — so a rebuild does NOT drift-recreate
+	// the persistent VM (a full ~10s cold boot per `make build`). The
+	// new binary still reaches the guest: it appears as a fresh <hash>
+	// subdir under the already-mounted root and the next shell execs it.
+	var exeMount string
+	if exe, exeMount, err = exestage.Stage(exe); err != nil {
 		return nil, fmt.Errorf("lima: stage executable: %w", err)
 	}
 	if spec.Cwd == "" {
@@ -176,7 +181,7 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 
 	name := vmName(spec.Cwd)
 
-	if err := b.ensureRunning(ctx, limactl, name, spec.Cwd, exe); err != nil {
+	if err := b.ensureRunning(ctx, limactl, name, spec.Cwd, exeMount); err != nil {
 		return nil, err
 	}
 
@@ -268,14 +273,14 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 // ensureRunning brings the per-project VM to a running state with the
 // correct mounts: created (from generated YAML) if absent, resumed if
 // stopped, left alone if already running.
-func (b *Backend) ensureRunning(ctx context.Context, limactl, name, cwd, exe string) error {
+func (b *Backend) ensureRunning(ctx context.Context, limactl, name, cwd, exeMount string) error {
 	dir, err := paths.RuntimeDir()
 	if err != nil {
 		return fmt.Errorf("lima: runtime dir: %w", err)
 	}
 	ldir := filepath.Join(dir, "lima")
 	yp := filepath.Join(ldir, name+".yaml")
-	desired := b.buildVMConfig(cwd, exe)
+	desired := b.buildVMConfig(cwd, exeMount)
 
 	status := vmStatus(ctx, limactl, name)
 	if status != "" && configDrifted(yp, desired) {
@@ -408,6 +413,26 @@ func resolveBase(tmpl string) (base string, alpine bool) {
 	return "template:_images/" + tmpl, strings.EqualFold(tmpl, "alpine")
 }
 
+// bootSpeedupScript zeroes the guest bootloader's interactive menu
+// wait. Lima's Alpine image ships a ~10s GRUB serial-console countdown;
+// patching it (effective NEXT boot) means a persistent VM eats that
+// only on its very first cold boot. Purely cosmetic, so every step is
+// guarded and the script always exits 0 — it must never fail an
+// otherwise-good boot. Idempotent (re-applied each boot, harmless).
+// Handles GRUB (grub.cfg + /etc/default/grub) and the extlinux variant
+// some Alpine builds use.
+const bootSpeedupScript = `if [ -f /boot/grub/grub.cfg ]; then
+  sed -i -e 's/^set timeout=.*/set timeout=0/' -e 's/^set timeout_style=.*/set timeout_style=hidden/' /boot/grub/grub.cfg || true
+fi
+if [ -f /etc/default/grub ]; then
+  sed -i -e 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' -e 's/^GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=hidden/' /etc/default/grub || true
+  grep -q '^GRUB_TIMEOUT=' /etc/default/grub || echo 'GRUB_TIMEOUT=0' >> /etc/default/grub
+fi
+if [ -f /boot/extlinux.conf ]; then
+  sed -i -e 's/^TIMEOUT .*/TIMEOUT 0/' -e 's/^PROMPT .*/PROMPT 0/' /boot/extlinux.conf || true
+fi
+true`
+
 // buildVMConfig is the pure Lima instance-YAML builder (unit-tested
 // without limactl). It inherits ONLY an image (template:_images/<distro>
 // — no mounts) and pins exactly what isolation/identity requires:
@@ -427,7 +452,7 @@ func resolveBase(tmpl string) (base string, alpine bool) {
 //   - sealed: the worker dials no model (inference is host-proxied over
 //     the Channel) and the guest egress is firewalled default-deny at
 //     launch (Start → sealGuestEgress).
-func (b *Backend) buildVMConfig(cwd, exe string) string {
+func (b *Backend) buildVMConfig(cwd, exeMount string) string {
 	base, alpine := resolveBase(b.Template)
 
 	src := cwd
@@ -448,25 +473,38 @@ func (b *Backend) buildVMConfig(cwd, exe string) string {
 		fmt.Fprintf(&sb, "disk: %q\n", b.Disk)
 	}
 	sb.WriteString("containerd:\n  system: false\n  user: false\n")
-	// Mounts: project WRITABLE at its real path + enso binary dir
-	// READ-ONLY. No `~`: host $HOME is never exposed (see the doc
-	// comment). ExtraMounts are project-declared, read-only.
+	// Mounts: project WRITABLE at its real path + the STABLE enso
+	// snapshot ROOT (exestage's exe/ parent) READ-ONLY. The root — not
+	// the per-build <hash> dir — is mounted so this YAML is invariant
+	// across host rebuilds (no drift-recreate; the guest still execs
+	// the fresh content-addressed path within it, via buildShellArgs).
+	// No `~`: host $HOME is never exposed (see the doc comment).
+	// ExtraMounts are project-declared, read-only.
 	sb.WriteString("mounts:\n")
 	fmt.Fprintf(&sb, "  - location: %q\n    mountPoint: %q\n    writable: true\n", src, cwd)
-	fmt.Fprintf(&sb, "  - location: %q\n    writable: false\n", filepath.Dir(exe))
+	fmt.Fprintf(&sb, "  - location: %q\n    writable: false\n", exeMount)
 	for _, m := range b.ExtraMounts {
 		fmt.Fprintf(&sb, "  - location: %q\n    writable: false\n", m)
 	}
 	// Provisioning. Each entry is a `mode: system` script (root, before
 	// the worker starts) with `set -e` so a failure aborts loudly:
-	//   1. iptables bootstrap — sealed + Alpine only. The Alpine cloud
+	//   1. bootloader timeout zero-out — Alpine only. Lima's Alpine
+	//      image defaults to a ~10s GRUB serial-console countdown; this
+	//      takes effect on the NEXT boot, so combined with the no-drift
+	//      mount above the persistent VM boots slow at most ONCE. Purely
+	//      cosmetic, so it is best-effort and never fails the boot (its
+	//      own entry; cannot strand the seal even if it somehow errors).
+	//   2. iptables bootstrap — sealed + Alpine only. The Alpine cloud
 	//      image ships no iptables, but Start→sealGuestEgress needs it
 	//      or it REFUSES to launch. Ubuntu/Debian images already carry
 	//      it, so this is skipped there. It is a separate, earlier step
 	//      than user init so a broken user init can't strand the seal.
-	//   2. user [backend.lima] init — all lines in one script so a
+	//   3. user [backend.lima] init — all lines in one script so a
 	//      `cd`/env set carries across them.
 	var scripts []string
+	if alpine {
+		scripts = append(scripts, bootSpeedupScript)
+	}
 	if b.Sealed && alpine {
 		scripts = append(scripts, "apk add --no-cache iptables")
 	}
