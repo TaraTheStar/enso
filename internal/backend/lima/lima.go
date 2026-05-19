@@ -217,21 +217,50 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 	// together and decouples them from a terminal-close SIGHUP to enso.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	diag := &ringBuffer{max: 8 << 10}
-	cmd.Stderr = io.MultiWriter(os.Stderr, diag)
+	// Own the stderr pipe; do NOT hand os/exec an io.Writer for it.
+	// With a non-*os.File Stderr, os/exec spawns a copy goroutine and
+	// cmd.Wait() blocks until that goroutine returns. Lima's ssh
+	// ControlMaster persists past `limactl shell` (ssh.config sets
+	// ControlPersist) as a backgrounded `ssh.sock [mux]` in its own
+	// session: Teardown's process-group kill cannot reap it (it's
+	// Lima's — it dies on `enso prune`/VM stop, by design). That
+	// surviving mux inherits and holds the stderr-pipe write end open
+	// forever, so the copy goroutine never EOFs, cmd.Wait() never
+	// returns, Teardown's <-done blocks, and enso (hence the user's
+	// terminal) can't exit. Passing an *os.File write end hands the fd
+	// to the child directly with NO join goroutine, so Wait returns
+	// when limactl exits regardless of the lingering mux. We copy the
+	// read end ourselves and close it in Teardown to end that goroutine
+	// (it won't EOF on its own — the mux still holds the write end).
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		return nil, fmt.Errorf("lima: stderr pipe: %w", err)
+	}
+	cmd.Stderr = errW
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		errR.Close()
+		errW.Close()
 		return nil, fmt.Errorf("lima: stdin pipe: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		errR.Close()
+		errW.Close()
 		return nil, fmt.Errorf("lima: stdout pipe: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
+		errR.Close()
+		errW.Close()
 		return nil, fmt.Errorf("lima: start shell: %w", err)
 	}
+	// The child (and any ssh master it forks) now holds the write end;
+	// drop ours so a stuck reader is never us keeping the pipe alive.
+	_ = errW.Close()
+	go func() { _, _ = io.Copy(io.MultiWriter(os.Stderr, diag), errR) }()
 
-	w := &limaWorker{cmd: cmd, diag: diag}
+	w := &limaWorker{cmd: cmd, diag: diag, errR: errR}
 	w.ch = backend.NewStreamChannelRW(stdout, stdin, &pipePair{stdin, stdout})
 	return w, nil
 }
@@ -558,6 +587,10 @@ type limaWorker struct {
 	ch   backend.Channel
 	once sync.Once
 	diag *ringBuffer
+	// errR is the read end of the stderr pipe we own (see Start). Closed
+	// in Teardown to end the copy goroutine: a persisted ssh mux keeps
+	// the write end, so it never EOFs by itself.
+	errR *os.File
 }
 
 func (w *limaWorker) Channel() backend.Channel { return w.ch }
@@ -603,6 +636,14 @@ func (w *limaWorker) Wait(ctx context.Context) error {
 func (w *limaWorker) Teardown(ctx context.Context) error {
 	w.once.Do(func() {
 		_ = w.ch.Close()
+		// End the stderr copy goroutine. The persisted ssh mux still
+		// holds the write end, so the read end never EOFs on its own;
+		// closing it here unblocks io.Copy. cmd.Stderr is an *os.File,
+		// so cmd.Wait() does not itself join on this — it returns once
+		// limactl exits, even with the mux still alive.
+		if w.errR != nil {
+			_ = w.errR.Close()
+		}
 		p := w.cmd.Process
 		if p == nil {
 			return
