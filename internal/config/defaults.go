@@ -19,6 +19,70 @@ top_p = 0.95
 min_p = 0.0
 presence_penalty = 1.5
 
+# --- cloud providers (uncomment to enable) ----------------------------
+#
+# 'type' selects the vendor adapter. Omit (or set "openai") for any
+# OpenAI-compatible endpoint — llama.cpp, vLLM, Ollama, Groq, OpenAI
+# proper, OpenRouter, Together, Fireworks. Other types reach hosted
+# providers that don't speak the OpenAI wire format.
+#
+# All hosted endpoints below take their key via $ENSO_* env-var
+# indirection — references resolve at config load, so no secrets land
+# on disk.
+#
+# [providers.openai]
+# type     = "openai"
+# endpoint = "https://api.openai.com/v1"
+# model    = "gpt-4o"
+# api_key  = "$ENSO_OPENAI_KEY"
+#
+# [providers.groq]
+# type     = "openai"
+# endpoint = "https://api.groq.com/openai/v1"
+# model    = "llama-3.3-70b-versatile"
+# api_key  = "$ENSO_GROQ_KEY"
+#
+# [providers.openrouter]
+# type     = "openai"
+# endpoint = "https://openrouter.ai/api/v1"
+# model    = "anthropic/claude-3.5-sonnet"
+# api_key  = "$ENSO_OPENROUTER_KEY"
+#
+# [providers.together]
+# type     = "openai"
+# endpoint = "https://api.together.xyz/v1"
+# model    = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+# api_key  = "$ENSO_TOGETHER_KEY"
+#
+# AWS Bedrock — multi-vendor. Claude, Nova, Llama, Mistral, Cohere,
+# and AI21 are all reachable through this one adapter; the model id
+# picks which. Auth follows the standard AWS credential chain (env
+# vars, ~/.aws/credentials, EC2/ECS/EKS instance role); aws_region
+# and aws_profile override it. Model ids are Bedrock's (often a region
+# prefix or version suffix, distinct from api.anthropic.com) or an
+# inference-profile ARN.
+#
+# [providers.bedrock-claude]
+# type       = "bedrock"
+# model      = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+# aws_region = "us-east-1"
+# # Optional: enable Claude's extended-thinking blocks. Reasoning
+# # surfaces through the same channel the TUI already renders for
+# # OpenAI reasoning models. Anthropic-only — the API rejects this
+# # flag for non-Claude Bedrock models.
+# extended_thinking        = true
+# extended_thinking_budget = 8000
+#
+# [providers.bedrock-nova]
+# type       = "bedrock"
+# model      = "amazon.nova-pro-v1:0"
+# aws_region = "us-east-1"
+#
+# [providers.bedrock-llama]
+# type       = "bedrock"
+# model      = "meta.llama3-1-70b-instruct-v1:0"
+# aws_region = "us-east-1"
+
 [permissions]
 # Default permission mode for un-matched calls: "prompt" | "allow" | "deny".
 mode = "prompt"

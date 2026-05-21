@@ -499,6 +499,11 @@ type HooksConfig struct {
 
 // ProviderConfig holds settings for a single LLM endpoint.
 type ProviderConfig struct {
+	// Type selects the vendor adapter. Empty (default) means "openai",
+	// which covers OpenAI proper and any OpenAI-compat endpoint
+	// (llama.cpp / vLLM / Groq / OpenRouter / Together / Fireworks).
+	// Other adapters are added as they land.
+	Type string `toml:"type"`
 	// Endpoint + APIKey are worker:"deny" — inference is host-proxied,
 	// so the worker never dials a model and must never receive either
 	// (the credential-scrub invariant, enforced by ScrubbedForWorker).
@@ -530,6 +535,38 @@ type ProviderConfig struct {
 	//   output_price_per_million = 10.00
 	InputPricePerMillion  float64 `toml:"input_price_per_million"`
 	OutputPricePerMillion float64 `toml:"output_price_per_million"`
+
+	// MaxTokens caps the model's response length. Optional for OpenAI
+	// (only sent when non-zero); required by Bedrock's Converse API,
+	// which defaults to 4096 when this field is zero.
+	MaxTokens int64 `toml:"max_tokens"`
+
+	// ExtendedThinking enables Claude's extended-thinking blocks on
+	// Bedrock — the model surfaces its reasoning through the same
+	// EventReasoningDelta channel the TUI already renders for OpenAI
+	// reasoning models. Silently ignored by adapters that don't
+	// support it.
+	//
+	// Hard API constraints (applied automatically when enabled):
+	//   - temperature = 1 (Anthropic requirement)
+	//   - top_p unset
+	//   - budget is clamped to [1024, max_tokens)
+	ExtendedThinking bool `toml:"extended_thinking"`
+
+	// ExtendedThinkingBudget is the thinking-token budget. Must be
+	// ≥ 1024 and < max_tokens per Anthropic; defaults to 4096 when
+	// unset. Clamped silently to a legal value.
+	ExtendedThinkingBudget int64 `toml:"extended_thinking_budget"`
+
+	// AWSRegion targets a specific Bedrock region (e.g., "us-east-1").
+	// Bedrock-only — silently ignored by other adapters. Empty falls
+	// back to the AWS SDK's default chain (AWS_REGION env, profile,
+	// instance metadata).
+	AWSRegion string `toml:"aws_region"`
+
+	// AWSProfile selects a named profile from ~/.aws/credentials.
+	// Bedrock-only. Empty uses the default credential chain.
+	AWSProfile string `toml:"aws_profile"`
 }
 
 // SamplerConfig holds generation parameters.

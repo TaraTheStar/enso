@@ -69,14 +69,47 @@ presence_penalty = 1.5
 
 | Field            | Default                     | Description                                                                |
 | ---------------- | --------------------------- | -------------------------------------------------------------------------- |
-| `endpoint`       | required                    | OpenAI-compatible base URL (e.g. `http://localhost:8080/v1`).              |
-| `model`          | required                    | Model id sent to the endpoint.                                             |
+| `type`           | `"openai"`                  | Vendor adapter. `"openai"` (default) covers any OpenAI-compatible endpoint — llama.cpp, vLLM, Ollama, Groq, OpenAI proper, OpenRouter, Together, Fireworks. `"bedrock"` routes through AWS Bedrock's Converse API (multi-vendor: Claude / Nova / Llama / Mistral / Cohere / AI21). |
+| `endpoint`       | required (openai)           | OpenAI-compatible base URL (e.g. `http://localhost:8080/v1`). Not used by `type = "bedrock"` — the AWS SDK picks the regional URL. |
+| `model`          | required                    | Model id sent to the endpoint. For Bedrock, this is the Bedrock model id (`anthropic.claude-3-5-sonnet-20241022-v2:0`, `amazon.nova-pro-v1:0`) or an inference-profile ARN — distinct from `api.anthropic.com` names. |
 | `description`    | `""`                        | Short capability hint. When ≥2 providers are configured it's rendered into the auto "## Available models" prompt section so the model can route across endpoints (see `[instructions]`). |
 | `context_window` | 32768                       | Used for compaction triggers and the status-bar tokens display.            |
 | `concurrency`    | 1                           | Max in-flight chat completions when this provider is alone in its pool. Ignored once it shares a pool — set `[pools.<name>].concurrency` instead. |
 | `pool`           | auto (by endpoint)          | Pool this provider belongs to. Unset = auto-grouped with every provider sharing its `endpoint`. See `[pools.<name>]`. |
-| `api_key`        | `""`                        | Sent as `Authorization: Bearer <key>` if non-empty. Supports `$ENSO_FOO` / `${ENSO_FOO}` env-var indirection — see [Secrets]({{< relref "../docs/secrets.md" >}}). |
+| `api_key`        | `""`                        | Sent as `Authorization: Bearer <key>` if non-empty. Supports `$ENSO_FOO` / `${ENSO_FOO}` env-var indirection — see [Secrets]({{< relref "../docs/secrets.md" >}}). Not used by `type = "bedrock"`. |
+| `max_tokens`     | `0`                         | Caps response length. Optional for OpenAI (only sent when non-zero); Bedrock applies a default of 4096 when zero. |
 | `sampler.*`      | various                     | Sampler knobs. Sent in every completion request.                           |
+
+#### Bedrock-only fields (`type = "bedrock"`)
+
+| Field                       | Default       | Description                                                  |
+| --------------------------- | ------------- | ------------------------------------------------------------ |
+| `aws_region`                | SDK default   | Bedrock region (`us-east-1`, `eu-west-1`, …). Empty falls back to the AWS chain (`AWS_REGION` env / shared config / instance metadata). |
+| `aws_profile`               | `""`          | Named profile from `~/.aws/credentials`. Empty uses the default chain. |
+| `extended_thinking`         | `false`       | Claude-only. Routes the model's reasoning through the same channel the TUI already renders for OpenAI reasoning models (ephemeral — not persisted in assistant message history). Pairing with non-Claude Bedrock models gets rejected by the API. |
+| `extended_thinking_budget`  | `4096`        | Thinking-token budget. Silently clamped to `[1024, max_tokens)`. Below 1024 → 1024; at-or-above `max_tokens` → `max_tokens - 1`. |
+
+Authentication follows the standard AWS credential chain: environment
+variables, shared config (`~/.aws/credentials`), EC2/ECS/EKS instance
+role. No keys land in ensō's config file.
+
+Worked example:
+
+```toml
+[providers.bedrock-claude]
+type       = "bedrock"
+model      = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+aws_region = "us-east-1"
+extended_thinking        = true
+extended_thinking_budget = 8000
+
+[providers.bedrock-nova]
+type       = "bedrock"
+model      = "amazon.nova-pro-v1:0"
+aws_region = "us-east-1"
+```
+
+Both blocks share the one adapter; `model` picks the vendor.
 
 ## `[instructions]`
 

@@ -55,8 +55,8 @@ func okResp(body string) *http.Response {
 	}
 }
 
-func newTestClient(rt http.RoundTripper) *Client {
-	return &Client{
+func newTestClient(rt http.RoundTripper) *OpenAIClient {
+	return &OpenAIClient{
 		Endpoint:      "http://x",
 		HTTPClient:    &http.Client{Transport: rt},
 		RetryBackoff:  func(int) time.Duration { return 1 * time.Millisecond },
