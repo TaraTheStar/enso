@@ -422,7 +422,7 @@ func resolveBase(tmpl string) (base string, alpine bool) {
 // Handles GRUB (grub.cfg + /etc/default/grub) and the extlinux variant
 // some Alpine builds use.
 const bootSpeedupScript = `if [ -f /boot/grub/grub.cfg ]; then
-  sed -i -e 's/^set timeout=.*/set timeout=0/' -e 's/^set timeout_style=.*/set timeout_style=hidden/' /boot/grub/grub.cfg || true
+  sed -i -e 's/^[[:space:]]*set timeout=.*/set timeout=0/' -e 's/^[[:space:]]*set timeout_style=.*/set timeout_style=hidden/' /boot/grub/grub.cfg || true
 fi
 if [ -f /etc/default/grub ]; then
   sed -i -e 's/^GRUB_TIMEOUT=.*/GRUB_TIMEOUT=0/' -e 's/^GRUB_TIMEOUT_STYLE=.*/GRUB_TIMEOUT_STYLE=hidden/' /etc/default/grub || true

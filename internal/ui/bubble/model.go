@@ -185,17 +185,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// paste in raw mode and intentionally does nothing.)
 		//
 		// Ignore while a modal/prompt owns the keyboard, exactly as
-		// typed text is. The input is single-line by design (Enter
-		// submits), so flatten newlines to spaces: a multi-line snippet
-		// stays usable and the single-line cursor/render isn't
-		// corrupted by raw \n in the buffer.
+		// typed text is. Preserve newlines verbatim — the input
+		// supports multi-line buffers (shift+enter / alt+enter / ctrl+j
+		// insert literal \n; render soft-wraps on \n and scrolls up to
+		// maxInputLines rows). Only \r\n and bare \r are normalised to
+		// \n so the buffer's line breaks are consistent regardless of
+		// the source platform's line endings.
 		if m.pickerOpen || m.sessionsOpen || m.perm != nil || m.egress != nil || m.overlayOpen {
 			return m, nil
 		}
 		if m.input.vim && m.input.vimNormal {
 			return m, nil // normal mode is not a text-entry context
 		}
-		text := strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(msg.Content)
+		text := strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(msg.Content)
 		if text != "" {
 			m.input.insertString(text)
 		}

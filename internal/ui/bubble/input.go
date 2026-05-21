@@ -11,9 +11,12 @@ import (
 )
 
 // inputState owns the live input buffer, cursor position, and vim-mode
-// state. The input is single-line by design (Enter submits) so the
-// vim feature set here is single-line: motion (h, l, 0, $, w, b),
-// edit (x), insert (i, a, A) — j/k and friends don't apply.
+// state. The buffer can hold newlines — shift+enter/alt+enter/ctrl+j
+// insert literal \n, bracketed paste preserves them, and render
+// soft-wraps + vertically scrolls within maxInputLines. Plain Enter
+// submits the whole buffer (multi-line and all). The vim feature set
+// is still single-line in spirit: motion (h, l, 0, $, w, b), edit (x),
+// insert (i, a, A) — j/k across lines is not implemented.
 type inputState struct {
 	buf       string // raw user-typed text
 	cursor    int    // byte offset into buf; 0..len(buf) inclusive

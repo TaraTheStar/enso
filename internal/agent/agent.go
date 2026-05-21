@@ -62,6 +62,13 @@ type Agent struct {
 	// turn. Cleared after consumption.
 	nextTurnTools []string
 
+	// compactNext is the one-shot flag the `checkpoint` tool flips. The
+	// next MaybeCompact bypasses the threshold check and runs a forced
+	// compaction with compactReason as the trigger reason. Both reset
+	// after consumption.
+	compactNext   atomic.Bool
+	compactReason atomic.Pointer[string]
+
 	// estTokens caches llm.Estimate(History) so the UI goroutine can read
 	// the count without racing the agent goroutine's mutations of History.
 	// Updated on every appendMessage and after compaction.
@@ -201,6 +208,31 @@ func (a *Agent) consumeNextTurnTools() []string {
 	out := a.nextTurnTools
 	a.nextTurnTools = nil
 	return out
+}
+
+// RequestCheckpoint is the seam the `checkpoint` tool calls. It queues a
+// forced compaction for the next MaybeCompact pass (i.e. before the next
+// model completion in the current runUntilQuiescent). Reason flows into
+// the EventCompacted payload and the summariser's seed.
+func (a *Agent) RequestCheckpoint(reason string) {
+	r := reason
+	a.compactReason.Store(&r)
+	a.compactNext.Store(true)
+}
+
+// consumeCheckpointRequest returns (true, reason) once if a checkpoint
+// was requested since the last call, and (false, "") otherwise. The
+// flag and reason are cleared atomically so a single request only fires
+// one compaction.
+func (a *Agent) consumeCheckpointRequest() (bool, string) {
+	if !a.compactNext.Swap(false) {
+		return false, ""
+	}
+	rp := a.compactReason.Swap(nil)
+	if rp == nil {
+		return true, ""
+	}
+	return true, *rp
 }
 
 // EstimateTokens returns the cached token-count estimate for the current
@@ -499,6 +531,11 @@ func New(cfg Config) (*Agent, error) {
 		toolMeta:        map[int]*toolMessageMeta{},
 		providerCtx:     provCtx,
 	}
+	// Wire the checkpoint seam so the `checkpoint` tool can queue a
+	// compaction without the tools package importing internal/agent.
+	// Each Agent gets its own AgentContext via New(), so a sub-agent's
+	// checkpoint compacts only its own history.
+	ac.Checkpoint = a
 	a.refreshEstimate()
 	return a, nil
 }

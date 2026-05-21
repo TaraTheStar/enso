@@ -4,7 +4,54 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v2.5.1] - 2026-05-19
+## [v2.6.0] - 2026-05-21
+
+### Added
+- **Multi-line input in the TUI.** The input is no longer single-line.
+  `Shift-Enter` (in terminals that speak the Kitty keyboard protocol),
+  `Alt-Enter`, or `Ctrl-J` insert a literal newline; plain `Enter` still
+  submits the whole buffer. The render soft-wraps on `\n` and on width,
+  and scrolls vertically within up to three rows so the cursor stays
+  visible regardless of buffer length (#52).
+- **Model-driven checkpoints (`checkpoint` tool).** A new built-in tool
+  the model can call to declare a logical step boundary (typically right
+  after committing a finished step). The agent loop honors the request
+  before the next chat completion: it runs a forced compaction pass
+  with the supplied `reason` flowing into both the `compacted` event
+  payload and the summariser's anchor, so the next response is
+  generated against a freshly compacted history. The threshold-based
+  auto-compaction at 60% of the context window is unchanged; this is a
+  signal the model can emit at any logical boundary without waiting for
+  the context to fill.
+
+### Changed
+- **Paste preserves newlines.** Terminal bracketed paste (`Ctrl-Shift-V`
+  / `Cmd-V` / middle-click PRIMARY) previously flattened every newline
+  to a space — a holdover from the single-line input. Now `\n` is kept
+  verbatim; only `\r\n` and bare `\r` are normalised to `\n` so the
+  buffer's line endings are consistent regardless of the source
+  platform. Multi-line snippets paste as multi-line; `Enter` submits
+  the whole buffer.
+
+### Fixed
+- **Lima VMs no longer drift-recreate on every `make build`.** The
+  persistent per-project Lima VM's mount config used to drift each time
+  the host's enso binary was rebuilt — the content-addressed snapshot
+  path (`$XDG_STATE_HOME/enso/exe/<hash>/`) was mounted directly, so a
+  new hash changed the YAML and triggered a full drift-recreate (~10s
+  cold reboot per rebuild). The VM now mounts the **stable snapshot
+  root** read-only and execs the content-addressed path *within* it via
+  the shell argv: the YAML is invariant across rebuilds, the new binary
+  still reaches the guest as a fresh `<hash>` subdir, and the persistent
+  VM is preserved through host rebuilds (#54).
+- **Lima cold boots ~10s faster on Alpine.** Alpine's stock cloud image
+  ships a ~10s GRUB serial-console countdown that the persistent VM
+  paid on every cold boot. A best-effort provisioning step zeroes the
+  bootloader timeout (GRUB, `/etc/default/grub`, and the extlinux
+  variant some Alpine builds use), taking effect on the next boot. The
+  script never fails an otherwise-good boot (every step guarded; exits
+  0) and is idempotent across reboots. The GRUB regex also handles
+  the indented `set timeout=` lines real `grub.cfg` files use (#54).
 
 ### Fixed
 - **Terminal/shell hung after a Lima-backed session.** Closing the
@@ -558,6 +605,7 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
+[v2.6.0]: https://github.com/TaraTheStar/enso/compare/v2.5.0...v2.6.0
 [v2.5.0]: https://github.com/TaraTheStar/enso/compare/v2.4.0...v2.5.0
 [v2.4.0]: https://github.com/TaraTheStar/enso/compare/v2.3.0...v2.4.0
 [v2.3.0]: https://github.com/TaraTheStar/enso/compare/v2.2.0...v2.3.0
