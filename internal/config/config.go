@@ -567,6 +567,18 @@ type ProviderConfig struct {
 	// AWSProfile selects a named profile from ~/.aws/credentials.
 	// Bedrock-only. Empty uses the default credential chain.
 	AWSProfile string `toml:"aws_profile"`
+
+	// GCPProject is the Google Cloud project ID Vertex routes through
+	// (e.g., "my-org-prod"). Vertex-only — silently ignored by other
+	// adapters. Empty falls back to the GOOGLE_CLOUD_PROJECT env var
+	// the genai SDK consults; if that is also empty the SDK returns
+	// an error at first use.
+	GCPProject string `toml:"gcp_project"`
+
+	// GCPLocation is the Vertex region (e.g., "us-central1",
+	// "europe-west4"). Vertex-only. Empty defaults to "us-central1",
+	// which hosts every Gemini variant.
+	GCPLocation string `toml:"gcp_location"`
 }
 
 // SamplerConfig holds generation parameters.

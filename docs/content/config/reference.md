@@ -69,15 +69,15 @@ presence_penalty = 1.5
 
 | Field            | Default                     | Description                                                                |
 | ---------------- | --------------------------- | -------------------------------------------------------------------------- |
-| `type`           | `"openai"`                  | Vendor adapter. `"openai"` (default) covers any OpenAI-compatible endpoint — llama.cpp, vLLM, Ollama, Groq, OpenAI proper, OpenRouter, Together, Fireworks. `"bedrock"` routes through AWS Bedrock's Converse API (multi-vendor: Claude / Nova / Llama / Mistral / Cohere / AI21). |
-| `endpoint`       | required (openai)           | OpenAI-compatible base URL (e.g. `http://localhost:8080/v1`). Not used by `type = "bedrock"` — the AWS SDK picks the regional URL. |
-| `model`          | required                    | Model id sent to the endpoint. For Bedrock, this is the Bedrock model id (`anthropic.claude-3-5-sonnet-20241022-v2:0`, `amazon.nova-pro-v1:0`) or an inference-profile ARN — distinct from `api.anthropic.com` names. |
+| `type`           | `"openai"`                  | Vendor adapter. `"openai"` (default) covers any OpenAI-compatible endpoint — llama.cpp, vLLM, Ollama, Groq, OpenAI proper, OpenRouter, Together, Fireworks. `"bedrock"` routes through AWS Bedrock's Converse API (multi-vendor: Claude / Nova / Llama / Mistral / Cohere / AI21). `"vertex"` routes through GCP Vertex AI's generateContent API (Gemini family). |
+| `endpoint`       | required (openai)           | OpenAI-compatible base URL (e.g. `http://localhost:8080/v1`). Not used by `type = "bedrock"` or `type = "vertex"` — the AWS/GCP SDKs pick the regional URL. |
+| `model`          | required                    | Model id sent to the endpoint. For Bedrock, this is the Bedrock model id (`anthropic.claude-3-5-sonnet-20241022-v2:0`, `amazon.nova-pro-v1:0`) or an inference-profile ARN — distinct from `api.anthropic.com` names. For Vertex, this is the Gemini model id (`gemini-2.5-pro`, `gemini-2.5-flash`). |
 | `description`    | `""`                        | Short capability hint. When ≥2 providers are configured it's rendered into the auto "## Available models" prompt section so the model can route across endpoints (see `[instructions]`). |
 | `context_window` | 32768                       | Used for compaction triggers and the status-bar tokens display.            |
 | `concurrency`    | 1                           | Max in-flight chat completions when this provider is alone in its pool. Ignored once it shares a pool — set `[pools.<name>].concurrency` instead. |
 | `pool`           | auto (by endpoint)          | Pool this provider belongs to. Unset = auto-grouped with every provider sharing its `endpoint`. See `[pools.<name>]`. |
-| `api_key`        | `""`                        | Sent as `Authorization: Bearer <key>` if non-empty. Supports `$ENSO_FOO` / `${ENSO_FOO}` env-var indirection — see [Secrets]({{< relref "../docs/secrets.md" >}}). Not used by `type = "bedrock"`. |
-| `max_tokens`     | `0`                         | Caps response length. Optional for OpenAI (only sent when non-zero); Bedrock applies a default of 4096 when zero. |
+| `api_key`        | `""`                        | Sent as `Authorization: Bearer <key>` if non-empty. Supports `$ENSO_FOO` / `${ENSO_FOO}` env-var indirection — see [Secrets]({{< relref "../docs/secrets.md" >}}). Not used by `type = "bedrock"` or `type = "vertex"`. |
+| `max_tokens`     | `0`                         | Caps response length. Optional for OpenAI (only sent when non-zero); Bedrock applies a default of 4096 when zero; Vertex applies 8192. |
 | `sampler.*`      | various                     | Sampler knobs. Sent in every completion request.                           |
 
 #### Bedrock-only fields (`type = "bedrock"`)
@@ -110,6 +110,43 @@ aws_region = "us-east-1"
 ```
 
 Both blocks share the one adapter; `model` picks the vendor.
+
+#### Vertex-only fields (`type = "vertex"`)
+
+| Field                       | Default       | Description                                                  |
+| --------------------------- | ------------- | ------------------------------------------------------------ |
+| `gcp_project`               | `$GOOGLE_CLOUD_PROJECT` | GCP project ID Vertex routes through. Empty falls back to the `GOOGLE_CLOUD_PROJECT` env var; if both are empty the SDK errors on first use. |
+| `gcp_location`              | `us-central1` | Vertex region (`us-central1`, `europe-west4`, …). `us-central1` hosts every Gemini variant. |
+| `extended_thinking`         | `false`       | Gemini 2.5+. Enables `IncludeThoughts` so the model returns Thought parts; ensō routes them to the same channel the TUI already renders for OpenAI reasoning models. Ephemeral — not persisted in assistant message history. Older Gemini variants silently ignore this. |
+| `extended_thinking_budget`  | `0` (dynamic) | Thinking-token cap. `0` leaves Gemini's dynamic-thinking mode in effect; positive values pin a budget. Unlike Anthropic on Bedrock, ensō does NOT clamp temperature or top_p — Gemini has no such constraints. |
+
+Authentication follows Google Application Default Credentials:
+`GOOGLE_APPLICATION_CREDENTIALS` env var pointing at a service-account
+JSON, `gcloud auth application-default login` on a workstation, or the
+GCE / GKE / Cloud Run metadata server in deployed environments. No
+keys land in ensō's config file.
+
+Anthropic Claude on Vertex AI uses a different `:rawPredict` shape and
+is **not** covered by this adapter — track its arrival under the parked
+anthropic adapters.
+
+Worked example:
+
+```toml
+[providers.vertex-gemini]
+type         = "vertex"
+model        = "gemini-2.5-pro"
+gcp_project  = "my-gcp-project"
+gcp_location = "us-central1"
+extended_thinking        = true
+extended_thinking_budget = 0           # leaves Gemini's dynamic mode in effect
+
+[providers.vertex-flash]
+type         = "vertex"
+model        = "gemini-2.5-flash"
+gcp_project  = "my-gcp-project"
+gcp_location = "us-central1"
+```
 
 ## `[instructions]`
 
