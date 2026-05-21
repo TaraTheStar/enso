@@ -44,6 +44,10 @@ type WizardPreset struct {
 	// AWSRegion is the default region for Bedrock-flavored presets.
 	// Only consulted when Type == "bedrock".
 	AWSRegion string
+
+	// GCPLocation is the default region for Vertex-flavored presets.
+	// Only consulted when Type == "vertex".
+	GCPLocation string
 }
 
 // wizardPresets is the small curated list the onboarding wizard
@@ -90,20 +94,32 @@ var wizardPresets = []WizardPreset{
 		ContextWindow: 200000,
 		AWSRegion:     "us-east-1",
 	},
+	{
+		Name:          "vertex",
+		DisplayName:   "vertex        (GCP — Gemini family)",
+		Type:          "vertex",
+		Model:         "gemini-2.5-pro",
+		ContextWindow: 1048576,
+		GCPLocation:   "us-central1",
+	},
 }
 
 // WizardResult is the structured output of RunWizard — what the user
 // chose, before serialisation. Exposed so callers can log / test
 // without re-parsing the generated TOML.
 type WizardResult struct {
-	Preset   string // "llamacpp" / "ollama" / "openai" / "bedrock" / "custom"
+	Preset   string // "llamacpp" / "ollama" / "openai" / "bedrock" / "vertex" / "custom"
 	Type     string // matches ProviderConfig.Type; "" for OpenAI-compat
-	Endpoint string // empty for type="bedrock" (AWS SDK picks regional endpoint)
+	Endpoint string // empty for type="bedrock"/"vertex" (SDK picks endpoint)
 	Model    string
 	APIKey   string // literal key OR "$ENV_VAR_NAME"; empty means no auth
 
 	// AWSRegion is populated only when Type == "bedrock".
 	AWSRegion string
+
+	// GCPProject + GCPLocation are populated only when Type == "vertex".
+	GCPProject  string
+	GCPLocation string
 }
 
 // RunWizard reads choices from `in`, writes prompts to `out`, and
@@ -152,6 +168,9 @@ func RunWizard(in io.Reader, out io.Writer) (WizardResult, string, error) {
 	// rather than inflating the shared flow with conditionals.
 	if preset.Type == "bedrock" {
 		return runBedrockBranch(p, out, preset)
+	}
+	if preset.Type == "vertex" {
+		return runVertexBranch(p, out, preset)
 	}
 
 	endpoint := p.ask("Endpoint URL", preset.Endpoint)
@@ -234,6 +253,73 @@ func runBedrockBranch(p *prompter, out io.Writer, preset WizardPreset) (WizardRe
 	}
 	tomlOut := buildBedrockWizardTOML(preset.Name, model, region, preset.ContextWindow)
 	return result, tomlOut, nil
+}
+
+// runVertexBranch handles the GCP Vertex AI onboarding path. Like
+// Bedrock, Vertex has no user-set endpoint (the SDK resolves the
+// regional URL) and no API key — auth is Google Application Default
+// Credentials (env var, gcloud, GCE metadata). The user picks a model,
+// project, and region.
+func runVertexBranch(p *prompter, out io.Writer, preset WizardPreset) (WizardResult, string, error) {
+	fmt.Fprintln(out, "Vertex AI uses Google Application Default Credentials")
+	fmt.Fprintln(out, "(GOOGLE_APPLICATION_CREDENTIALS env, `gcloud auth application-")
+	fmt.Fprintln(out, "default login`, or GCE/GKE metadata). No API key is collected")
+	fmt.Fprintln(out, "by this wizard.")
+	fmt.Fprintln(out)
+
+	model := p.ask("Vertex model ID", preset.Model)
+	project := p.ask("GCP project ID", "")
+	location := p.ask("GCP location", preset.GCPLocation)
+
+	result := WizardResult{
+		Preset:      preset.Name,
+		Type:        "vertex",
+		Model:       model,
+		GCPProject:  project,
+		GCPLocation: location,
+	}
+	tomlOut := buildVertexWizardTOML(preset.Name, model, project, location, preset.ContextWindow)
+	return result, tomlOut, nil
+}
+
+// buildVertexWizardTOML emits a Vertex provider block. No endpoint, no
+// api_key. Extended-thinking is pre-baked as a commented hint so users
+// trying Gemini 2.5 can flip it on without hunting through docs — the
+// semantics differ from Anthropic's (no temperature/top_p clamp, and
+// budget=0 leaves Gemini's dynamic mode in effect).
+func buildVertexWizardTOML(name, model, project, location string, ctxWindow int) string {
+	var b strings.Builder
+	b.WriteString("# enso configuration\n# Written on first run; edit as needed.\n\n")
+	fmt.Fprintf(&b, "[providers.%s]\n", name)
+	b.WriteString("type = \"vertex\"\n")
+	fmt.Fprintf(&b, "model = %q\n", model)
+	if project != "" {
+		fmt.Fprintf(&b, "gcp_project = %q\n", project)
+	} else {
+		b.WriteString("# gcp_project = \"my-gcp-project\"   # or set GOOGLE_CLOUD_PROJECT\n")
+	}
+	fmt.Fprintf(&b, "gcp_location = %q\n", location)
+	if ctxWindow == 0 {
+		ctxWindow = 1048576
+	}
+	fmt.Fprintf(&b, "context_window = %d\n", ctxWindow)
+	b.WriteString("concurrency = 1\n")
+	b.WriteString("# Auth follows Google Application Default Credentials:\n")
+	b.WriteString("#   - GOOGLE_APPLICATION_CREDENTIALS pointing at a service-account JSON,\n")
+	b.WriteString("#   - `gcloud auth application-default login` for workstation use,\n")
+	b.WriteString("#   - or the GCE / GKE / Cloud Run metadata server when deployed.\n")
+	b.WriteString("\n")
+	b.WriteString("# Optional: surface Gemini 2.5's thinking output through the same\n")
+	b.WriteString("# channel the TUI already renders for OpenAI reasoning models.\n")
+	b.WriteString("# budget = 0 leaves Gemini's dynamic mode in effect; positive\n")
+	b.WriteString("# values pin a thinking-token cap.\n")
+	b.WriteString("# extended_thinking        = true\n")
+	b.WriteString("# extended_thinking_budget = 0\n\n")
+
+	if idx := strings.Index(defaultTOML, "[permissions]"); idx >= 0 {
+		b.WriteString(defaultTOML[idx:])
+	}
+	return b.String()
 }
 
 // buildBedrockWizardTOML produces the final config text for the
