@@ -82,6 +82,30 @@ presence_penalty = 1.5
 # type       = "bedrock"
 # model      = "meta.llama3-1-70b-instruct-v1:0"
 # aws_region = "us-east-1"
+#
+# GCP Vertex AI — Gemini family. Auth follows Google Application
+# Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud auth
+# application-default login, or GCE/GKE metadata). gcp_project is
+# required (or set GOOGLE_CLOUD_PROJECT in the environment). Claude
+# on Vertex uses a different :rawPredict shape and isn't covered by
+# this adapter — track its arrival under the parked anthropic types.
+#
+# [providers.vertex-gemini]
+# type         = "vertex"
+# model        = "gemini-2.5-pro"
+# gcp_project  = "my-gcp-project"
+# gcp_location = "us-central1"
+# # Optional: enable Gemini 2.5's thinking output. Routes through the
+# # same channel the TUI already renders for OpenAI reasoning models.
+# # Budget = 0 leaves Gemini's dynamic mode in effect.
+# extended_thinking        = true
+# extended_thinking_budget = 0
+#
+# [providers.vertex-flash]
+# type         = "vertex"
+# model        = "gemini-2.5-flash"
+# gcp_project  = "my-gcp-project"
+# gcp_location = "us-central1"
 
 [permissions]
 # Default permission mode for un-matched calls: "prompt" | "allow" | "deny".

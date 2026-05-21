@@ -90,12 +90,12 @@ func TestRunWizard_OpenAINoneSkipsKey(t *testing.T) {
 }
 
 func TestRunWizard_CustomFullPath(t *testing.T) {
-	// Choice 5 = custom (1 llamacpp / 2 ollama / 3 openai / 4 bedrock
-	// / 5 custom). User types every value. Exercises the branch where
-	// there are no preset defaults and the wizard asks for a section
-	// name and context window.
+	// Choice 6 = custom (1 llamacpp / 2 ollama / 3 openai / 4 bedrock
+	// / 5 vertex / 6 custom). User types every value. Exercises the
+	// branch where there are no preset defaults and the wizard asks
+	// for a section name and context window.
 	input := strings.Join([]string{
-		"5",                       // preset choice = custom
+		"6",                       // preset choice = custom
 		"https://example.test/v1", // endpoint
 		"my-model",                // model
 		"openrouter",              // section name
@@ -205,6 +205,102 @@ func TestRunWizard_BedrockCustomRegion(t *testing.T) {
 	}
 }
 
+// TestRunWizard_VertexDefaults exercises the Vertex branch with all
+// defaults: choice 5, Enter through model + project + region. Confirms
+// the branch skips the endpoint + api_key prompts entirely and writes
+// a Vertex-shaped provider section (no endpoint, type = "vertex",
+// gcp_location set).
+func TestRunWizard_VertexDefaults(t *testing.T) {
+	// Choice 5 = vertex. Defaults for model + location; project must
+	// be supplied explicitly (no sensible default).
+	input := strings.Join([]string{
+		"5",              // preset = vertex
+		"",               // model (default)
+		"my-project-123", // GCP project
+		"",               // location (default us-central1)
+	}, "\n") + "\n"
+	r, body := runWizardScripted(t, input)
+	if r.Preset != "vertex" {
+		t.Errorf("preset=%q, want 'vertex'", r.Preset)
+	}
+	if r.Type != "vertex" {
+		t.Errorf("type=%q, want 'vertex'", r.Type)
+	}
+	if r.Endpoint != "" {
+		t.Errorf("endpoint=%q, want empty (Vertex has no user endpoint)", r.Endpoint)
+	}
+	if r.APIKey != "" {
+		t.Errorf("Vertex branch must NOT collect an API key, got %q", r.APIKey)
+	}
+	if r.GCPProject != "my-project-123" {
+		t.Errorf("GCPProject=%q, want my-project-123", r.GCPProject)
+	}
+	if r.GCPLocation != "us-central1" {
+		t.Errorf("GCPLocation=%q, want us-central1 default", r.GCPLocation)
+	}
+	if !strings.Contains(body, `type = "vertex"`) {
+		t.Errorf("rendered TOML missing type=vertex: %s", body)
+	}
+	if !strings.Contains(body, `gcp_project = "my-project-123"`) {
+		t.Errorf("rendered TOML missing gcp_project: %s", body)
+	}
+	if !strings.Contains(body, `gcp_location = "us-central1"`) {
+		t.Errorf("rendered TOML missing gcp_location: %s", body)
+	}
+	if pblock := extractProviderBlock(body, "vertex"); strings.Contains(pblock, "api_key") {
+		t.Errorf("Vertex provider block must not include api_key: %s", pblock)
+	}
+	mustParseValid(t, body, "vertex")
+}
+
+// TestRunWizard_VertexCustomProject verifies the user can override
+// model + project + location.
+func TestRunWizard_VertexCustomProject(t *testing.T) {
+	input := strings.Join([]string{
+		"5",                // preset = vertex
+		"gemini-2.5-flash", // model
+		"acme-prod",        // GCP project
+		"europe-west4",     // location
+	}, "\n") + "\n"
+	r, body := runWizardScripted(t, input)
+	if r.Model != "gemini-2.5-flash" {
+		t.Errorf("Model=%q", r.Model)
+	}
+	if r.GCPProject != "acme-prod" {
+		t.Errorf("GCPProject=%q", r.GCPProject)
+	}
+	if r.GCPLocation != "europe-west4" {
+		t.Errorf("GCPLocation=%q", r.GCPLocation)
+	}
+	if !strings.Contains(body, `gcp_location = "europe-west4"`) {
+		t.Errorf("rendered TOML missing custom location: %s", body)
+	}
+}
+
+// TestRunWizard_VertexBlankProject covers the path where the user
+// leaves the project blank — the wizard must still emit a valid TOML,
+// with a commented gcp_project placeholder pointing at the env-var
+// fallback the genai SDK consults.
+func TestRunWizard_VertexBlankProject(t *testing.T) {
+	input := strings.Join([]string{
+		"5", // preset = vertex
+		"",  // model default
+		"",  // project blank
+		"",  // location default
+	}, "\n") + "\n"
+	r, body := runWizardScripted(t, input)
+	if r.GCPProject != "" {
+		t.Errorf("GCPProject=%q, want empty", r.GCPProject)
+	}
+	if !strings.Contains(body, "# gcp_project") {
+		t.Errorf("rendered TOML missing commented gcp_project hint: %s", body)
+	}
+	// gcp_location should still be present uncommented.
+	if !strings.Contains(body, `gcp_location = "us-central1"`) {
+		t.Errorf("rendered TOML missing gcp_location: %s", body)
+	}
+}
+
 // extractProviderBlock returns the substring of `body` covering the
 // `[providers.<name>]` section up to the next top-level header (or
 // end of input). Useful for asserting *within-block* properties
@@ -247,7 +343,7 @@ func mustParseValid(t *testing.T, body, providerName string) {
 	if !ok {
 		t.Fatalf("provider %q missing from parsed config: %+v", providerName, c.Providers)
 	}
-	if p.Type != "bedrock" && p.Endpoint == "" {
+	if p.Type != "bedrock" && p.Type != "vertex" && p.Endpoint == "" {
 		t.Errorf("provider %q has empty endpoint", providerName)
 	}
 	if p.Model == "" {
