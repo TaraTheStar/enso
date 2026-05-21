@@ -79,7 +79,10 @@ func BuildProviders(cfg map[string]config.ProviderConfig, res config.PoolResolut
 			pool = NewPoolNamed(poolName, 1, 0)
 			pools[poolName] = pool
 		}
-		prov := NewProvider(name, pcfg, pool, poolName)
+		prov, err := NewProvider(name, pcfg, pool, poolName)
+		if err != nil {
+			return nil, fmt.Errorf("provider %q: %w", name, err)
+		}
 		prov.PoolSwapCost = res.Pools[poolName].SwapCost
 		out[name] = prov
 	}
@@ -88,13 +91,17 @@ func BuildProviders(cfg map[string]config.ProviderConfig, res config.PoolResolut
 
 // NewProvider creates a Provider from config, bound to the given shared
 // pool. Callers go through BuildProviders; tests may call directly.
-func NewProvider(name string, cfg config.ProviderConfig, pool *Pool, poolName string) *Provider {
+func NewProvider(name string, cfg config.ProviderConfig, pool *Pool, poolName string) (*Provider, error) {
 	if pool == nil {
 		pool = NewPool(1)
 	}
+	client, err := newChatClient(cfg)
+	if err != nil {
+		return nil, err
+	}
 	return &Provider{
 		Name:             name,
-		Client:           &Client{Endpoint: cfg.Endpoint, APIKey: cfg.APIKey, Model: cfg.Model},
+		Client:           client,
 		Model:            cfg.Model,
 		ContextWindow:    cfg.ContextWindow,
 		Sampler:          cfg.Sampler,
@@ -104,5 +111,28 @@ func NewProvider(name string, cfg config.ProviderConfig, pool *Pool, poolName st
 		IncludeProviders: true,
 		InputPrice:       cfg.InputPricePerMillion,
 		OutputPrice:      cfg.OutputPricePerMillion,
+	}, nil
+}
+
+// newChatClient dispatches on cfg.Type to construct the right vendor
+// adapter. Empty type means "openai" for back-compat with configs
+// written before multi-vendor support — any OpenAI-compat endpoint
+// (llama.cpp / vLLM / Groq / OpenRouter / OpenAI proper) falls under
+// this case. New types are added here as their adapters land.
+func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
+	switch cfg.Type {
+	case "", "openai":
+		return &OpenAIClient{Endpoint: cfg.Endpoint, APIKey: cfg.APIKey, Model: cfg.Model}, nil
+	case "bedrock":
+		return &BedrockClient{
+			Model:                  cfg.Model,
+			Region:                 cfg.AWSRegion,
+			Profile:                cfg.AWSProfile,
+			MaxTokens:              cfg.MaxTokens,
+			ExtendedThinking:       cfg.ExtendedThinking,
+			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+		}, nil
+	default:
+		return nil, fmt.Errorf("unknown provider type %q", cfg.Type)
 	}
 }

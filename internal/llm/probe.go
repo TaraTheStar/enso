@@ -24,14 +24,14 @@ const probeTimeout = 3 * time.Second
 // once the endpoint answers (state flips to Connected) or the tracker
 // has already been moved out of Disconnected by something else (e.g., a
 // successful user-driven Chat call).
-func (c *Client) startRecoveryProbe() {
+func (c *OpenAIClient) startRecoveryProbe() {
 	if !c.conn.claimProbe() {
 		return
 	}
 	go c.probeLoop()
 }
 
-func (c *Client) probeLoop() {
+func (c *OpenAIClient) probeLoop() {
 	defer c.conn.releaseProbe()
 	interval := probeInterval
 	if c.ProbeInterval > 0 {
@@ -54,7 +54,7 @@ func (c *Client) probeLoop() {
 // — including 4xx/5xx — counts as success: TLS+TCP completed, so the
 // transport is healthy. Only outright transport failures keep the
 // tracker disconnected.
-func (c *Client) probeOnce() bool {
+func (c *OpenAIClient) probeOnce() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
 	defer cancel()
 	url := strings.TrimSuffix(c.Endpoint, "/") + "/models"
