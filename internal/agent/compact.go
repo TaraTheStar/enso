@@ -42,10 +42,24 @@ Produce a compact summary capturing:
 
 Output plain text, no preamble. Aim for under 800 words.`
 
-// MaybeCompact looks at the agent's history and, if it exceeds the threshold,
+// MaybeCompact looks at the agent's history and, if it exceeds the threshold
+// OR the `checkpoint` tool has queued a request since the last call,
 // summarises the older messages into a single synthetic assistant turn.
 // Mutates a.History in-place. Returns whether a compaction happened.
 func (a *Agent) MaybeCompact(ctx context.Context) (bool, error) {
+	// Checkpoint-requested compactions bypass the threshold entirely so
+	// the model can mark step boundaries even when context is still
+	// well under 60%. Drained whether or not we end up compacting
+	// (boundary may yield no slack on a young history); a no-op
+	// checkpoint should not "stick" and fire later.
+	if requested, reason := a.consumeCheckpointRequest(); requested {
+		trigger := "checkpoint"
+		if reason != "" {
+			trigger = "checkpoint: " + reason
+		}
+		return a.forceCompactWithSeed(ctx, trigger, reason)
+	}
+
 	p := a.Provider()
 	if p == nil || p.ContextWindow <= 0 {
 		return false, nil
@@ -112,6 +126,14 @@ func (a *Agent) CompactPreview() CompactPreviewResult {
 }
 
 func (a *Agent) forceCompact(ctx context.Context, reason string) (bool, error) {
+	return a.forceCompactWithSeed(ctx, reason, "")
+}
+
+// forceCompactWithSeed is forceCompact with an optional anchor string
+// passed to the summariser. The seed is shown to the summariser as the
+// user's stated reason for the compaction ("just finished refactor of
+// X") so the produced summary keeps the right framing.
+func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (bool, error) {
 	systemIdx, oldStart, oldEnd, ok := compactionBoundary(a.History, recentTurnsToPin)
 	if !ok {
 		return false, nil
@@ -147,7 +169,7 @@ func (a *Agent) forceCompact(ctx context.Context, reason string) (bool, error) {
 
 	var summary string
 	if len(summarisable) > 0 {
-		s, err := a.summariseHistory(ctx, summarisable)
+		s, err := a.summariseHistory(ctx, summarisable, seed)
 		if err != nil {
 			return false, fmt.Errorf("summarise: %w", err)
 		}
@@ -205,8 +227,11 @@ func (a *Agent) forceCompact(ctx context.Context, reason string) (bool, error) {
 }
 
 // summariseHistory issues a one-shot non-streaming chat to the same provider
-// asking for a summary of the given older messages.
-func (a *Agent) summariseHistory(ctx context.Context, older []llm.Message) (string, error) {
+// asking for a summary of the given older messages. `seed`, when
+// non-empty, is the user-supplied reason for a checkpoint-triggered
+// compaction; it is shown to the summariser as an anchor for what was
+// just completed so the summary frames the right boundary.
+func (a *Agent) summariseHistory(ctx context.Context, older []llm.Message, seed string) (string, error) {
 	p := a.Provider()
 	release, err := p.Pool.Acquire(ctx)
 	if err != nil {
@@ -214,7 +239,7 @@ func (a *Agent) summariseHistory(ctx context.Context, older []llm.Message) (stri
 	}
 	defer release()
 
-	sys, user, _ := buildSummariseRequest(older)
+	sys, user, _ := buildSummariseRequest(older, seed)
 
 	req := llm.ChatRequest{
 		Messages: []llm.Message{
@@ -254,14 +279,22 @@ func truncateForSummary(s string, max int) string {
 // hardening (random fence, de-instruct sentence) is testable without
 // standing up a real LLM provider.
 //
+// `seed`, when non-empty, is the user-supplied checkpoint reason. It
+// is rendered OUTSIDE the fenced conversation block so the summariser
+// can use it as an anchor without confusing it for historical
+// instruction.
+//
 // Returns (systemPrompt, userMessage, nonce). The nonce is fresh per
 // call (128 bits from crypto/rand), so historical content can't pre-
 // close the fence with a forged </conversation-...> tag.
-func buildSummariseRequest(older []llm.Message) (sys, user, nonce string) {
+func buildSummariseRequest(older []llm.Message, seed string) (sys, user, nonce string) {
 	nonce = randomNonce()
 	sys = fmt.Sprintf(summarizationPromptTemplate, nonce, nonce)
 
 	var b strings.Builder
+	if seed = strings.TrimSpace(seed); seed != "" {
+		fmt.Fprintf(&b, "The model just declared a step boundary with reason: %s\nFrame the summary so this boundary is the natural anchor for the recap.\n\n", seed)
+	}
 	fmt.Fprintf(&b, "<conversation-%s>\n", nonce)
 	for _, m := range older {
 		switch m.Role {
