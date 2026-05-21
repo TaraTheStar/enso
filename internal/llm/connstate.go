@@ -32,15 +32,15 @@ func (s ConnState) String() string {
 	}
 }
 
-// ConnStateReporter is the read side of a Client's connection-state
-// tracker. The TUI status bar takes a *Provider.Client and type-asserts
+// ConnStateReporter is the read side of a ChatClient's connection-state
+// tracker. The TUI status bar takes a Provider.Client and type-asserts
 // to this interface; test fakes that don't implement it simply render
 // nothing (treated as healthy).
 type ConnStateReporter interface {
 	LLMConnState() ConnState
 }
 
-// connTracker holds a Client's last-known transport state plus the
+// connTracker holds a ChatClient's last-known transport state plus the
 // lifecycle bookkeeping for the recovery probe goroutine. All fields
 // are mutex-guarded so Chat() (writer) and the TUI refresh ticker
 // (reader) can race safely.

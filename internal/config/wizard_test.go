@@ -90,11 +90,12 @@ func TestRunWizard_OpenAINoneSkipsKey(t *testing.T) {
 }
 
 func TestRunWizard_CustomFullPath(t *testing.T) {
-	// Choice 4 = custom; user types every value. Exercises the
-	// branch where there are no preset defaults and the wizard asks
-	// for a section name and context window.
+	// Choice 5 = custom (1 llamacpp / 2 ollama / 3 openai / 4 bedrock
+	// / 5 custom). User types every value. Exercises the branch where
+	// there are no preset defaults and the wizard asks for a section
+	// name and context window.
 	input := strings.Join([]string{
-		"4",                       // preset choice = custom
+		"5",                       // preset choice = custom
 		"https://example.test/v1", // endpoint
 		"my-model",                // model
 		"openrouter",              // section name
@@ -147,9 +148,95 @@ func TestRunWizard_OutOfRangeChoiceFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// TestRunWizard_BedrockDefaults exercises the Bedrock branch with all
+// defaults: choice 4, Enter through model + region. Confirms the
+// branch skips the api_key prompt entirely and writes a Bedrock-shaped
+// provider section (no endpoint, type = "bedrock", aws_region set).
+func TestRunWizard_BedrockDefaults(t *testing.T) {
+	r, body := runWizardScripted(t, "4\n\n\n")
+	if r.Preset != "bedrock" {
+		t.Errorf("preset=%q, want 'bedrock'", r.Preset)
+	}
+	if r.Type != "bedrock" {
+		t.Errorf("type=%q, want 'bedrock'", r.Type)
+	}
+	if r.Endpoint != "" {
+		t.Errorf("endpoint=%q, want empty (Bedrock has no user endpoint)", r.Endpoint)
+	}
+	if r.APIKey != "" {
+		t.Errorf("Bedrock branch must NOT collect an API key, got %q", r.APIKey)
+	}
+	if r.AWSRegion != "us-east-1" {
+		t.Errorf("AWSRegion=%q, want us-east-1 default", r.AWSRegion)
+	}
+	if !strings.Contains(body, `type = "bedrock"`) {
+		t.Errorf("rendered TOML missing type=bedrock: %s", body)
+	}
+	if !strings.Contains(body, `aws_region = "us-east-1"`) {
+		t.Errorf("rendered TOML missing aws_region: %s", body)
+	}
+	// The provider block itself must not carry an api_key (the
+	// preserved doc tail mentions api_key in other contexts, e.g.
+	// search.searxng — so a flat `Contains` is too strict).
+	if pblock := extractProviderBlock(body, "bedrock"); strings.Contains(pblock, "api_key") {
+		t.Errorf("Bedrock provider block must not include api_key: %s", pblock)
+	}
+	mustParseValid(t, body, "bedrock")
+}
+
+// TestRunWizard_BedrockCustomRegion verifies the user can override
+// region + model — covers the typical flow for a team in a non-default
+// region (e.g. us-west-2).
+func TestRunWizard_BedrockCustomRegion(t *testing.T) {
+	input := strings.Join([]string{
+		"4", // preset = bedrock
+		"anthropic.claude-3-5-haiku-20241022-v1:0", // model
+		"us-west-2", // region
+	}, "\n") + "\n"
+	r, body := runWizardScripted(t, input)
+	if r.Model != "anthropic.claude-3-5-haiku-20241022-v1:0" {
+		t.Errorf("Model=%q", r.Model)
+	}
+	if r.AWSRegion != "us-west-2" {
+		t.Errorf("AWSRegion=%q", r.AWSRegion)
+	}
+	if !strings.Contains(body, `aws_region = "us-west-2"`) {
+		t.Errorf("rendered TOML missing custom region: %s", body)
+	}
+}
+
+// extractProviderBlock returns the substring of `body` covering the
+// `[providers.<name>]` section up to the next top-level header (or
+// end of input). Useful for asserting *within-block* properties
+// without snagging unrelated commentary further down.
+func extractProviderBlock(body, name string) string {
+	header := "[providers." + name + "]"
+	start := strings.Index(body, header)
+	if start < 0 {
+		return ""
+	}
+	rest := body[start:]
+	// Find the next bracket header at column 0 — that's where the
+	// next section begins. Skip the first header itself.
+	lines := strings.Split(rest, "\n")
+	var b strings.Builder
+	for i, line := range lines {
+		if i > 0 && strings.HasPrefix(line, "[") {
+			break
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
 // mustParseValid asserts the rendered TOML decodes into a Config and
 // has the expected provider section populated. Locks in that the
 // wizard never produces a corrupt or unreadable config.
+//
+// Endpoint is required for OpenAI-shape providers but omitted for
+// type = "bedrock" (the AWS SDK resolves the regional URL itself),
+// so the check is gated on the type.
 func mustParseValid(t *testing.T, body, providerName string) {
 	t.Helper()
 	var c Config
@@ -160,7 +247,7 @@ func mustParseValid(t *testing.T, body, providerName string) {
 	if !ok {
 		t.Fatalf("provider %q missing from parsed config: %+v", providerName, c.Providers)
 	}
-	if p.Endpoint == "" {
+	if p.Type != "bedrock" && p.Endpoint == "" {
 		t.Errorf("provider %q has empty endpoint", providerName)
 	}
 	if p.Model == "" {
