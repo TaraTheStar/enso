@@ -81,15 +81,15 @@ type Event struct {
 }
 
 // ChatClient is the streaming-chat interface the agent and compaction
-// loop use. *Client (the OpenAI-compatible HTTP client) is the
-// production implementation; tests substitute a fake via the
-// llmtest package.
+// loop use. *OpenAIClient is one production implementation (alongside
+// other vendor adapters like *AnthropicClient); tests substitute a fake
+// via the llmtest package.
 type ChatClient interface {
 	Chat(ctx context.Context, req ChatRequest) (<-chan Event, error)
 }
 
-// Client wraps one OpenAI-compatible HTTP endpoint.
-type Client struct {
+// OpenAIClient wraps one OpenAI-compatible HTTP endpoint.
+type OpenAIClient struct {
 	Endpoint string
 	APIKey   string
 	Model    string
@@ -115,7 +115,7 @@ type Client struct {
 	conn connTracker
 }
 
-func (c *Client) httpClient() *http.Client {
+func (c *OpenAIClient) httpClient() *http.Client {
 	if c.HTTPClient != nil {
 		return c.HTTPClient
 	}
@@ -125,7 +125,7 @@ func (c *Client) httpClient() *http.Client {
 // LLMConnState satisfies ConnStateReporter. Returning by value keeps the
 // reader path lock-light — callers don't need to hold any reference to
 // the tracker itself.
-func (c *Client) LLMConnState() ConnState { return c.conn.get() }
+func (c *OpenAIClient) LLMConnState() ConnState { return c.conn.get() }
 
 // retryBackoff returns the wait between attempt N and attempt N+1. Two
 // retries (500ms, 1.5s) cover the vast majority of transient blips —
@@ -152,7 +152,7 @@ const maxChatRetries = 2
 // Non-transport errors (HTTP status, body marshal, context cancel) bypass
 // the retry loop and surface immediately — only network-class failures
 // are worth retrying.
-func (c *Client) doChatRequest(ctx context.Context, body []byte) (*http.Response, error) {
+func (c *OpenAIClient) doChatRequest(ctx context.Context, body []byte) (*http.Response, error) {
 	var lastErr error
 	for attempt := 0; attempt <= maxChatRetries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, "POST", c.Endpoint+"/chat/completions", bytes.NewReader(body))
@@ -203,7 +203,7 @@ func (c *Client) doChatRequest(ctx context.Context, body []byte) (*http.Response
 }
 
 // Chat sends a streaming chat completion request and yields events on the returned channel.
-func (c *Client) Chat(ctx context.Context, req ChatRequest) (<-chan Event, error) {
+func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event, error) {
 	req.Stream = true
 	req.Model = c.Model
 

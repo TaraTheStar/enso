@@ -25,6 +25,12 @@ type WizardPreset struct {
 	// having to read separate docs.
 	DisplayName string
 
+	// Type matches ProviderConfig.Type. Empty defaults to "openai"
+	// for back-compat with the original wizard. Non-empty drives a
+	// type-specific prompt flow in RunWizard (e.g. Bedrock skips the
+	// endpoint + api_key prompts and asks for an AWS region instead).
+	Type string
+
 	Endpoint      string
 	Model         string
 	ContextWindow int
@@ -34,6 +40,10 @@ type WizardPreset struct {
 	// what env-var name to suggest for the indirection pattern.
 	NeedsKey  bool
 	KeyEnvVar string
+
+	// AWSRegion is the default region for Bedrock-flavored presets.
+	// Only consulted when Type == "bedrock".
+	AWSRegion string
 }
 
 // wizardPresets is the small curated list the onboarding wizard
@@ -72,16 +82,28 @@ var wizardPresets = []WizardPreset{
 		NeedsKey:      true,
 		KeyEnvVar:     "ENSO_OPENAI_KEY",
 	},
+	{
+		Name:          "bedrock",
+		DisplayName:   "bedrock       (AWS — Claude / Nova / Llama / Mistral)",
+		Type:          "bedrock",
+		Model:         "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		ContextWindow: 200000,
+		AWSRegion:     "us-east-1",
+	},
 }
 
 // WizardResult is the structured output of RunWizard — what the user
 // chose, before serialisation. Exposed so callers can log / test
 // without re-parsing the generated TOML.
 type WizardResult struct {
-	Preset   string // "local" / "ollama" / "openai" / "custom"
-	Endpoint string
+	Preset   string // "llamacpp" / "ollama" / "openai" / "bedrock" / "custom"
+	Type     string // matches ProviderConfig.Type; "" for OpenAI-compat
+	Endpoint string // empty for type="bedrock" (AWS SDK picks regional endpoint)
 	Model    string
 	APIKey   string // literal key OR "$ENV_VAR_NAME"; empty means no auth
+
+	// AWSRegion is populated only when Type == "bedrock".
+	AWSRegion string
 }
 
 // RunWizard reads choices from `in`, writes prompts to `out`, and
@@ -123,6 +145,15 @@ func RunWizard(in io.Reader, out io.Writer) (WizardResult, string, error) {
 	}
 
 	fmt.Fprintln(out)
+
+	// Bedrock takes a completely different prompt flow: no endpoint
+	// (the AWS SDK picks the regional URL), no API key (the AWS
+	// credential chain), but it does need a region. Branch here
+	// rather than inflating the shared flow with conditionals.
+	if preset.Type == "bedrock" {
+		return runBedrockBranch(p, out, preset)
+	}
+
 	endpoint := p.ask("Endpoint URL", preset.Endpoint)
 	model := p.ask("Model name", preset.Model)
 
@@ -179,6 +210,64 @@ func RunWizard(in io.Reader, out io.Writer) (WizardResult, string, error) {
 	}
 	tomlOut := buildWizardTOML(name, endpoint, model, contextWindow, apiKey)
 	return result, tomlOut, nil
+}
+
+// runBedrockBranch handles the AWS Bedrock onboarding path. Distinct
+// from the OpenAI-compat flow because Bedrock has no user-set
+// endpoint (the AWS SDK resolves the regional URL) and no API key
+// (auth comes from the AWS credential chain — env vars, shared
+// config, instance role). The user picks a model + region.
+func runBedrockBranch(p *prompter, out io.Writer, preset WizardPreset) (WizardResult, string, error) {
+	fmt.Fprintln(out, "AWS Bedrock uses your AWS credential chain (environment, ")
+	fmt.Fprintln(out, "~/.aws/credentials, EC2/ECS/EKS instance role). No API key")
+	fmt.Fprintln(out, "is collected by this wizard.")
+	fmt.Fprintln(out)
+
+	model := p.ask("Bedrock model ID", preset.Model)
+	region := p.ask("AWS region", preset.AWSRegion)
+
+	result := WizardResult{
+		Preset:    preset.Name,
+		Type:      "bedrock",
+		Model:     model,
+		AWSRegion: region,
+	}
+	tomlOut := buildBedrockWizardTOML(preset.Name, model, region, preset.ContextWindow)
+	return result, tomlOut, nil
+}
+
+// buildBedrockWizardTOML produces the final config text for the
+// Bedrock onboarding path. Same tail-preservation rule as
+// buildWizardTOML; just a different provider block on top — no
+// endpoint, no api_key, and the optional extended-thinking field
+// pre-baked as a commented hint so Claude users see it without
+// hunting through docs.
+func buildBedrockWizardTOML(name, model, region string, ctxWindow int) string {
+	var b strings.Builder
+	b.WriteString("# enso configuration\n# Written on first run; edit as needed.\n\n")
+	fmt.Fprintf(&b, "[providers.%s]\n", name)
+	b.WriteString("type = \"bedrock\"\n")
+	fmt.Fprintf(&b, "model = %q\n", model)
+	fmt.Fprintf(&b, "aws_region = %q\n", region)
+	if ctxWindow == 0 {
+		ctxWindow = 200000
+	}
+	fmt.Fprintf(&b, "context_window = %d\n", ctxWindow)
+	b.WriteString("concurrency = 1\n")
+	b.WriteString("# AWS auth follows the standard credential chain (env vars,\n")
+	b.WriteString("# ~/.aws/credentials, instance role). Override with aws_profile.\n")
+	b.WriteString("# aws_profile = \"default\"\n")
+	b.WriteString("\n")
+	b.WriteString("# Optional: route Claude's reasoning through the same channel\n")
+	b.WriteString("# the TUI already renders for OpenAI reasoning models. Claude\n")
+	b.WriteString("# models only — the API rejects this for Nova / Llama / etc.\n")
+	b.WriteString("# extended_thinking        = true\n")
+	b.WriteString("# extended_thinking_budget = 8000\n\n")
+
+	if idx := strings.Index(defaultTOML, "[permissions]"); idx >= 0 {
+		b.WriteString(defaultTOML[idx:])
+	}
+	return b.String()
 }
 
 // buildWizardTOML produces the final config text by substituting the
