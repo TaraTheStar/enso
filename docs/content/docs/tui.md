@@ -17,6 +17,7 @@ session inspector for at-a-glance state.
 | Key                          | Action                                                                |
 | ---------------------------- | --------------------------------------------------------------------- |
 | `Enter`                      | Submit the current input (or run a `/`-prefixed command).             |
+| `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | Insert a literal newline in the input. The input soft-wraps and scrolls up to three rows. |
 | `Ctrl+C` / `Ctrl+D`          | Quit. (`Ctrl+D` with non-empty input clears the line first; `Ctrl+C` quits unconditionally for now — turn-cancel is on the roadmap.) |
 | `Ctrl+Space` (= `Ctrl+@`)    | Open the alt-screen session inspector overlay; Esc returns.           |
 | `Ctrl+R`                     | Open the recent-sessions overlay; Enter switches to that session (re-execs with `--session <id>`). |
@@ -29,6 +30,15 @@ session inspector for at-a-glance state.
 
 > Bubble Tea reports the same chord as either `ctrl+space` or
 > `ctrl+@` depending on the terminal's keyboard protocol — both work.
+> `Shift+Enter` for newline only reaches enso when the terminal speaks
+> the Kitty keyboard protocol; `Alt+Enter` and `Ctrl+J` are reliable
+> fallbacks for terminals that fold `Shift+Enter` into a bare `Enter`.
+
+Terminal bracketed paste (`Ctrl-Shift-V` / `Cmd-V` / middle-click X11
+PRIMARY) preserves newlines verbatim — `\r\n` and bare `\r` are
+normalised to `\n`; `\n` is kept. Multi-line snippets paste as
+multi-line; `Enter` submits the whole buffer. (Plain `Ctrl-V` is not a
+raw-mode paste in terminals and intentionally does nothing.)
 
 When `[ui] editor_mode = "vim"` is set in config, the input runs the
 single-line vim subset: `Esc` enters NORMAL, `i` / `a` / `A` re-enter
@@ -51,7 +61,7 @@ INSERT, `h l 0 $ w b x` for navigation and edit.
 | `/grep [--all] [--regex] <pattern>`    | Search past sessions in the local store (cwd-scoped by default). |
 | `/permissions [remove <pattern>]`      | Inspect and remove project-local permission rules in `config.local.toml`. |
 | `/model [<name>]`                      | List configured providers (no arg) or switch the active one (with arg). |
-| `/compact`                             | Force a context-compaction pass.                                |
+| `/compact`                             | Force a context-compaction pass. The model can also queue a compaction itself by calling the built-in `checkpoint` tool — typically right after a commit at a logical step boundary — which runs before the model's next response. |
 | `/init [target]`                       | Survey the project and write `ENSO.md` (or any other filename). |
 | `/agents`                              | List declarative agent profiles (built-in + user + project).    |
 | `/loop <interval> <prompt>`            | Re-submit a prompt every interval (≥5s); `/loop off` stops.     |

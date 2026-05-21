@@ -149,6 +149,12 @@ type AgentContext struct {
 	// RelevantTruncate (B2) as a relevance signal when an output
 	// exceeds its cap. Empty disables relevance truncation.
 	RecentUserHint string
+
+	// Checkpoint, when non-nil, is the seam the `checkpoint` tool uses
+	// to ask the agent loop to run a compaction pass before the next
+	// model completion. *agent.Agent satisfies it; spawn paths may pass
+	// nil so subagents can't compact the top-level history.
+	Checkpoint CheckpointRequester
 }
 
 // DefaultOutputCaps lets the host pin per-tool LLMOutput line caps

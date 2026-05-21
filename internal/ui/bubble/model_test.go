@@ -200,8 +200,8 @@ func TestBackspaceRespectsUTF8(t *testing.T) {
 }
 
 // TestPasteMsg covers the bracketed-paste path (Ctrl-Shift-V / Cmd-V /
-// middle-click PRIMARY): content reaches the buffer, multi-line is
-// flattened to spaces (single-line input), and a modal/vim-normal
+// middle-click PRIMARY): content reaches the buffer, newlines are
+// preserved (\r\n and bare \r normalised to \n), and a modal/vim-normal
 // state suppresses it like typed text.
 func TestPasteMsg(t *testing.T) {
 	t.Run("inserts at cursor", func(t *testing.T) {
@@ -212,11 +212,11 @@ func TestPasteMsg(t *testing.T) {
 		}
 	})
 
-	t.Run("flattens newlines", func(t *testing.T) {
+	t.Run("preserves newlines and normalises line endings", func(t *testing.T) {
 		m := &model{}
 		m.Update(tea.PasteMsg{Content: "a\nb\r\nc\rd"})
-		if m.input.buf != "a b c d" {
-			t.Fatalf("buf=%q want %q (newlines→spaces)", m.input.buf, "a b c d")
+		if m.input.buf != "a\nb\nc\nd" {
+			t.Fatalf("buf=%q want %q (\\r\\n and \\r → \\n; \\n preserved)", m.input.buf, "a\nb\nc\nd")
 		}
 	})
 
