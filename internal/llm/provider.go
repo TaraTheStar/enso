@@ -132,6 +132,15 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 			ExtendedThinking:       cfg.ExtendedThinking,
 			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
 		}, nil
+	case "vertex":
+		return &VertexClient{
+			Model:                  cfg.Model,
+			Project:                cfg.GCPProject,
+			Location:               cfg.GCPLocation,
+			MaxTokens:              cfg.MaxTokens,
+			ExtendedThinking:       cfg.ExtendedThinking,
+			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unknown provider type %q", cfg.Type)
 	}
