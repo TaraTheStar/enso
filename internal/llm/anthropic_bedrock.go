@@ -62,6 +62,11 @@ type AnthropicBedrockClient struct {
 	GuardrailVersion string
 	GuardrailTrace   string
 
+	// PromptCaching — same semantics as AnthropicClient.PromptCaching.
+	// Bedrock-hosted Claude honours the same cache_control markers
+	// since the SDK speaks the Messages API on this path.
+	PromptCaching bool
+
 	// HTTPClient overrides the SDK's transport. Tests inject a custom
 	// RoundTripper here; production leaves nil.
 	HTTPClient *http.Client
@@ -129,7 +134,7 @@ func (c *AnthropicBedrockClient) Chat(ctx context.Context, req ChatRequest) (<-c
 	if maxTokens == 0 {
 		maxTokens = 8192
 	}
-	params, err := buildAnthropicParams(req, c.Model, maxTokens, c.ExtendedThinking, c.ExtendedThinkingBudget)
+	params, err := buildAnthropicParams(req, c.Model, maxTokens, c.ExtendedThinking, c.ExtendedThinkingBudget, c.PromptCaching)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic-bedrock: build params: %w", err)
 	}

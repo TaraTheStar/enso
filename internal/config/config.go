@@ -608,6 +608,30 @@ type ProviderConfig struct {
 	// translate-time error on the first Chat call so typos don't get
 	// silently ignored. Silently ignored by adapters other than vertex.
 	VertexSafety map[string]string `toml:"vertex_safety"`
+
+	// PromptCaching opts the provider into vendor-side prompt caching.
+	// Default false — keeps the wire shape byte-identical for back-
+	// compat. When true:
+	//
+	//   - Anthropic + anthropic-bedrock + anthropic-vertex: sets
+	//     cache_control:ephemeral on the last system block and the
+	//     last tool definition. The system prompt + tool surface
+	//     become a single cacheable prefix; subsequent turns with
+	//     the same system + tools hit the cache.
+	//   - Bedrock Converse: appends a CachePoint block after the
+	//     system content and after the last tool — equivalent
+	//     shape, different wire encoding.
+	//   - OpenAI: implicit caching is automatic for long prefixes;
+	//     this flag is a no-op on the request side (the toggle is
+	//     still honored so configs stay symmetric).
+	//   - Vertex Gemini: implicit caching for 2.5; same no-op as
+	//     OpenAI.
+	//   - Local models: no-op.
+	//
+	// Cache hits / misses are logged via debugLog when present in
+	// the response; the sidebar's token accounting doesn't consume
+	// them yet (separate observability patch).
+	PromptCaching bool `toml:"prompt_caching"`
 }
 
 // SamplerConfig holds generation parameters.

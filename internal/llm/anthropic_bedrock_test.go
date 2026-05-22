@@ -25,8 +25,9 @@ func TestAnthropicBedrock_BuildParamsReusesAnthropicTranslator(t *testing.T) {
 		},
 		"anthropic.claude-3-5-sonnet-20241022-v2:0",
 		16000,
-		true, // extended thinking
-		8000, // budget
+		true,  // extended thinking
+		8000,  // budget
+		false, // prompt caching
 	)
 	if err != nil {
 		t.Fatalf("buildAnthropicParams: %v", err)
@@ -117,5 +118,22 @@ func TestProviderFactory_ConverseAndAnthropicBedrockCoexist(t *testing.T) {
 	}
 	if _, ok := native.(*AnthropicBedrockClient); !ok {
 		t.Fatalf("anthropic-bedrock: want *AnthropicBedrockClient, got %T", native)
+	}
+}
+
+// TestProviderFactory_AnthropicBedrockPromptCaching pins the
+// factory wiring on the anthropic-bedrock adapter — same TOML key.
+func TestProviderFactory_AnthropicBedrockPromptCaching(t *testing.T) {
+	client, err := newChatClient(config.ProviderConfig{
+		Type:          "anthropic-bedrock",
+		Model:         "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		AWSRegion:     "us-east-1",
+		PromptCaching: true,
+	})
+	if err != nil {
+		t.Fatalf("newChatClient: %v", err)
+	}
+	if !client.(*AnthropicBedrockClient).PromptCaching {
+		t.Fatal("PromptCaching not threaded")
 	}
 }

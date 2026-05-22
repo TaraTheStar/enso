@@ -136,6 +136,12 @@ presence_penalty = 1.5
 # # endpoint = "https://api.anthropic.com"   # only set to route through a proxy
 # extended_thinking        = true
 # extended_thinking_budget = 8000
+# # Optional: opt into Anthropic's ephemeral prompt cache. cache_control
+# # markers land on the last system block and the last tool, so the
+# # system + tool prefix becomes a stable cacheable block reused across
+# # turns. Same flag works on type = "bedrock", "anthropic-bedrock", and
+# # "anthropic-vertex". No-op on local / openai-compat providers.
+# prompt_caching = true
 #
 # [providers.anthropic-bedrock]
 # type       = "anthropic-bedrock"
