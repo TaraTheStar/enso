@@ -579,6 +579,35 @@ type ProviderConfig struct {
 	// "europe-west4"). Vertex-only. Empty defaults to "us-central1",
 	// which hosts every Gemini variant.
 	GCPLocation string `toml:"gcp_location"`
+
+	// BedrockGuardrailID is the identifier of an Amazon Bedrock
+	// Guardrail to evaluate every request/response against. Used by
+	// type = "bedrock" (Converse GuardrailConfig field) and
+	// type = "anthropic-bedrock" (X-Amzn-Bedrock-GuardrailIdentifier
+	// header). Empty disables guardrails. Silently ignored by adapters
+	// that don't reach Bedrock.
+	BedrockGuardrailID string `toml:"bedrock_guardrail_id"`
+
+	// BedrockGuardrailVersion is the guardrail version. Required when
+	// BedrockGuardrailID is set; "DRAFT" is accepted by both APIs.
+	BedrockGuardrailVersion string `toml:"bedrock_guardrail_version"`
+
+	// BedrockGuardrailTrace selects the trace level surfaced in the
+	// response: "enabled", "disabled", "enabled_full" (Converse only).
+	// Empty defaults to "enabled" when a guardrail is configured.
+	// Trace data isn't surfaced through ensō's Event channel yet — the
+	// setting still controls what AWS logs / charges.
+	BedrockGuardrailTrace string `toml:"bedrock_guardrail_trace"`
+
+	// VertexSafety pins per-category HarmBlockThreshold values for
+	// type = "vertex". Keys are short category names — "hate_speech",
+	// "harassment", "dangerous_content", "sexually_explicit",
+	// "civic_integrity". Values are the threshold enums:
+	// "BLOCK_NONE", "BLOCK_LOW_AND_ABOVE", "BLOCK_MEDIUM_AND_ABOVE",
+	// "BLOCK_ONLY_HIGH", "OFF". Unknown keys / values surface as a
+	// translate-time error on the first Chat call so typos don't get
+	// silently ignored. Silently ignored by adapters other than vertex.
+	VertexSafety map[string]string `toml:"vertex_safety"`
 }
 
 // SamplerConfig holds generation parameters.

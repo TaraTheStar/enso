@@ -72,6 +72,28 @@ func TestProviderFactory_AnthropicBedrockType(t *testing.T) {
 	}
 }
 
+// TestProviderFactory_AnthropicBedrockGuardrails confirms the three
+// guardrail fields thread through onto the anthropic-bedrock adapter.
+// Same `bedrock_guardrail_*` TOML keys as the Converse path so the
+// user-facing surface stays consistent across both Bedrock variants.
+func TestProviderFactory_AnthropicBedrockGuardrails(t *testing.T) {
+	client, err := newChatClient(config.ProviderConfig{
+		Type:                    "anthropic-bedrock",
+		Model:                   "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		AWSRegion:               "us-east-1",
+		BedrockGuardrailID:      "gr-xyz",
+		BedrockGuardrailVersion: "1",
+		BedrockGuardrailTrace:   "enabled",
+	})
+	if err != nil {
+		t.Fatalf("newChatClient: %v", err)
+	}
+	abc := client.(*AnthropicBedrockClient)
+	if abc.GuardrailID != "gr-xyz" || abc.GuardrailVersion != "1" || abc.GuardrailTrace != "enabled" {
+		t.Fatalf("guardrail fields not threaded: %+v", abc)
+	}
+}
+
 // TestProviderFactory_ConverseAndAnthropicBedrockCoexist proves that
 // type = "bedrock" and type = "anthropic-bedrock" dispatch to two
 // different adapters — the renames around the parked work made this
