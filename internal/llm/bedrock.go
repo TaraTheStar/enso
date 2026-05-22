@@ -64,6 +64,17 @@ type BedrockClient struct {
 	ExtendedThinking       bool
 	ExtendedThinkingBudget int64
 
+	// GuardrailID, GuardrailVersion, GuardrailTrace configure Amazon
+	// Bedrock Guardrails — content evaluation that runs in front of
+	// the model and can block / mask / rewrite either side of the
+	// conversation. Empty GuardrailID disables guardrails entirely.
+	// When non-empty, GuardrailVersion is required ("DRAFT" is fine);
+	// GuardrailTrace defaults to "enabled" so the trace shows up in
+	// CloudWatch.
+	GuardrailID      string
+	GuardrailVersion string
+	GuardrailTrace   string
+
 	// ProbeInterval is a test seam. Zero uses the package default.
 	ProbeInterval time.Duration
 
@@ -136,6 +147,11 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 
 	if c.ExtendedThinking {
 		applyExtendedThinking(input, c.ExtendedThinkingBudget)
+	}
+	if c.GuardrailID != "" {
+		if err := applyBedrockGuardrail(input, c.GuardrailID, c.GuardrailVersion, c.GuardrailTrace); err != nil {
+			return nil, fmt.Errorf("bedrock: guardrail: %w", err)
+		}
 	}
 
 	sdk, err := c.client(ctx)
@@ -460,6 +476,87 @@ func applyExtendedThinking(input *bedrockruntime.ConverseStreamInput, budget int
 			"budget_tokens": budget,
 		},
 	})
+}
+
+// bedrockGuardrailHeaders maps the user-facing trace value
+// ("enabled"/"disabled"/"enabled_full") onto the X-Amzn-Bedrock-*
+// header set that Bedrock InvokeModel uses to apply a guardrail.
+// Shared with AnthropicBedrockClient so the same `bedrock_guardrail_*`
+// config keys behave the same across both Bedrock paths even though
+// the wire shape differs (structured field for Converse, headers for
+// InvokeModel).
+//
+// Returns nil headers when id is empty so callers can unconditionally
+// call this and only iterate when there's something to add.
+func bedrockGuardrailHeaders(id, version, trace string) (map[string]string, error) {
+	if id == "" {
+		return nil, nil
+	}
+	if version == "" {
+		return nil, errors.New("guardrail version is required (e.g. \"DRAFT\" or a numeric version)")
+	}
+	t := strings.ToLower(strings.TrimSpace(trace))
+	if t == "" {
+		t = "enabled"
+	}
+	var headerTrace string
+	switch t {
+	case "enabled", "enabled_full":
+		// InvokeModel's header only distinguishes ENABLED vs DISABLED;
+		// enabled_full collapses to ENABLED (extra detail is a Converse-
+		// only concept). Documented behaviour, not silent.
+		headerTrace = "ENABLED"
+	case "disabled":
+		headerTrace = "DISABLED"
+	default:
+		return nil, fmt.Errorf("unknown trace %q (want enabled / disabled / enabled_full)", trace)
+	}
+	return map[string]string{
+		"X-Amzn-Bedrock-GuardrailIdentifier": id,
+		"X-Amzn-Bedrock-GuardrailVersion":    version,
+		"X-Amzn-Bedrock-Trace":               headerTrace,
+	}, nil
+}
+
+// applyBedrockGuardrail wires the GuardrailStreamConfiguration onto a
+// ConverseStream request. Validates the trace value up front so a
+// typo'd config doesn't 400 the whole turn mid-stream — same
+// fail-loud-at-translate-time stance as the rest of the build path.
+//
+// Defaults: empty trace → "enabled" (cheap; surfaces violations in
+// CloudWatch). Stream-processing mode is left unset; the SDK defaults
+// to "sync", which is what users expect (the response waits for the
+// guardrail evaluation rather than streaming through and back-filling
+// blocked content).
+func applyBedrockGuardrail(input *bedrockruntime.ConverseStreamInput, id, version, trace string) error {
+	if id == "" {
+		return errors.New("guardrail id is required")
+	}
+	if version == "" {
+		return errors.New("guardrail version is required (e.g. \"DRAFT\" or a numeric version)")
+	}
+	t := strings.ToLower(strings.TrimSpace(trace))
+	if t == "" {
+		t = string(types.GuardrailTraceEnabled)
+	}
+	var resolved types.GuardrailTrace
+	switch t {
+	case "enabled":
+		resolved = types.GuardrailTraceEnabled
+	case "disabled":
+		resolved = types.GuardrailTraceDisabled
+	case "enabled_full":
+		resolved = types.GuardrailTraceEnabledFull
+	default:
+		return fmt.Errorf("unknown trace %q (want enabled / disabled / enabled_full)", trace)
+	}
+
+	input.GuardrailConfig = &types.GuardrailStreamConfiguration{
+		GuardrailIdentifier: &id,
+		GuardrailVersion:    &version,
+		Trace:               resolved,
+	}
+	return nil
 }
 
 func derefString(p *string) string {

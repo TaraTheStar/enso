@@ -53,6 +53,15 @@ type AnthropicBedrockClient struct {
 	ExtendedThinking       bool
 	ExtendedThinkingBudget int64
 
+	// GuardrailID / GuardrailVersion / GuardrailTrace mirror BedrockClient's
+	// guardrail fields. The Anthropic-native path on Bedrock uses
+	// :invoke-model rather than :converse, so guardrails get applied via
+	// the X-Amzn-Bedrock-Guardrail* HTTP headers instead of a structured
+	// request field. Same AWS Guardrails resource either way.
+	GuardrailID      string
+	GuardrailVersion string
+	GuardrailTrace   string
+
 	// HTTPClient overrides the SDK's transport. Tests inject a custom
 	// RoundTripper here; production leaves nil.
 	HTTPClient *http.Client
@@ -94,6 +103,18 @@ func (c *AnthropicBedrockClient) client(ctx context.Context) (*anthropic.Client,
 	}
 	if c.HTTPClient != nil {
 		opts = append(opts, option.WithHTTPClient(c.HTTPClient))
+	}
+	if c.GuardrailID != "" {
+		// Bedrock evaluates the guardrail when these headers ride along
+		// on InvokeModel. Validation matches the Converse path so a
+		// typo'd trace value fails fast instead of mid-stream.
+		hdrs, err := bedrockGuardrailHeaders(c.GuardrailID, c.GuardrailVersion, c.GuardrailTrace)
+		if err != nil {
+			return nil, fmt.Errorf("guardrail: %w", err)
+		}
+		for k, v := range hdrs {
+			opts = append(opts, option.WithHeader(k, v))
+		}
 	}
 
 	sdk := anthropic.NewClient(opts...)
