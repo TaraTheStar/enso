@@ -141,6 +141,33 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 			ExtendedThinking:       cfg.ExtendedThinking,
 			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
 		}, nil
+	case "anthropic":
+		return &AnthropicClient{
+			APIKey:                 cfg.APIKey,
+			Model:                  cfg.Model,
+			BaseURL:                cfg.Endpoint,
+			MaxTokens:              cfg.MaxTokens,
+			ExtendedThinking:       cfg.ExtendedThinking,
+			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+		}, nil
+	case "anthropic-bedrock":
+		return &AnthropicBedrockClient{
+			Model:                  cfg.Model,
+			Region:                 cfg.AWSRegion,
+			Profile:                cfg.AWSProfile,
+			MaxTokens:              cfg.MaxTokens,
+			ExtendedThinking:       cfg.ExtendedThinking,
+			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+		}, nil
+	case "anthropic-vertex":
+		return &AnthropicVertexClient{
+			Model:                  cfg.Model,
+			Region:                 cfg.GCPLocation,
+			Project:                cfg.GCPProject,
+			MaxTokens:              cfg.MaxTokens,
+			ExtendedThinking:       cfg.ExtendedThinking,
+			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+		}, nil
 	default:
 		return nil, fmt.Errorf("unknown provider type %q", cfg.Type)
 	}

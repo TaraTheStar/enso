@@ -1,0 +1,243 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+package llm
+
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+	"testing"
+
+	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/anthropics/anthropic-sdk-go"
+)
+
+// TestProviderFactory_AnthropicType confirms type = "anthropic"
+// dispatches to AnthropicClient with the api.anthropic.com fields
+// threaded. Endpoint is repurposed as BaseURL — useful when proxying
+// through a corporate gateway.
+func TestProviderFactory_AnthropicType(t *testing.T) {
+	cfg := config.ProviderConfig{
+		Type:                   "anthropic",
+		Model:                  "claude-sonnet-4-5",
+		APIKey:                 "sk-ant-test",
+		Endpoint:               "https://anthropic.example.proxy/",
+		MaxTokens:              16000,
+		ExtendedThinking:       true,
+		ExtendedThinkingBudget: 8000,
+	}
+	client, err := newChatClient(cfg)
+	if err != nil {
+		t.Fatalf("newChatClient: %v", err)
+	}
+	ac, ok := client.(*AnthropicClient)
+	if !ok {
+		t.Fatalf("want *AnthropicClient, got %T", client)
+	}
+	if ac.APIKey != cfg.APIKey || ac.Model != cfg.Model {
+		t.Fatalf("config not threaded: %+v", ac)
+	}
+	if ac.BaseURL != cfg.Endpoint {
+		t.Fatalf("BaseURL should pull from cfg.Endpoint: %q", ac.BaseURL)
+	}
+	if !ac.ExtendedThinking || ac.ExtendedThinkingBudget != 8000 {
+		t.Fatalf("thinking config not threaded: %+v", ac)
+	}
+}
+
+// TestToAnthropicParams_System pulls every role="system" message out of
+// the conversation and into the top-level System field. Sending system
+// turns as message-array entries makes Anthropic 400 the request.
+func TestToAnthropicParams_System(t *testing.T) {
+	req := ChatRequest{
+		Messages: []Message{
+			{Role: "system", Content: "you are helpful"},
+			{Role: "system", Content: "be concise"},
+			{Role: "user", Content: "hi"},
+		},
+	}
+	p, err := toAnthropicParams(req, "claude-3-5-sonnet", 4096)
+	if err != nil {
+		t.Fatalf("toAnthropicParams: %v", err)
+	}
+	if len(p.System) != 2 {
+		t.Fatalf("system blocks: want 2 got %d", len(p.System))
+	}
+	if p.System[0].Text != "you are helpful" || p.System[1].Text != "be concise" {
+		t.Fatalf("system text mismatch: %+v", p.System)
+	}
+	if len(p.Messages) != 1 || p.Messages[0].Role != anthropic.MessageParamRoleUser {
+		t.Fatalf("expected single user message, got %+v", p.Messages)
+	}
+}
+
+// TestToAnthropicParams_ToolResultRoundtrip checks that an OpenAI-shape
+// tool-result turn (role="tool", ToolCallID, Content) becomes a user
+// message carrying a tool_result block, which is how Anthropic models
+// tool outputs.
+func TestToAnthropicParams_ToolResultRoundtrip(t *testing.T) {
+	req := ChatRequest{
+		Messages: []Message{
+			{Role: "user", Content: "list files"},
+			{
+				Role: "assistant",
+				ToolCalls: []ToolCall{{
+					ID:   "call_1",
+					Type: "function",
+					Function: struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					}{Name: "ls", Arguments: `{"path":"/tmp"}`},
+				}},
+			},
+			{Role: "tool", ToolCallID: "call_1", Content: "a.txt\nb.txt"},
+		},
+	}
+	p, err := toAnthropicParams(req, "claude-3-5-sonnet", 4096)
+	if err != nil {
+		t.Fatalf("toAnthropicParams: %v", err)
+	}
+	if len(p.Messages) != 3 {
+		t.Fatalf("messages: want 3 got %d", len(p.Messages))
+	}
+	// Round-trip through JSON so we exercise the same marshal path the
+	// SDK uses on the wire — that's where union-discriminator bugs would
+	// surface.
+	data, err := json.Marshal(p.Messages[1])
+	if err != nil {
+		t.Fatalf("marshal assistant: %v", err)
+	}
+	if !strings.Contains(string(data), `"tool_use"`) || !strings.Contains(string(data), `"call_1"`) {
+		t.Fatalf("assistant tool_use missing: %s", data)
+	}
+	data, err = json.Marshal(p.Messages[2])
+	if err != nil {
+		t.Fatalf("marshal tool result: %v", err)
+	}
+	if !strings.Contains(string(data), `"tool_result"`) || !strings.Contains(string(data), `"call_1"`) {
+		t.Fatalf("tool_result block missing: %s", data)
+	}
+}
+
+// TestToAnthropicSchema_LiftsRequired exercises the schema translator's
+// Required + Properties extraction. The OpenAI tool schema arrives as a
+// generic map[string]interface{} so the type-assertion fallbacks matter.
+func TestToAnthropicSchema_LiftsRequired(t *testing.T) {
+	params := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"path": map[string]interface{}{"type": "string"},
+		},
+		"required":             []interface{}{"path"},
+		"additionalProperties": false,
+	}
+	schema, err := toAnthropicSchema(params)
+	if err != nil {
+		t.Fatalf("toAnthropicSchema: %v", err)
+	}
+	if len(schema.Required) != 1 || schema.Required[0] != "path" {
+		t.Fatalf("required: %+v", schema.Required)
+	}
+	if schema.Properties == nil {
+		t.Fatal("properties not set")
+	}
+	if schema.ExtraFields["additionalProperties"] != false {
+		t.Fatalf("extras lost: %+v", schema.ExtraFields)
+	}
+}
+
+// TestAnthropicBuildParams_ExtendedThinking exercises the layered
+// thinking config: when enabled the request must include the thinking
+// block, force temperature=1, and drop top_p / top_k. Anthropic rejects
+// the request if any of these are off.
+func TestAnthropicBuildParams_ExtendedThinking(t *testing.T) {
+	c := &AnthropicClient{
+		Model:                  "claude-sonnet-4-5",
+		ExtendedThinking:       true,
+		ExtendedThinkingBudget: 8000,
+	}
+	params, err := c.buildParams(ChatRequest{
+		Messages:    []Message{{Role: "user", Content: "hi"}},
+		Temperature: 0.7,
+		TopP:        0.95,
+	}, 16000)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	js := string(data)
+	if !strings.Contains(js, `"thinking"`) || !strings.Contains(js, `"enabled"`) {
+		t.Fatalf("thinking block missing: %s", js)
+	}
+	if !strings.Contains(js, `"budget_tokens":8000`) {
+		t.Fatalf("budget not threaded through: %s", js)
+	}
+	if !strings.Contains(js, `"temperature":1`) {
+		t.Fatalf("temperature not pinned to 1: %s", js)
+	}
+	if strings.Contains(js, `"top_p"`) || strings.Contains(js, `"top_k"`) {
+		t.Fatalf("top_p / top_k must be cleared with thinking on: %s", js)
+	}
+}
+
+// TestAnthropicBuildParams_ThinkingBudgetClamps covers the two edges
+// that would 400 the request at the API: a budget below 1024 (Anthropic
+// minimum) and a budget at or above max_tokens. Both get clamped silently.
+func TestAnthropicBuildParams_ThinkingBudgetClamps(t *testing.T) {
+	cases := []struct {
+		name      string
+		budget    int64
+		maxTokens int64
+		wantBudg  int64
+	}{
+		{"below min", 500, 16000, 1024},
+		{"at max", 16000, 16000, 15999},
+		{"above max", 50000, 16000, 15999},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &AnthropicClient{
+				Model:                  "claude-sonnet-4-5",
+				ExtendedThinking:       true,
+				ExtendedThinkingBudget: tc.budget,
+			}
+			params, err := c.buildParams(ChatRequest{
+				Messages: []Message{{Role: "user", Content: "hi"}},
+			}, tc.maxTokens)
+			if err != nil {
+				t.Fatalf("buildParams: %v", err)
+			}
+			data, _ := json.Marshal(params)
+			want := `"budget_tokens":` + strconv.FormatInt(tc.wantBudg, 10)
+			if !strings.Contains(string(data), want) {
+				t.Fatalf("want %s, got: %s", want, data)
+			}
+		})
+	}
+}
+
+// TestAssistantBlocks_EmptyArgs covers the model emitting a tool call
+// with no arguments — agent code parses Arguments with json.Unmarshal so
+// the translator must fill in "{}", and the assistant block must still
+// carry the tool_use block.
+func TestAssistantBlocks_EmptyArgs(t *testing.T) {
+	m := Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "x", Type: "function"}}}
+	m.ToolCalls[0].Function.Name = "now"
+	blocks, err := assistantBlocks(m)
+	if err != nil {
+		t.Fatalf("assistantBlocks: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("blocks: want 1 got %d", len(blocks))
+	}
+	data, err := json.Marshal(blocks[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(data), `"tool_use"`) {
+		t.Fatalf("missing tool_use: %s", data)
+	}
+}
