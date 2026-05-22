@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,6 +61,15 @@ type VertexClient struct {
 	// (-1) for dynamic, both unlike Anthropic's [1024, max_tokens)
 	// constraint.
 	ExtendedThinkingBudget int64
+
+	// Safety pins per-category HarmBlockThreshold values on every
+	// request. Keys are short category names ("hate_speech",
+	// "harassment", "dangerous_content", "sexually_explicit",
+	// "civic_integrity"); values are the threshold enums (
+	// "BLOCK_NONE", "BLOCK_LOW_AND_ABOVE", "BLOCK_MEDIUM_AND_ABOVE",
+	// "BLOCK_ONLY_HIGH", "OFF"). Empty map leaves Gemini's defaults
+	// in effect; unknown keys/values fail at translate-time.
+	Safety map[string]string
 
 	// ProbeInterval is a test seam. Zero uses the package default.
 	ProbeInterval time.Duration
@@ -137,6 +147,11 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 	}
 	if c.ExtendedThinking {
 		applyVertexThinking(cfg, c.ExtendedThinkingBudget)
+	}
+	if len(c.Safety) > 0 {
+		if err := applyVertexSafety(cfg, c.Safety); err != nil {
+			return nil, fmt.Errorf("vertex: safety: %w", err)
+		}
 	}
 
 	sdk, err := c.client(ctx)
@@ -417,4 +432,52 @@ func applyVertexThinking(cfg *genai.GenerateContentConfig, budget int64) {
 		b := int32(budget)
 		cfg.ThinkingConfig.ThinkingBudget = &b
 	}
+}
+
+// vertexSafetyCategories is the user-facing → SDK enum mapping for
+// Gemini's safety knobs. Listed in the order Gemini docs use; only
+// these five categories are addressable per-request (image-modality
+// variants exist but are output-only and not user-configurable).
+var vertexSafetyCategories = map[string]genai.HarmCategory{
+	"hate_speech":       genai.HarmCategoryHateSpeech,
+	"harassment":        genai.HarmCategoryHarassment,
+	"dangerous_content": genai.HarmCategoryDangerousContent,
+	"sexually_explicit": genai.HarmCategorySexuallyExplicit,
+	"civic_integrity":   genai.HarmCategoryCivicIntegrity,
+}
+
+// vertexSafetyThresholds is the user-facing threshold value → SDK enum
+// mapping. Accept the AWS-style uppercase plus lowercase aliases so the
+// config doesn't require shouting. "OFF" disables the filter entirely;
+// "BLOCK_NONE" still runs the classifier but never blocks (useful for
+// trace / audit pipelines).
+var vertexSafetyThresholds = map[string]genai.HarmBlockThreshold{
+	"BLOCK_NONE":             genai.HarmBlockThresholdBlockNone,
+	"BLOCK_LOW_AND_ABOVE":    genai.HarmBlockThresholdBlockLowAndAbove,
+	"BLOCK_MEDIUM_AND_ABOVE": genai.HarmBlockThresholdBlockMediumAndAbove,
+	"BLOCK_ONLY_HIGH":        genai.HarmBlockThresholdBlockOnlyHigh,
+	"OFF":                    genai.HarmBlockThresholdOff,
+}
+
+// applyVertexSafety translates the user's short-name map onto the
+// SDK's SafetySettings slice. Fails loud on unknown keys/values so a
+// typo doesn't ship a silently-permissive config.
+func applyVertexSafety(cfg *genai.GenerateContentConfig, settings map[string]string) error {
+	if len(settings) == 0 {
+		return nil
+	}
+	out := make([]*genai.SafetySetting, 0, len(settings))
+	for k, v := range settings {
+		cat, ok := vertexSafetyCategories[strings.ToLower(strings.TrimSpace(k))]
+		if !ok {
+			return fmt.Errorf("unknown category %q (want hate_speech / harassment / dangerous_content / sexually_explicit / civic_integrity)", k)
+		}
+		threshold, ok := vertexSafetyThresholds[strings.ToUpper(strings.TrimSpace(v))]
+		if !ok {
+			return fmt.Errorf("category %q: unknown threshold %q (want BLOCK_NONE / BLOCK_LOW_AND_ABOVE / BLOCK_MEDIUM_AND_ABOVE / BLOCK_ONLY_HIGH / OFF)", k, v)
+		}
+		out = append(out, &genai.SafetySetting{Category: cat, Threshold: threshold})
+	}
+	cfg.SafetySettings = out
+	return nil
 }

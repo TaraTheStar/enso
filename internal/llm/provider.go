@@ -131,6 +131,9 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 			MaxTokens:              cfg.MaxTokens,
 			ExtendedThinking:       cfg.ExtendedThinking,
 			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+			GuardrailID:            cfg.BedrockGuardrailID,
+			GuardrailVersion:       cfg.BedrockGuardrailVersion,
+			GuardrailTrace:         cfg.BedrockGuardrailTrace,
 		}, nil
 	case "vertex":
 		return &VertexClient{
@@ -140,6 +143,7 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 			MaxTokens:              cfg.MaxTokens,
 			ExtendedThinking:       cfg.ExtendedThinking,
 			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+			Safety:                 cfg.VertexSafety,
 		}, nil
 	case "anthropic":
 		return &AnthropicClient{
@@ -158,6 +162,9 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 			MaxTokens:              cfg.MaxTokens,
 			ExtendedThinking:       cfg.ExtendedThinking,
 			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+			GuardrailID:            cfg.BedrockGuardrailID,
+			GuardrailVersion:       cfg.BedrockGuardrailVersion,
+			GuardrailTrace:         cfg.BedrockGuardrailTrace,
 		}, nil
 	case "anthropic-vertex":
 		return &AnthropicVertexClient{
