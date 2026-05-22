@@ -69,7 +69,7 @@ presence_penalty = 1.5
 
 | Field            | Default                     | Description                                                                |
 | ---------------- | --------------------------- | -------------------------------------------------------------------------- |
-| `type`           | `"openai"`                  | Vendor adapter. `"openai"` (default) covers any OpenAI-compatible endpoint — llama.cpp, vLLM, Ollama, Groq, OpenAI proper, OpenRouter, Together, Fireworks. `"bedrock"` routes through AWS Bedrock's Converse API (multi-vendor: Claude / Nova / Llama / Mistral / Cohere / AI21). `"vertex"` routes through GCP Vertex AI's generateContent API (Gemini family). |
+| `type`           | `"openai"`                  | Vendor adapter. `"openai"` (default) covers any OpenAI-compatible endpoint — llama.cpp, vLLM, Ollama, Groq, OpenAI proper, OpenRouter, Together, Fireworks. `"bedrock"` routes through AWS Bedrock's Converse API (multi-vendor: Claude / Nova / Llama / Mistral / Cohere / AI21). `"vertex"` routes through GCP Vertex AI's generateContent API (Gemini family). `"anthropic"`, `"anthropic-bedrock"`, `"anthropic-vertex"` are **opt-in** paths through the Anthropic Messages API directly — pick these when you need features Converse/generateContent don't model (prompt-caching control, computer-use, server tools). See [Anthropic-native paths](#anthropic-native-paths-opt-in). |
 | `endpoint`       | required (openai)           | OpenAI-compatible base URL (e.g. `http://localhost:8080/v1`). Not used by `type = "bedrock"` or `type = "vertex"` — the AWS/GCP SDKs pick the regional URL. |
 | `model`          | required                    | Model id sent to the endpoint. For Bedrock, this is the Bedrock model id (`anthropic.claude-3-5-sonnet-20241022-v2:0`, `amazon.nova-pro-v1:0`) or an inference-profile ARN — distinct from `api.anthropic.com` names. For Vertex, this is the Gemini model id (`gemini-2.5-pro`, `gemini-2.5-flash`). |
 | `description`    | `""`                        | Short capability hint. When ≥2 providers are configured it's rendered into the auto "## Available models" prompt section so the model can route across endpoints (see `[instructions]`). |
@@ -146,6 +146,55 @@ type         = "vertex"
 model        = "gemini-2.5-flash"
 gcp_project  = "my-gcp-project"
 gcp_location = "us-central1"
+```
+
+#### Anthropic-native paths (opt-in)
+
+Three opt-in types route through the Anthropic Messages API rather than
+the lowest-common-denominator Converse / generateContent shapes. They
+all share one translator (`buildAnthropicParams`), one streaming loop
+(`streamAnthropic`), and one `extended_thinking` semantics — only the
+transport and auth differ. Pick these only when you need a Claude
+feature that doesn't model into Converse or generateContent.
+
+| `type`                 | Talks to                          | Auth                                     | Model id shape                                  |
+| ---------------------- | --------------------------------- | ---------------------------------------- | ----------------------------------------------- |
+| `"anthropic"`          | `api.anthropic.com` direct        | `api_key` (literal or `$ENSO_*` env ref) | `claude-sonnet-4-5`, `claude-haiku-4-5`         |
+| `"anthropic-bedrock"`  | AWS Bedrock `:invoke-model`       | AWS credential chain (same as `bedrock`) | `anthropic.claude-3-5-sonnet-20241022-v2:0`     |
+| `"anthropic-vertex"`   | GCP Vertex AI `:rawPredict`       | Google ADC (same as `vertex`)            | `claude-3-5-sonnet-v2@20241022` (note the `@`)  |
+
+`type = "anthropic-bedrock"` is distinct from `type = "bedrock"` — both
+can coexist in one config. The Converse path is the better default for
+Claude (multi-vendor symmetry, simpler tool schema); the Anthropic-
+native path is for features Converse omits (prompt caching, computer-
+use, server tools).
+
+`type = "anthropic-vertex"` is distinct from `type = "vertex"` (which is
+Gemini-only generateContent) for the same reason.
+
+`extended_thinking` works identically across all three: budget gets
+silently clamped to `[1024, max_tokens)`, `temperature` is forced to 1
+and `top_p` / `top_k` are cleared (all Anthropic-side hard requirements
+when thinking is on).
+
+Worked example mixing native + opt-in:
+
+```toml
+# Default Claude path: through Converse, multi-vendor adapter.
+[providers.bedrock-claude]
+type       = "bedrock"
+model      = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+aws_region = "us-east-1"
+
+# Same model, same region — but through the Anthropic-native path
+# so you can use prompt caching / computer-use. Separate provider
+# because the two adapters are not interchangeable.
+[providers.claude-native]
+type       = "anthropic-bedrock"
+model      = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+aws_region = "us-east-1"
+extended_thinking        = true
+extended_thinking_budget = 8000
 ```
 
 ## `[instructions]`
