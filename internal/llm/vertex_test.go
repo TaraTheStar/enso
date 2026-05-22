@@ -4,6 +4,7 @@ package llm
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/TaraTheStar/enso/internal/config"
@@ -413,5 +414,127 @@ func TestVertex_ArgsMapRoundTrip(t *testing.T) {
 	}
 	if got["a"].(float64) != 1 {
 		t.Fatalf("a: %v", got["a"])
+	}
+}
+
+// TestApplyVertexSafety_TranslatesShortNames confirms the user-facing
+// short-name keys map onto the SDK's typed HarmCategory / threshold
+// enums. The map iterates non-deterministically, so the test checks
+// the resulting set rather than its order.
+func TestApplyVertexSafety_TranslatesShortNames(t *testing.T) {
+	cfg := &genai.GenerateContentConfig{}
+	err := applyVertexSafety(cfg, map[string]string{
+		"hate_speech":       "BLOCK_NONE",
+		"harassment":        "BLOCK_MEDIUM_AND_ABOVE",
+		"dangerous_content": "BLOCK_ONLY_HIGH",
+		"sexually_explicit": "OFF",
+	})
+	if err != nil {
+		t.Fatalf("applyVertexSafety: %v", err)
+	}
+	if got := len(cfg.SafetySettings); got != 4 {
+		t.Fatalf("SafetySettings len=%d, want 4", got)
+	}
+	want := map[genai.HarmCategory]genai.HarmBlockThreshold{
+		genai.HarmCategoryHateSpeech:       genai.HarmBlockThresholdBlockNone,
+		genai.HarmCategoryHarassment:       genai.HarmBlockThresholdBlockMediumAndAbove,
+		genai.HarmCategoryDangerousContent: genai.HarmBlockThresholdBlockOnlyHigh,
+		genai.HarmCategorySexuallyExplicit: genai.HarmBlockThresholdOff,
+	}
+	for _, s := range cfg.SafetySettings {
+		expected, ok := want[s.Category]
+		if !ok {
+			t.Errorf("unexpected category %v", s.Category)
+			continue
+		}
+		if s.Threshold != expected {
+			t.Errorf("category %v: threshold=%v, want %v", s.Category, s.Threshold, expected)
+		}
+	}
+}
+
+// TestApplyVertexSafety_CaseInsensitive covers the lowercase-threshold
+// path. Users coming from cloud-vendor copy-paste tend to mix cases
+// (Gemini docs show BLOCK_NONE; vertex.googleapis.com REST shows
+// "blockNone"). We standardise on the AWS-style uppercase enum but
+// accept any case for ergonomics.
+func TestApplyVertexSafety_CaseInsensitive(t *testing.T) {
+	cfg := &genai.GenerateContentConfig{}
+	err := applyVertexSafety(cfg, map[string]string{
+		"Hate_Speech": "block_none",
+		" HARASSMENT": "Off",
+	})
+	if err != nil {
+		t.Fatalf("applyVertexSafety: %v", err)
+	}
+	if len(cfg.SafetySettings) != 2 {
+		t.Fatalf("len=%d", len(cfg.SafetySettings))
+	}
+}
+
+// TestApplyVertexSafety_UnknownCategoryFails pins the fail-loud
+// behaviour for typos. The agent loop never sees a silently-permissive
+// safety config; the user's first Chat call surfaces the error.
+func TestApplyVertexSafety_UnknownCategoryFails(t *testing.T) {
+	cfg := &genai.GenerateContentConfig{}
+	err := applyVertexSafety(cfg, map[string]string{"hate-speech": "BLOCK_NONE"})
+	if err == nil {
+		t.Fatal("want error for unknown category (the docs use hate_speech with underscore)")
+	}
+	if !strings.Contains(err.Error(), "hate-speech") {
+		t.Fatalf("error should name the bad category: %v", err)
+	}
+}
+
+// TestApplyVertexSafety_UnknownThresholdFails pins the threshold-side
+// fail-loud. AWS Bedrock has analogous values; users blending the two
+// configs would otherwise see a 400 mid-stream.
+func TestApplyVertexSafety_UnknownThresholdFails(t *testing.T) {
+	cfg := &genai.GenerateContentConfig{}
+	err := applyVertexSafety(cfg, map[string]string{"hate_speech": "BLOCK_ALL"})
+	if err == nil {
+		t.Fatal("want error for unknown threshold")
+	}
+	if !strings.Contains(err.Error(), "BLOCK_ALL") {
+		t.Fatalf("error should name the bad threshold: %v", err)
+	}
+}
+
+// TestApplyVertexSafety_EmptyMapNoop covers the "unconditionally call
+// this" callsite contract: an empty/nil map leaves SafetySettings
+// alone so Gemini's defaults stay in effect. Without this, every
+// Vertex request would carry a no-op SafetySettings header.
+func TestApplyVertexSafety_EmptyMapNoop(t *testing.T) {
+	cfg := &genai.GenerateContentConfig{}
+	if err := applyVertexSafety(cfg, nil); err != nil {
+		t.Fatalf("nil map: %v", err)
+	}
+	if err := applyVertexSafety(cfg, map[string]string{}); err != nil {
+		t.Fatalf("empty map: %v", err)
+	}
+	if cfg.SafetySettings != nil {
+		t.Fatalf("SafetySettings must stay nil for empty input: %+v", cfg.SafetySettings)
+	}
+}
+
+// TestProviderFactory_VertexSafety confirms the safety map threads
+// through the factory onto VertexClient.
+func TestProviderFactory_VertexSafety(t *testing.T) {
+	client, err := newChatClient(config.ProviderConfig{
+		Type:        "vertex",
+		Model:       "gemini-2.5-pro",
+		GCPProject:  "p",
+		GCPLocation: "us-central1",
+		VertexSafety: map[string]string{
+			"hate_speech":       "BLOCK_NONE",
+			"sexually_explicit": "BLOCK_MEDIUM_AND_ABOVE",
+		},
+	})
+	if err != nil {
+		t.Fatalf("newChatClient: %v", err)
+	}
+	vc := client.(*VertexClient)
+	if len(vc.Safety) != 2 {
+		t.Fatalf("Safety not threaded: %+v", vc.Safety)
 	}
 }

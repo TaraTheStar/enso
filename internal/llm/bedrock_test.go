@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 )
 
@@ -381,6 +382,151 @@ func itoa(n int64) string {
 		b[i] = '-'
 	}
 	return string(b[i:])
+}
+
+// TestApplyBedrockGuardrail_WiresStreamConfiguration confirms a
+// configured guardrail produces a GuardrailStreamConfiguration on the
+// Converse input. We pin the field shape because Bedrock uses two
+// different guardrail types (`GuardrailConfiguration` for sync
+// Converse, `GuardrailStreamConfiguration` for streaming) — ConverseStream
+// requires the latter, and silently picking the wrong one would 400
+// the whole turn.
+func TestApplyBedrockGuardrail_WiresStreamConfiguration(t *testing.T) {
+	in, err := buildConverseInput(ChatRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
+	if err != nil {
+		t.Fatalf("buildConverseInput: %v", err)
+	}
+	if err := applyBedrockGuardrail(in, "gr-abc123", "DRAFT", "enabled"); err != nil {
+		t.Fatalf("applyBedrockGuardrail: %v", err)
+	}
+	if in.GuardrailConfig == nil {
+		t.Fatal("GuardrailConfig not set")
+	}
+	if got := derefString(in.GuardrailConfig.GuardrailIdentifier); got != "gr-abc123" {
+		t.Errorf("GuardrailIdentifier=%q", got)
+	}
+	if got := derefString(in.GuardrailConfig.GuardrailVersion); got != "DRAFT" {
+		t.Errorf("GuardrailVersion=%q", got)
+	}
+	if in.GuardrailConfig.Trace != types.GuardrailTraceEnabled {
+		t.Errorf("Trace=%v, want enabled", in.GuardrailConfig.Trace)
+	}
+}
+
+// TestApplyBedrockGuardrail_TraceDefaultsAndAliases covers the empty/
+// case-insensitive trace inputs. Empty trace → "enabled" (the cheapest
+// useful default — surfaces violations in CloudWatch without the
+// full-trace overhead). Case insensitivity matches the rest of the
+// config (model ids, region names, etc. are mostly case-insensitive
+// across AWS).
+func TestApplyBedrockGuardrail_TraceDefaultsAndAliases(t *testing.T) {
+	cases := []struct {
+		name  string
+		trace string
+		want  types.GuardrailTrace
+	}{
+		{"empty defaults to enabled", "", types.GuardrailTraceEnabled},
+		{"enabled lowercase", "enabled", types.GuardrailTraceEnabled},
+		{"ENABLED uppercase", "ENABLED", types.GuardrailTraceEnabled},
+		{"disabled", "Disabled", types.GuardrailTraceDisabled},
+		{"enabled_full", "enabled_full", types.GuardrailTraceEnabledFull},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in, err := buildConverseInput(ChatRequest{
+				Messages: []Message{{Role: "user", Content: "x"}},
+			}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
+			if err != nil {
+				t.Fatalf("buildConverseInput: %v", err)
+			}
+			if err := applyBedrockGuardrail(in, "id", "v1", tc.trace); err != nil {
+				t.Fatalf("applyBedrockGuardrail: %v", err)
+			}
+			if got := in.GuardrailConfig.Trace; got != tc.want {
+				t.Fatalf("Trace=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestApplyBedrockGuardrail_FailsLoudOnTypos covers the three error
+// paths (missing id, missing version, unknown trace). Without these
+// errors, a typo'd config would surface as a confusing 400 mid-stream
+// rather than a clear "fix your guardrail config" message at startup.
+func TestApplyBedrockGuardrail_FailsLoudOnTypos(t *testing.T) {
+	cases := []struct {
+		name             string
+		id, version, trc string
+		wantContains     string
+	}{
+		{"empty id", "", "v1", "enabled", "id is required"},
+		{"empty version", "id", "", "enabled", "version is required"},
+		{"unknown trace", "id", "v1", "verbose", "unknown trace"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			in := &bedrockruntime.ConverseStreamInput{}
+			err := applyBedrockGuardrail(in, tc.id, tc.version, tc.trc)
+			if err == nil {
+				t.Fatal("want error")
+			}
+			if !strings.Contains(err.Error(), tc.wantContains) {
+				t.Fatalf("error %q must mention %q", err, tc.wantContains)
+			}
+		})
+	}
+}
+
+// TestBedrockGuardrailHeaders_CollapsesFullToEnabled covers the
+// header-path trace mapping. InvokeModel's X-Amzn-Bedrock-Trace header
+// only takes ENABLED|DISABLED, so the Converse-only "enabled_full"
+// must collapse to ENABLED — documented behaviour, the test pins it.
+func TestBedrockGuardrailHeaders_CollapsesFullToEnabled(t *testing.T) {
+	hdrs, err := bedrockGuardrailHeaders("gr-x", "DRAFT", "enabled_full")
+	if err != nil {
+		t.Fatalf("bedrockGuardrailHeaders: %v", err)
+	}
+	if hdrs["X-Amzn-Bedrock-Trace"] != "ENABLED" {
+		t.Fatalf("Trace header=%q, want ENABLED (full collapses)", hdrs["X-Amzn-Bedrock-Trace"])
+	}
+	if hdrs["X-Amzn-Bedrock-GuardrailIdentifier"] != "gr-x" {
+		t.Fatalf("Identifier header missing: %+v", hdrs)
+	}
+}
+
+// TestBedrockGuardrailHeaders_EmptyIDNoHeaders covers the
+// "unconditionally call this" callsite contract: empty id returns nil,
+// nil so the caller can skip the iteration cleanly. Without this, the
+// anthropic-bedrock client would have to gate the call itself.
+func TestBedrockGuardrailHeaders_EmptyIDNoHeaders(t *testing.T) {
+	hdrs, err := bedrockGuardrailHeaders("", "DRAFT", "enabled")
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if hdrs != nil {
+		t.Fatalf("headers must be nil when id is empty, got %+v", hdrs)
+	}
+}
+
+// TestProviderFactory_BedrockGuardrails confirms the three guardrail
+// fields thread through the factory onto BedrockClient.
+func TestProviderFactory_BedrockGuardrails(t *testing.T) {
+	client, err := newChatClient(config.ProviderConfig{
+		Type:                    "bedrock",
+		Model:                   "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		BedrockGuardrailID:      "gr-abc",
+		BedrockGuardrailVersion: "DRAFT",
+		BedrockGuardrailTrace:   "enabled_full",
+	})
+	if err != nil {
+		t.Fatalf("newChatClient: %v", err)
+	}
+	bc := client.(*BedrockClient)
+	if bc.GuardrailID != "gr-abc" || bc.GuardrailVersion != "DRAFT" || bc.GuardrailTrace != "enabled_full" {
+		t.Fatalf("guardrail fields not threaded: %+v", bc)
+	}
 }
 
 // TestProviderFactory_OpenAIBackCompat confirms an empty Type still

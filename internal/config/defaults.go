@@ -72,6 +72,11 @@ presence_penalty = 1.5
 # # flag for non-Claude Bedrock models.
 # extended_thinking        = true
 # extended_thinking_budget = 8000
+# # Optional: apply an AWS Bedrock Guardrail. Same keys work on
+# # type = "anthropic-bedrock" — see below.
+# bedrock_guardrail_id      = "gr-abc123"
+# bedrock_guardrail_version = "DRAFT"          # or a numeric version
+# bedrock_guardrail_trace   = "enabled"        # enabled | disabled | enabled_full
 #
 # [providers.bedrock-nova]
 # type       = "bedrock"
@@ -100,6 +105,15 @@ presence_penalty = 1.5
 # # Budget = 0 leaves Gemini's dynamic mode in effect.
 # extended_thinking        = true
 # extended_thinking_budget = 0
+# # Optional: per-category Gemini safety thresholds. Empty leaves
+# # Gemini's defaults in effect. Categories: hate_speech, harassment,
+# # dangerous_content, sexually_explicit, civic_integrity. Values:
+# # BLOCK_NONE | BLOCK_LOW_AND_ABOVE | BLOCK_MEDIUM_AND_ABOVE |
+# # BLOCK_ONLY_HIGH | OFF. Unknown keys/values fail at first Chat.
+# [providers.vertex-gemini.vertex_safety]
+# hate_speech       = "BLOCK_NONE"
+# harassment        = "BLOCK_MEDIUM_AND_ABOVE"
+# dangerous_content = "BLOCK_ONLY_HIGH"
 #
 # [providers.vertex-flash]
 # type         = "vertex"
@@ -127,13 +141,20 @@ presence_penalty = 1.5
 # type       = "anthropic-bedrock"
 # model      = "anthropic.claude-3-5-sonnet-20241022-v2:0"
 # aws_region = "us-east-1"
-# # aws_profile = "default"   # optional override of the AWS credential chain
+# # aws_profile = "default"                    # optional override of the AWS credential chain
+# # bedrock_guardrail_id      = "gr-abc123"    # applied via X-Amzn-Bedrock-Guardrail* headers
+# # bedrock_guardrail_version = "DRAFT"
+# # bedrock_guardrail_trace   = "enabled"      # enabled | disabled (enabled_full collapses to enabled here)
 #
 # [providers.anthropic-vertex]
 # type         = "anthropic-vertex"
 # model        = "claude-3-5-sonnet-v2@20241022"
 # gcp_project  = "my-gcp-project"
 # gcp_location = "us-east5"
+# # Note: Vertex's per-request safety settings only attach to the
+# # Gemini path (type = "vertex"). Anthropic-on-Vertex uses :rawPredict
+# # which doesn't expose them — Vertex applies its platform-level
+# # Model Armor / safety policy in the infrastructure instead.
 
 [permissions]
 # Default permission mode for un-matched calls: "prompt" | "allow" | "deny".
