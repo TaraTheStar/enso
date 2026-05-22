@@ -94,3 +94,21 @@ func TestAnthropicVertexClient_MissingProjectErrors(t *testing.T) {
 		t.Fatalf("error should name project: %v", err)
 	}
 }
+
+// TestProviderFactory_AnthropicVertexPromptCaching pins the factory
+// wiring on the anthropic-vertex adapter — same TOML key.
+func TestProviderFactory_AnthropicVertexPromptCaching(t *testing.T) {
+	client, err := newChatClient(config.ProviderConfig{
+		Type:          "anthropic-vertex",
+		Model:         "claude-3-5-sonnet-v2@20241022",
+		GCPProject:    "p",
+		GCPLocation:   "us-east5",
+		PromptCaching: true,
+	})
+	if err != nil {
+		t.Fatalf("newChatClient: %v", err)
+	}
+	if !client.(*AnthropicVertexClient).PromptCaching {
+		t.Fatal("PromptCaching not threaded")
+	}
+}

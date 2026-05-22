@@ -134,6 +134,7 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 			GuardrailID:            cfg.BedrockGuardrailID,
 			GuardrailVersion:       cfg.BedrockGuardrailVersion,
 			GuardrailTrace:         cfg.BedrockGuardrailTrace,
+			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	case "vertex":
 		return &VertexClient{
@@ -153,6 +154,7 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 			MaxTokens:              cfg.MaxTokens,
 			ExtendedThinking:       cfg.ExtendedThinking,
 			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	case "anthropic-bedrock":
 		return &AnthropicBedrockClient{
@@ -165,6 +167,7 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 			GuardrailID:            cfg.BedrockGuardrailID,
 			GuardrailVersion:       cfg.BedrockGuardrailVersion,
 			GuardrailTrace:         cfg.BedrockGuardrailTrace,
+			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	case "anthropic-vertex":
 		return &AnthropicVertexClient{
@@ -174,6 +177,7 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 			MaxTokens:              cfg.MaxTokens,
 			ExtendedThinking:       cfg.ExtendedThinking,
 			ExtendedThinkingBudget: cfg.ExtendedThinkingBudget,
+			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown provider type %q", cfg.Type)

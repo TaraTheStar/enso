@@ -75,6 +75,15 @@ type BedrockClient struct {
 	GuardrailVersion string
 	GuardrailTrace   string
 
+	// PromptCaching opts into Bedrock Converse's CachePoint markers.
+	// When true, applyBedrockCachePoints inserts cache markers after
+	// the system content and after the last tool — equivalent to the
+	// cache_control:ephemeral markers on the Anthropic-native paths,
+	// but expressed as Converse's structured CachePointBlock. Bedrock
+	// applies the same caching rules behind the scenes; the wire
+	// encoding is what differs.
+	PromptCaching bool
+
 	// ProbeInterval is a test seam. Zero uses the package default.
 	ProbeInterval time.Duration
 
@@ -152,6 +161,9 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 		if err := applyBedrockGuardrail(input, c.GuardrailID, c.GuardrailVersion, c.GuardrailTrace); err != nil {
 			return nil, fmt.Errorf("bedrock: guardrail: %w", err)
 		}
+	}
+	if c.PromptCaching {
+		applyBedrockCachePoints(input)
 	}
 
 	sdk, err := c.client(ctx)
@@ -240,13 +252,23 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 					delete(tools, idx)
 				}
 
+			case *types.ConverseStreamOutputMemberMetadata:
+				// Metadata carries TokenUsage including cache hit
+				// counters. Log it so cache effectiveness shows up
+				// in the debug stream; the agent's accounting still
+				// uses local estimation today (separate observability
+				// patch will plumb this through the Event channel).
+				if u := e.Value.Usage; u != nil {
+					fmt.Fprintf(debugLog(), "bedrock usage: in=%d out=%d cache_read=%d cache_write=%d\n",
+						derefInt32(u.InputTokens), derefInt32(u.OutputTokens),
+						derefInt32(u.CacheReadInputTokens), derefInt32(u.CacheWriteInputTokens))
+				}
+
 			case *types.ConverseStreamOutputMemberMessageStart,
-				*types.ConverseStreamOutputMemberMessageStop,
-				*types.ConverseStreamOutputMemberMetadata:
+				*types.ConverseStreamOutputMemberMessageStop:
 				// MessageStart carries role (always assistant for our
-				// usage); MessageStop carries stop_reason; Metadata
-				// carries token usage. None feed the event channel
-				// today — usage accounting hooks would land here.
+				// usage); MessageStop carries stop_reason. Neither
+				// feeds the event channel today.
 			}
 		}
 
@@ -489,6 +511,26 @@ func applyExtendedThinking(input *bedrockruntime.ConverseStreamInput, budget int
 			"budget_tokens": budget,
 		},
 	})
+}
+
+// applyBedrockCachePoints appends CachePoint markers after the system
+// content and after the last tool spec — same logical effect as the
+// Anthropic-native cache_control markers, just expressed in Converse's
+// shape. Bedrock caches the prefix up to and including each marker.
+//
+// No-op when there's no system content or no tools to mark. Stays
+// within Bedrock's 4-marker per-request limit (we spend at most 2).
+func applyBedrockCachePoints(input *bedrockruntime.ConverseStreamInput) {
+	if len(input.System) > 0 {
+		input.System = append(input.System, &types.SystemContentBlockMemberCachePoint{
+			Value: types.CachePointBlock{Type: types.CachePointTypeDefault},
+		})
+	}
+	if input.ToolConfig != nil && len(input.ToolConfig.Tools) > 0 {
+		input.ToolConfig.Tools = append(input.ToolConfig.Tools, &types.ToolMemberCachePoint{
+			Value: types.CachePointBlock{Type: types.CachePointTypeDefault},
+		})
+	}
 }
 
 // bedrockGuardrailHeaders maps the user-facing trace value
