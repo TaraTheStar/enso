@@ -51,6 +51,15 @@ type AnthropicClient struct {
 	// and < MaxTokens. Zero falls back to 4096.
 	ExtendedThinkingBudget int64
 
+	// PromptCaching opts into Anthropic's ephemeral-prompt-cache. When
+	// true, buildAnthropicParams sets cache_control:{type:"ephemeral"}
+	// on the final system block and the final tool. The system + tool
+	// prefix becomes a single cacheable block; reused across turns the
+	// hit ratio approaches 100% until the system or tool set changes.
+	// Cost note: cache writes are billed at 1.25x input, cache reads at
+	// 0.1x — break-even after roughly two reuses.
+	PromptCaching bool
+
 	// AnthropicVersion overrides the `anthropic-version` header. Empty
 	// uses the SDK's pinned default.
 	AnthropicVersion string
@@ -207,6 +216,23 @@ func streamAnthropic(
 					delete(inflight, cbs.Index)
 				}
 
+			case "message_start":
+				// Initial Usage carries input + cache_read counts.
+				ms := ev.AsMessageStart()
+				logAnthropicUsage(label, ms.Message.Usage.InputTokens,
+					ms.Message.Usage.OutputTokens,
+					ms.Message.Usage.CacheReadInputTokens,
+					ms.Message.Usage.CacheCreationInputTokens)
+
+			case "message_delta":
+				// Final Usage. Output tokens land here; input + cache
+				// counts mirror what message_start already reported.
+				md := ev.AsMessageDelta()
+				logAnthropicUsage(label, md.Usage.InputTokens,
+					md.Usage.OutputTokens,
+					md.Usage.CacheReadInputTokens,
+					md.Usage.CacheCreationInputTokens)
+
 			case "message_stop":
 				// Real terminator; the loop will exit on next Next().
 			}
@@ -278,17 +304,20 @@ func (c *AnthropicClient) probeOnce() bool {
 // buildParams is AnthropicClient's bound form of buildAnthropicParams,
 // kept for symmetry with the test surface.
 func (c *AnthropicClient) buildParams(req ChatRequest, maxTokens int64) (anthropic.MessageNewParams, error) {
-	return buildAnthropicParams(req, c.Model, maxTokens, c.ExtendedThinking, c.ExtendedThinkingBudget)
+	return buildAnthropicParams(req, c.Model, maxTokens, c.ExtendedThinking, c.ExtendedThinkingBudget, c.PromptCaching)
 }
 
 // buildAnthropicParams produces MessageNewParams ready for the Messages
-// API, with the extended-thinking layer applied if requested. Shared
-// between AnthropicClient and BedrockClient — the wire protocol is the
-// same; only the SDK construction differs.
-func buildAnthropicParams(req ChatRequest, model string, maxTokens int64, thinking bool, thinkingBudget int64) (anthropic.MessageNewParams, error) {
+// API, with the extended-thinking and prompt-caching layers applied if
+// requested. Shared between all three Anthropic adapters — the wire
+// protocol is identical; only the SDK construction differs.
+func buildAnthropicParams(req ChatRequest, model string, maxTokens int64, thinking bool, thinkingBudget int64, promptCaching bool) (anthropic.MessageNewParams, error) {
 	params, err := toAnthropicParams(req, model, maxTokens)
 	if err != nil {
 		return params, err
+	}
+	if promptCaching {
+		applyAnthropicPromptCaching(&params)
 	}
 	if thinking {
 		budget := thinkingBudget
@@ -629,5 +658,45 @@ func toStringSlice(v interface{}) ([]string, error) {
 		return out, nil
 	default:
 		return nil, errors.New("not a string array")
+	}
+}
+
+// logAnthropicUsage emits a debug-log line summarising input / output
+// / cache token counts. We don't surface this through the Event channel
+// yet — the agent's token accounting still uses local estimation —
+// but logging means cache effectiveness shows up in the debug stream
+// without having to crack open the cloud-side dashboard.
+func logAnthropicUsage(label string, in, out, cacheRead, cacheCreate int64) {
+	if in == 0 && out == 0 && cacheRead == 0 && cacheCreate == 0 {
+		return
+	}
+	fmt.Fprintf(debugLog(), "%s usage: in=%d out=%d cache_read=%d cache_create=%d\n",
+		label, in, out, cacheRead, cacheCreate)
+}
+
+// applyAnthropicPromptCaching inserts ephemeral cache_control markers
+// on the boundaries that change rarely: the final system block and
+// the final tool. Anthropic caches the entire prefix up to and
+// including each marker, so one marker after system gives the system
+// prompt + tool definitions a stable cacheable prefix on every turn
+// that doesn't touch them. Adding a second marker on tools doubles
+// the chance the cache survives a system-prompt edit that left tools
+// alone — Anthropic permits up to 4 markers per request, so spending
+// 2 of them on the stable layers is cheap.
+//
+// No-op when there's nothing to cache (no system blocks, no tools).
+func applyAnthropicPromptCaching(params *anthropic.MessageNewParams) {
+	if n := len(params.System); n > 0 {
+		params.System[n-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+	}
+	if n := len(params.Tools); n > 0 {
+		// Tools is a union slice; cache_control lives on the
+		// ToolParam variant (OfTool). Only mark function-tool entries;
+		// other kinds (computer-use, bash, etc.) are not yet emitted
+		// by the translator but adding a guard now avoids a future
+		// nil panic.
+		if t := params.Tools[n-1].OfTool; t != nil {
+			t.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		}
 	}
 }

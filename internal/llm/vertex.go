@@ -175,6 +175,15 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 				streamErr = err
 				return false
 			}
+			if u := resp.UsageMetadata; u != nil && (u.PromptTokenCount > 0 || u.CachedContentTokenCount > 0) {
+				// Gemini 2.5+ reports CachedContentTokenCount when
+				// implicit caching hits; log so cache effectiveness
+				// is visible in the debug stream. Agent's local
+				// token estimator is unchanged.
+				fmt.Fprintf(debugLog(), "vertex usage: prompt=%d candidates=%d cached=%d total=%d\n",
+					u.PromptTokenCount, u.CandidatesTokenCount,
+					u.CachedContentTokenCount, u.TotalTokenCount)
+			}
 			for _, cand := range resp.Candidates {
 				if cand == nil || cand.Content == nil {
 					continue

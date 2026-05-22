@@ -59,6 +59,10 @@ type AnthropicVertexClient struct {
 	ExtendedThinking       bool
 	ExtendedThinkingBudget int64
 
+	// PromptCaching — same semantics as AnthropicClient.PromptCaching.
+	// Vertex-hosted Claude honours the same cache_control markers.
+	PromptCaching bool
+
 	// HTTPClient overrides the SDK's transport. Tests inject a custom
 	// RoundTripper here; production leaves nil.
 	HTTPClient *http.Client
@@ -112,7 +116,7 @@ func (c *AnthropicVertexClient) Chat(ctx context.Context, req ChatRequest) (<-ch
 	if maxTokens == 0 {
 		maxTokens = 8192
 	}
-	params, err := buildAnthropicParams(req, c.Model, maxTokens, c.ExtendedThinking, c.ExtendedThinkingBudget)
+	params, err := buildAnthropicParams(req, c.Model, maxTokens, c.ExtendedThinking, c.ExtendedThinkingBudget, c.PromptCaching)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic-vertex: build params: %w", err)
 	}

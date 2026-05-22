@@ -78,6 +78,7 @@ presence_penalty = 1.5
 | `pool`           | auto (by endpoint)          | Pool this provider belongs to. Unset = auto-grouped with every provider sharing its `endpoint`. See `[pools.<name>]`. |
 | `api_key`        | `""`                        | Sent as `Authorization: Bearer <key>` if non-empty. Supports `$ENSO_FOO` / `${ENSO_FOO}` env-var indirection — see [Secrets]({{< relref "../docs/secrets.md" >}}). Not used by `type = "bedrock"` or `type = "vertex"`. |
 | `max_tokens`     | `0`                         | Caps response length. Optional for OpenAI (only sent when non-zero); Bedrock applies a default of 4096 when zero; Vertex applies 8192. |
+| `prompt_caching` | `false`                     | Opts into vendor-side prompt caching. On Anthropic + `anthropic-bedrock` + `anthropic-vertex`, inserts `cache_control:ephemeral` markers on the last system block and the last tool — system + tool definitions become a single cacheable prefix; subsequent turns that reuse the prefix hit the cache. On Bedrock Converse, equivalent via `CachePoint` blocks. OpenAI and Vertex Gemini cache implicitly — flag is a no-op for them but accepted so configs stay symmetric. Cache writes are billed 1.25× input on Anthropic; cache reads at 0.1×. Break-even after roughly two reuses of the same system/tool prefix. No-op on local providers. |
 | `sampler.*`      | various                     | Sampler knobs. Sent in every completion request.                           |
 
 #### Bedrock-only fields (`type = "bedrock"`)
