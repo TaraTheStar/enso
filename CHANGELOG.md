@@ -4,6 +4,58 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.7.0] - 2026-05-22
+
+### Added
+- **AWS Bedrock provider (`[providers.<name>] type = "bedrock"`).** A
+  multi-vendor adapter: Claude, Amazon Nova, Llama, Mistral, Cohere,
+  and AI21 are all reachable through one provider type — the `model`
+  id picks which. Auth follows the standard AWS credential chain
+  (env vars, `~/.aws/credentials`, EC2/ECS/EKS instance role);
+  `aws_region` and `aws_profile` override it. Claude models can opt
+  into extended thinking via `extended_thinking` /
+  `extended_thinking_budget`; reasoning surfaces through the same
+  channel the TUI already renders for OpenAI reasoning models.
+  Inference-profile ARNs are accepted as the `model` value.
+- **Google Cloud Vertex AI provider (`type = "vertex"`).** Gemini and
+  other Vertex-hosted models via the multi-vendor `generateContent`
+  API. Auth uses Application Default Credentials (`gcloud auth
+  application-default login`, service-account JSON via
+  `GOOGLE_APPLICATION_CREDENTIALS`, or workload identity); set
+  `project_id` and `location` (region) per provider.
+- **Anthropic-native opt-in paths for Claude
+  (`type = "anthropic"` / `"anthropic-bedrock"` /
+  `"anthropic-vertex"`).** Opt-in adapters that go through Anthropic's
+  own SDK for users who want Claude-specific niceties (extended
+  thinking, prompt caching, native tool-result blocks) without the
+  vendor-translation layer. The multi-vendor `bedrock` and `vertex`
+  types remain the default route; the Anthropic-native paths are
+  strictly opt-in and never silently shadow the vendor-neutral ones.
+- **Vendor-side prompt caching (`prompt_caching = true`).** When set
+  on a Claude-capable provider (`anthropic`, `anthropic-bedrock`,
+  `anthropic-vertex`, and `bedrock` for Claude models) the adapter
+  emits Anthropic `cache_control` markers on the last system block
+  and the last tool, so the system + tool-definition prefix becomes a
+  stable cacheable block reused across turns. No-op on `openai` /
+  local providers. Off by default.
+- **Bedrock guardrails and Vertex safety controls.** Per-provider
+  policy knobs surface the vendors' built-in content-safety layers:
+  Bedrock's `guardrail_id` / `guardrail_version` and Vertex's
+  `safety_settings` (category → threshold map). Both attach to every
+  request from that provider; off when unset.
+- **Multimodal input (images and documents).** The `read` tool now
+  recognises image (`png`/`jpeg`/`gif`/`webp`) and PDF inputs and
+  attaches them as native multimodal parts on providers that support
+  it (Anthropic, Bedrock Claude/Nova, Vertex Gemini). Text-only
+  providers continue to receive a plain-text fallback. Includes
+  message-shape conversion in the LLM adapters and per-vendor
+  encoding tests.
+
+### Changed
+- **Dependency bumps.** `go.opentelemetry.io/otel` 1.39.0 → 1.41.0;
+  `google.golang.org/grpc` 1.66.2 → 1.79.3; `github.com/mark3labs/
+  mcp-go` 0.53.0 → 0.54.0.
+
 ## [v2.6.0] - 2026-05-21
 
 ### Added
@@ -52,6 +104,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   script never fails an otherwise-good boot (every step guarded; exits
   0) and is idempotent across reboots. The GRUB regex also handles
   the indented `set timeout=` lines real `grub.cfg` files use (#54).
+
+## [v2.5.1] - 2026-05-19
 
 ### Fixed
 - **Terminal/shell hung after a Lima-backed session.** Closing the
@@ -605,7 +659,9 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
-[v2.6.0]: https://github.com/TaraTheStar/enso/compare/v2.5.0...v2.6.0
+[v2.7.0]: https://github.com/TaraTheStar/enso/compare/v2.6.0...v2.7.0
+[v2.6.0]: https://github.com/TaraTheStar/enso/compare/v2.5.1...v2.6.0
+[v2.5.1]: https://github.com/TaraTheStar/enso/compare/v2.5.0...v2.5.1
 [v2.5.0]: https://github.com/TaraTheStar/enso/compare/v2.4.0...v2.5.0
 [v2.4.0]: https://github.com/TaraTheStar/enso/compare/v2.3.0...v2.4.0
 [v2.3.0]: https://github.com/TaraTheStar/enso/compare/v2.2.0...v2.3.0
