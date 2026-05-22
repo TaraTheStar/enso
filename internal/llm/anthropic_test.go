@@ -341,3 +341,98 @@ func TestAnthropicContentBlock_ImageWithoutDataErrors(t *testing.T) {
 		t.Fatal("want error for image part with no data/uri")
 	}
 }
+
+// TestAnthropicBuildParams_PromptCaching confirms cache_control:
+// ephemeral markers land on the last system block and the last tool.
+// JSON shape pinning — the SDK's omitzero machinery is finicky, and a
+// silently-empty CacheControl wouldn't reach the wire.
+func TestAnthropicBuildParams_PromptCaching(t *testing.T) {
+	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: true}
+	params, err := c.buildParams(ChatRequest{
+		Messages: []Message{
+			{Role: "system", Content: "you are concise"},
+			{Role: "user", Content: "hi"},
+		},
+		Tools: []ToolDef{{
+			Type: "function",
+			Function: ToolFunctionDef{
+				Name:        "read",
+				Description: "read a file",
+				Parameters:  map[string]interface{}{"type": "object"},
+			},
+		}},
+	}, 8192)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	data, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	js := string(data)
+	// Both system and tools should carry cache_control: ephemeral.
+	// SDK marshals CacheControlEphemeralParam as {"type":"ephemeral"}.
+	if strings.Count(js, `"cache_control"`) != 2 {
+		t.Fatalf("want 2 cache_control markers, got: %s", js)
+	}
+	if strings.Count(js, `"type":"ephemeral"`) != 2 {
+		t.Fatalf("want 2 ephemeral types, got: %s", js)
+	}
+}
+
+// TestAnthropicBuildParams_PromptCachingDisabled is the back-compat
+// pin: with the flag off, NO cache_control markers appear. This is
+// the byte-identical legacy shape every existing user gets.
+func TestAnthropicBuildParams_PromptCachingDisabled(t *testing.T) {
+	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: false}
+	params, err := c.buildParams(ChatRequest{
+		Messages: []Message{
+			{Role: "system", Content: "you are concise"},
+			{Role: "user", Content: "hi"},
+		},
+		Tools: []ToolDef{{Type: "function", Function: ToolFunctionDef{Name: "read", Description: "x", Parameters: map[string]interface{}{"type": "object"}}}},
+	}, 8192)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	data, _ := json.Marshal(params)
+	if strings.Contains(string(data), `"cache_control"`) {
+		t.Fatalf("cache_control must not appear when disabled: %s", data)
+	}
+}
+
+// TestAnthropicPromptCaching_NoSystemNoTools covers the no-op path:
+// no system + no tools = no markers (instead of panicking on empty
+// slice access). This is also the local-llama case if someone
+// accidentally enables PromptCaching on the OpenAI-compat adapter
+// (factory routes correctly today, but defensive code is cheap).
+func TestAnthropicPromptCaching_NoSystemNoTools(t *testing.T) {
+	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: true}
+	params, err := c.buildParams(ChatRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}, 8192)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	data, _ := json.Marshal(params)
+	if strings.Contains(string(data), `"cache_control"`) {
+		t.Fatalf("no markers expected without system/tools: %s", data)
+	}
+}
+
+// TestProviderFactory_AnthropicPromptCaching confirms the
+// prompt_caching toml key threads onto AnthropicClient.PromptCaching.
+func TestProviderFactory_AnthropicPromptCaching(t *testing.T) {
+	client, err := newChatClient(config.ProviderConfig{
+		Type:          "anthropic",
+		Model:         "claude-sonnet-4-5",
+		APIKey:        "k",
+		PromptCaching: true,
+	})
+	if err != nil {
+		t.Fatalf("newChatClient: %v", err)
+	}
+	if !client.(*AnthropicClient).PromptCaching {
+		t.Fatal("PromptCaching not threaded")
+	}
+}

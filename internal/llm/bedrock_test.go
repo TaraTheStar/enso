@@ -639,3 +639,78 @@ func TestBedrockToolResultContent_WithImage(t *testing.T) {
 		t.Fatalf("tool_result content[1] type: %T (want image)", tr.Value.Content[1])
 	}
 }
+
+// TestApplyBedrockCachePoints_InsertsMarkers confirms cache point
+// blocks land after system content and after the last tool — the
+// Converse equivalent of Anthropic's cache_control:ephemeral markers.
+func TestApplyBedrockCachePoints_InsertsMarkers(t *testing.T) {
+	in, err := buildConverseInput(ChatRequest{
+		Messages: []Message{
+			{Role: "system", Content: "be brief"},
+			{Role: "user", Content: "hi"},
+		},
+		Tools: []ToolDef{{
+			Type: "function",
+			Function: ToolFunctionDef{
+				Name: "read", Description: "read", Parameters: map[string]interface{}{"type": "object"},
+			},
+		}},
+	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
+	if err != nil {
+		t.Fatalf("buildConverseInput: %v", err)
+	}
+	applyBedrockCachePoints(in)
+
+	if len(in.System) != 2 {
+		t.Fatalf("System: want 2 (text + cachepoint), got %d", len(in.System))
+	}
+	if _, ok := in.System[1].(*types.SystemContentBlockMemberCachePoint); !ok {
+		t.Fatalf("System[1] type: %T (want SystemContentBlockMemberCachePoint)", in.System[1])
+	}
+
+	if in.ToolConfig == nil {
+		t.Fatal("ToolConfig nil")
+	}
+	if n := len(in.ToolConfig.Tools); n != 2 {
+		t.Fatalf("Tools: want 2 (spec + cachepoint), got %d", n)
+	}
+	if _, ok := in.ToolConfig.Tools[1].(*types.ToolMemberCachePoint); !ok {
+		t.Fatalf("Tools[1] type: %T (want ToolMemberCachePoint)", in.ToolConfig.Tools[1])
+	}
+}
+
+// TestApplyBedrockCachePoints_NoSystemNoTools covers the empty case:
+// nothing to cache, no markers inserted. Without this guard the helper
+// would happily wedge a CachePoint into a System=nil slice and
+// surface as a "system blocks must be non-empty" 400 mid-stream.
+func TestApplyBedrockCachePoints_NoSystemNoTools(t *testing.T) {
+	in, err := buildConverseInput(ChatRequest{
+		Messages: []Message{{Role: "user", Content: "hi"}},
+	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
+	if err != nil {
+		t.Fatalf("buildConverseInput: %v", err)
+	}
+	applyBedrockCachePoints(in)
+	if len(in.System) != 0 {
+		t.Fatalf("System unexpectedly modified: %+v", in.System)
+	}
+	if in.ToolConfig != nil {
+		t.Fatalf("ToolConfig unexpectedly created: %+v", in.ToolConfig)
+	}
+}
+
+// TestProviderFactory_BedrockPromptCaching confirms the prompt_caching
+// flag threads through onto BedrockClient.
+func TestProviderFactory_BedrockPromptCaching(t *testing.T) {
+	client, err := newChatClient(config.ProviderConfig{
+		Type:          "bedrock",
+		Model:         "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		PromptCaching: true,
+	})
+	if err != nil {
+		t.Fatalf("newChatClient: %v", err)
+	}
+	if !client.(*BedrockClient).PromptCaching {
+		t.Fatal("PromptCaching not threaded")
+	}
+}
