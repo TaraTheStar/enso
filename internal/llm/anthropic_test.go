@@ -241,3 +241,103 @@ func TestAssistantBlocks_EmptyArgs(t *testing.T) {
 		t.Fatalf("missing tool_use: %s", data)
 	}
 }
+
+// TestSplitSystem_UserImagePart verifies a user-role Message with an
+// image Part produces an Anthropic ImageBlock alongside any text. The
+// base64 wrapper ships verbatim on the wire (Anthropic SDK takes the
+// pre-encoded string, not raw bytes).
+func TestSplitSystem_UserImagePart(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+	_, msgs, err := splitSystem([]Message{
+		{
+			Role:    "user",
+			Content: "what is this?",
+			Parts:   []MessagePart{NewImagePart("image/png", imgBytes)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("splitSystem: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("messages: want 1 got %d", len(msgs))
+	}
+	if len(msgs[0].Content) != 2 {
+		t.Fatalf("content blocks: want 2 (text + image), got %d", len(msgs[0].Content))
+	}
+	// Round-trip through JSON to confirm the on-the-wire shape.
+	data, err := json.Marshal(msgs[0])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	js := string(data)
+	if !strings.Contains(js, `"type":"image"`) || !strings.Contains(js, `"media_type":"image/png"`) {
+		t.Fatalf("image block missing: %s", js)
+	}
+	if !strings.Contains(js, `"data":"iVBORw=="`) {
+		// "iVBORw==" is the base64 of 0x89 0x50 0x4e 0x47.
+		t.Fatalf("base64 data: %s", js)
+	}
+}
+
+// TestToolResultBlock_WithImage covers the tool-result-with-image
+// path: the read tool on a PNG produces a tool_result block whose
+// Content carries an image, not just text. Pinned because three
+// vendors model this slightly differently and we need the Anthropic
+// one to actually round-trip.
+func TestToolResultBlock_WithImage(t *testing.T) {
+	imgBytes := []byte("gifdata")
+	blk, err := toolResultBlock(Message{
+		Role:       "tool",
+		ToolCallID: "call_42",
+		Content:    "[image: foo.gif]",
+		Parts:      []MessagePart{NewImagePart("image/gif", imgBytes)},
+	})
+	if err != nil {
+		t.Fatalf("toolResultBlock: %v", err)
+	}
+	data, err := json.Marshal(blk)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	js := string(data)
+	if !strings.Contains(js, `"tool_use_id":"call_42"`) {
+		t.Fatalf("tool_use_id missing: %s", js)
+	}
+	if !strings.Contains(js, `"type":"image"`) {
+		t.Fatalf("image content block missing: %s", js)
+	}
+	if !strings.Contains(js, `"media_type":"image/gif"`) {
+		t.Fatalf("media_type missing: %s", js)
+	}
+	// Synthesized text summary still rides along.
+	if !strings.Contains(js, `"text":"[image: foo.gif]"`) {
+		t.Fatalf("text summary missing: %s", js)
+	}
+}
+
+// TestAssistantBlocks_LegacyPathUnchanged guards the back-compat
+// contract: an assistant message with no Parts behaves exactly as
+// before this refactor.
+func TestAssistantBlocks_LegacyPathUnchanged(t *testing.T) {
+	blocks, err := assistantBlocks(Message{Role: "assistant", Content: "hello"})
+	if err != nil {
+		t.Fatalf("assistantBlocks: %v", err)
+	}
+	if len(blocks) != 1 {
+		t.Fatalf("blocks: want 1 got %d", len(blocks))
+	}
+	data, _ := json.Marshal(blocks[0])
+	if !strings.Contains(string(data), `"text":"hello"`) {
+		t.Fatalf("text block missing: %s", data)
+	}
+}
+
+// TestAnthropicContentBlock_ImageWithoutDataErrors pins the fail-loud
+// contract: an image part with no Data and no URI is a caller bug, not
+// a silent drop.
+func TestAnthropicContentBlock_ImageWithoutDataErrors(t *testing.T) {
+	_, err := anthropicContentBlock(MessagePart{Type: "image", MIMEType: "image/png"})
+	if err == nil {
+		t.Fatal("want error for image part with no data/uri")
+	}
+}

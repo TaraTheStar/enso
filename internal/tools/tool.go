@@ -28,6 +28,15 @@ type Result struct {
 	DisplayOutput string // optional terse line(s) for scrollback; falls back to LLMOutput when empty
 	Display       any    // rich display data (e.g., diff for permission modal)
 	Meta          ResultMeta
+
+	// Parts carries non-text content the tool wants the model to see —
+	// today that's just images (read tool on a PNG, etc.). When
+	// populated, the agent loop wraps the tool-result Message with
+	// these Parts so the adapter can translate them to the vendor's
+	// multimodal shape. LLMOutput is still set for adapters that don't
+	// speak images yet and for session persistence (the DB schema is
+	// still TEXT-only); the model "sees" the image via Parts.
+	Parts []llm.MessagePart
 }
 
 // ResultMeta carries side-channel metadata used by the agent's

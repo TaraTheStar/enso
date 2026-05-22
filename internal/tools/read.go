@@ -5,8 +5,12 @@ package tools
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
+
+	"github.com/TaraTheStar/enso/internal/llm"
 )
 
 // ReadTool reads a file or a line range.
@@ -41,6 +45,28 @@ func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	}
 
 	ac.ReadSet[abs] = true
+
+	// Image short-circuit: when the file is a recognised image type
+	// we hand the bytes to the model as a multimodal Part instead of
+	// rendering binary as numbered text. The model gets to "see" the
+	// image directly on adapters that support multimodal; adapters
+	// that don't will surface a clear error rather than a corrupt
+	// transcript.
+	if mime, ok := imageMIME(abs, data); ok {
+		summary := fmt.Sprintf("[image: %s, mime=%s, %d bytes]", filepath.Base(abs), mime, len(data))
+		return Result{
+			LLMOutput:     summary,
+			FullOutput:    summary,
+			DisplayOutput: fmt.Sprintf("image, %s", humanBytes(len(data))),
+			Parts: []llm.MessagePart{
+				llm.NewImagePart(mime, data),
+			},
+			Meta: ResultMeta{
+				PathsRead: []string{abs},
+				CacheKey:  fmt.Sprintf("read:%s:image", abs),
+			},
+		}, nil
+	}
 
 	lines := strings.Split(string(data), "\n")
 
@@ -94,4 +120,34 @@ func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 			CacheKey:  cacheKey,
 		},
 	}, nil
+}
+
+// imageMIME tries the file extension first (cheap, source-of-truth
+// for what the user named the file) and falls back to a magic-byte
+// sniff (handles renamed-PNG-with-jpg-extension, etc.). Restricted to
+// formats Bedrock + Anthropic + Vertex all accept; uncommon types
+// (heic, avif, tiff) fail the test on purpose so they route through
+// the normal text-read path with its visible "binary garbage" symptom
+// instead of getting silently passed to a model that may or may not
+// handle them.
+func imageMIME(path string, data []byte) (string, bool) {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".png":
+		return "image/png", true
+	case ".jpg", ".jpeg":
+		return "image/jpeg", true
+	case ".gif":
+		return "image/gif", true
+	case ".webp":
+		return "image/webp", true
+	}
+	// Sniff fallback: http.DetectContentType reads the first 512
+	// bytes. Same supported set as the extension switch so the
+	// behaviour is consistent either way.
+	sniff := http.DetectContentType(data)
+	switch sniff {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return sniff, true
+	}
+	return "", false
 }

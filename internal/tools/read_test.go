@@ -135,3 +135,87 @@ func mustWriteFile(t *testing.T, path, body string) {
 		t.Fatalf("write %s: %v", path, err)
 	}
 }
+
+// TestReadTool_PNGEmitsImagePart confirms the image short-circuit:
+// reading a recognised image file returns a Result with a single
+// image MessagePart instead of binary-as-numbered-text. The textual
+// LLMOutput becomes a one-line summary the model can still read on
+// adapters that don't support images yet.
+func TestReadTool_PNGEmitsImagePart(t *testing.T) {
+	tmp := t.TempDir()
+	// 8-byte PNG magic (89 50 4E 47 0D 0A 1A 0A) — enough for
+	// http.DetectContentType to recognise the format if extension
+	// detection somehow missed.
+	pngMagic := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}
+	mustWriteFile(t, filepath.Join(tmp, "tiny.png"), string(pngMagic))
+
+	ac := newToolAC(tmp)
+	res, err := ReadTool{}.Run(context.Background(),
+		map[string]any{"path": "tiny.png"}, ac)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Parts) != 1 {
+		t.Fatalf("Parts: want 1, got %d", len(res.Parts))
+	}
+	if res.Parts[0].Type != "image" || res.Parts[0].MIMEType != "image/png" {
+		t.Fatalf("part: type=%q mime=%q", res.Parts[0].Type, res.Parts[0].MIMEType)
+	}
+	if len(res.Parts[0].Data) != len(pngMagic) {
+		t.Fatalf("Data len=%d, want %d", len(res.Parts[0].Data), len(pngMagic))
+	}
+	// Textual summary still set — adapters that don't speak images
+	// (or persistence) get a useful fallback.
+	if !strings.Contains(res.LLMOutput, "[image:") {
+		t.Fatalf("LLMOutput summary missing: %q", res.LLMOutput)
+	}
+	if !strings.Contains(res.DisplayOutput, "image,") {
+		t.Fatalf("DisplayOutput missing image prefix: %q", res.DisplayOutput)
+	}
+}
+
+// TestReadTool_NonImageBinaryFallsThrough verifies that a .bin file
+// the sniffer can't classify routes through the normal text-read
+// path (no Parts). Better to show the user the symptom (garbled
+// text) than pretend we have a multimodal answer.
+func TestReadTool_NonImageBinaryFallsThrough(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "blob.bin"), "\x00\x01\x02arbitrary")
+
+	ac := newToolAC(tmp)
+	res, err := ReadTool{}.Run(context.Background(),
+		map[string]any{"path": "blob.bin"}, ac)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(res.Parts) != 0 {
+		t.Fatalf("non-image must not produce Parts: %+v", res.Parts)
+	}
+}
+
+// TestImageMIME_ExtensionAndSniff covers both detection paths.
+// Extension is authoritative (user named it); sniff catches files
+// renamed to ".dat" but still PNG.
+func TestImageMIME_ExtensionAndSniff(t *testing.T) {
+	cases := []struct {
+		name     string
+		path     string
+		data     []byte
+		wantMime string
+		wantOK   bool
+	}{
+		{"png by extension", "x.png", []byte("anything"), "image/png", true},
+		{"jpeg by extension", "x.JPG", []byte("anything"), "image/jpeg", true},
+		{"png by sniff", "x.dat", []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a}, "image/png", true},
+		{"unknown extension+content", "x.dat", []byte("hello"), "", false},
+		{"heic (intentionally unsupported)", "x.heic", []byte("fakeheic"), "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := imageMIME(tc.path, tc.data)
+			if ok != tc.wantOK || got != tc.wantMime {
+				t.Fatalf("got=%q ok=%v, want %q %v", got, ok, tc.wantMime, tc.wantOK)
+			}
+		})
+	}
+}
