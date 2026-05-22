@@ -315,12 +315,16 @@ func buildVertexRequest(req ChatRequest, maxTokens int64) ([]*genai.Content, *ge
 
 		case "user":
 			flushToolResponses()
-			if m.Content == "" {
+			parts, err := vertexUserParts(m)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(parts) == 0 {
 				continue
 			}
 			contents = append(contents, &genai.Content{
 				Role:  genai.RoleUser,
-				Parts: []*genai.Part{genai.NewPartFromText(m.Content)},
+				Parts: parts,
 			})
 
 		case "assistant":
@@ -328,6 +332,13 @@ func buildVertexRequest(req ChatRequest, maxTokens int64) ([]*genai.Content, *ge
 			var parts []*genai.Part
 			if m.Content != "" {
 				parts = append(parts, genai.NewPartFromText(m.Content))
+			}
+			for _, p := range m.Parts {
+				vp, err := vertexPart(p)
+				if err != nil {
+					return nil, nil, err
+				}
+				parts = append(parts, vp)
 			}
 			for _, tc := range m.ToolCalls {
 				args := map[string]any{}
@@ -377,7 +388,21 @@ func buildVertexRequest(req ChatRequest, maxTokens int64) ([]*genai.Content, *ge
 			} else {
 				payload = map[string]any{}
 			}
-			pendingToolResponses = append(pendingToolResponses, genai.NewPartFromFunctionResponse(name, payload))
+			frPart := genai.NewPartFromFunctionResponse(name, payload)
+
+			// When the tool returned image bytes, attach them as
+			// FunctionResponse.Parts. Gemini routes those through to
+			// the model alongside the textual payload — that's the
+			// equivalent of Bedrock's ToolResultContentBlockMemberImage
+			// and Anthropic's tool_result-with-image.
+			imageParts, err := vertexFunctionResponseImageParts(m)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(imageParts) > 0 && frPart.FunctionResponse != nil {
+				frPart.FunctionResponse.Parts = imageParts
+			}
+			pendingToolResponses = append(pendingToolResponses, frPart)
 		}
 	}
 	flushToolResponses()
@@ -416,6 +441,86 @@ func buildVertexRequest(req ChatRequest, maxTokens int64) ([]*genai.Content, *ge
 	}
 
 	return contents, cfg, nil
+}
+
+// vertexUserParts builds the Part slice for a user-role message.
+// Empty Parts collapses to the legacy single-text-part path so the
+// wire shape stays identical when no multimodal content is involved.
+func vertexUserParts(m Message) ([]*genai.Part, error) {
+	if len(m.Parts) == 0 {
+		if m.Content == "" {
+			return nil, nil
+		}
+		return []*genai.Part{genai.NewPartFromText(m.Content)}, nil
+	}
+	out := make([]*genai.Part, 0, len(m.Parts)+1)
+	if m.Content != "" {
+		out = append(out, genai.NewPartFromText(m.Content))
+	}
+	for _, p := range m.Parts {
+		vp, err := vertexPart(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, vp)
+	}
+	return out, nil
+}
+
+// vertexPart translates one MessagePart onto a Gemini Part. Inline
+// data uses NewPartFromBytes; URIs use NewPartFromURI (which Gemini
+// resolves server-side, including gs:// paths). Documents share the
+// same shape since Gemini doesn't separate image/document at the
+// part level — just by MIME type.
+func vertexPart(p MessagePart) (*genai.Part, error) {
+	switch p.Type {
+	case "text":
+		return genai.NewPartFromText(p.Text), nil
+	case "image", "document":
+		if len(p.Data) > 0 {
+			if p.MIMEType == "" {
+				return nil, fmt.Errorf("vertex: %s part has data but no mime_type", p.Type)
+			}
+			return genai.NewPartFromBytes(p.Data, p.MIMEType), nil
+		}
+		if p.URI != "" {
+			return genai.NewPartFromURI(p.URI, p.MIMEType), nil
+		}
+		return nil, fmt.Errorf("vertex: %s part has no data or uri", p.Type)
+	default:
+		return nil, fmt.Errorf("vertex: unknown part type %q", p.Type)
+	}
+}
+
+// vertexFunctionResponseImageParts extracts image / document Parts
+// from a tool-result Message and packages them as the
+// FunctionResponsePart slice Gemini expects. Text Parts are NOT
+// included here — they remain in the FunctionResponse.Response map
+// via the existing payload path. Returns nil when no media parts are
+// present (the common case), so the caller can skip the assignment.
+func vertexFunctionResponseImageParts(m Message) ([]*genai.FunctionResponsePart, error) {
+	if len(m.Parts) == 0 {
+		return nil, nil
+	}
+	var out []*genai.FunctionResponsePart
+	for _, p := range m.Parts {
+		if p.Type != "image" && p.Type != "document" {
+			continue
+		}
+		if len(p.Data) == 0 {
+			return nil, fmt.Errorf("vertex: tool_result media part has no inline bytes")
+		}
+		if p.MIMEType == "" {
+			return nil, fmt.Errorf("vertex: tool_result media part missing mime_type")
+		}
+		out = append(out, &genai.FunctionResponsePart{
+			InlineData: &genai.FunctionResponseBlob{
+				Data:     p.Data,
+				MIMEType: p.MIMEType,
+			},
+		})
+	}
+	return out, nil
 }
 
 // applyVertexThinking enables Gemini 2.5's thinking output. Unlike

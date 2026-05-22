@@ -538,3 +538,73 @@ func TestProviderFactory_VertexSafety(t *testing.T) {
 		t.Fatalf("Safety not threaded: %+v", vc.Safety)
 	}
 }
+
+// TestVertexUserParts_ImageInline confirms a user-role Message with
+// inline image bytes lands as a Vertex Part with InlineData (not
+// FileData, since the bytes are inline). MIME passes through verbatim.
+func TestVertexUserParts_ImageInline(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+	parts, err := vertexUserParts(Message{
+		Role:    "user",
+		Content: "what is this?",
+		Parts:   []MessagePart{NewImagePart("image/png", imgBytes)},
+	})
+	if err != nil {
+		t.Fatalf("vertexUserParts: %v", err)
+	}
+	if len(parts) != 2 {
+		t.Fatalf("parts: want 2 (text + image), got %d", len(parts))
+	}
+	if parts[1].InlineData == nil {
+		t.Fatalf("Parts[1].InlineData nil: %+v", parts[1])
+	}
+	if parts[1].InlineData.MIMEType != "image/png" {
+		t.Fatalf("MIMEType=%q", parts[1].InlineData.MIMEType)
+	}
+}
+
+// TestVertexUserParts_URIImage covers the URI passthrough — Vertex
+// resolves http(s)/gs:// URIs server-side, so URI-only parts work on
+// Vertex (unlike Bedrock).
+func TestVertexUserParts_URIImage(t *testing.T) {
+	parts, err := vertexUserParts(Message{
+		Role:  "user",
+		Parts: []MessagePart{NewImagePartURI("gs://bucket/cat.jpg")},
+	})
+	if err != nil {
+		t.Fatalf("vertexUserParts: %v", err)
+	}
+	if parts[0].FileData == nil || parts[0].FileData.FileURI != "gs://bucket/cat.jpg" {
+		t.Fatalf("FileData not threaded: %+v", parts[0])
+	}
+}
+
+// TestVertexFunctionResponseImageParts covers the tool-result image
+// path: a read-tool PNG result attaches as a FunctionResponse.Parts
+// inline blob alongside the textual response payload.
+func TestVertexFunctionResponseImageParts(t *testing.T) {
+	out, err := vertexFunctionResponseImageParts(Message{
+		Role:       "tool",
+		ToolCallID: "call_42",
+		Content:    "[image: ok.png]",
+		Parts:      []MessagePart{NewImagePart("image/png", []byte("pngdata"))},
+	})
+	if err != nil {
+		t.Fatalf("vertexFunctionResponseImageParts: %v", err)
+	}
+	if len(out) != 1 || out[0].InlineData == nil {
+		t.Fatalf("want 1 inline-data part: %+v", out)
+	}
+	if string(out[0].InlineData.Data) != "pngdata" || out[0].InlineData.MIMEType != "image/png" {
+		t.Fatalf("blob fields: data=%q mime=%q", out[0].InlineData.Data, out[0].InlineData.MIMEType)
+	}
+}
+
+// TestVertexPart_MissingMIMEFails pins the fail-loud contract: data
+// without a mime type is a caller bug, not a silent drop. Gemini
+// would reject the request server-side anyway with a less clear error.
+func TestVertexPart_MissingMIMEFails(t *testing.T) {
+	if _, err := vertexPart(MessagePart{Type: "image", Data: []byte("x")}); err == nil {
+		t.Fatal("want error: image data without mime_type")
+	}
+}
