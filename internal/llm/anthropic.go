@@ -4,6 +4,7 @@ package llm
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -356,6 +357,10 @@ func toAnthropicParams(req ChatRequest, model string, maxTokens int64) (anthropi
 // splitSystem pulls all role="system" messages out into a top-level
 // system prompt (concatenated, Anthropic-style) and returns the rest
 // translated to MessageParams.
+//
+// When a Message has non-empty Parts, the multimodal path runs: text
+// parts plus image / document blocks. Empty Parts falls back to the
+// legacy single-string Content path so existing flows are untouched.
 func splitSystem(in []Message) ([]anthropic.TextBlockParam, []anthropic.MessageParam, error) {
 	var systemBlocks []anthropic.TextBlockParam
 	var out []anthropic.MessageParam
@@ -363,14 +368,29 @@ func splitSystem(in []Message) ([]anthropic.TextBlockParam, []anthropic.MessageP
 	for _, m := range in {
 		switch m.Role {
 		case "system":
+			// System messages are text-only in Anthropic's shape; ignore
+			// any non-text parts a caller might have set.
 			if m.Content != "" {
 				systemBlocks = append(systemBlocks, anthropic.TextBlockParam{Text: m.Content})
 			}
+			for _, p := range m.Parts {
+				if p.Type == "text" && p.Text != "" {
+					systemBlocks = append(systemBlocks, anthropic.TextBlockParam{Text: p.Text})
+				}
+			}
 
 		case "user":
-			out = append(out, anthropic.NewUserMessage(
-				anthropic.NewTextBlock(m.Content),
-			))
+			blocks, err := userMessageBlocks(m)
+			if err != nil {
+				return nil, nil, err
+			}
+			if len(blocks) == 0 {
+				continue
+			}
+			out = append(out, anthropic.MessageParam{
+				Role:    anthropic.MessageParamRoleUser,
+				Content: blocks,
+			})
 
 		case "assistant":
 			blocks, err := assistantBlocks(m)
@@ -388,11 +408,15 @@ func splitSystem(in []Message) ([]anthropic.TextBlockParam, []anthropic.MessageP
 
 		case "tool":
 			// OpenAI's tool-result message: role="tool", ToolCallID,
-			// Content. Anthropic models this as a user turn carrying a
-			// tool_result content block.
-			out = append(out, anthropic.NewUserMessage(
-				anthropic.NewToolResultBlock(m.ToolCallID, m.Content, false),
-			))
+			// Content (+ optional Parts). Anthropic models this as a
+			// user turn carrying a tool_result block; the block itself
+			// can carry text + image content for tools that return
+			// images (read tool on a PNG, etc.).
+			result, err := toolResultBlock(m)
+			if err != nil {
+				return nil, nil, err
+			}
+			out = append(out, anthropic.NewUserMessage(result))
 
 		default:
 			return nil, nil, fmt.Errorf("anthropic: unsupported message role %q", m.Role)
@@ -402,10 +426,49 @@ func splitSystem(in []Message) ([]anthropic.TextBlockParam, []anthropic.MessageP
 	return systemBlocks, out, nil
 }
 
+// userMessageBlocks builds the content slice for a user-role message,
+// honouring Parts when populated. A plain string Content with no Parts
+// reduces to one NewTextBlock — same wire shape as before.
+func userMessageBlocks(m Message) ([]anthropic.ContentBlockParamUnion, error) {
+	if len(m.Parts) == 0 {
+		if m.Content == "" {
+			return nil, nil
+		}
+		return []anthropic.ContentBlockParamUnion{anthropic.NewTextBlock(m.Content)}, nil
+	}
+
+	blocks := make([]anthropic.ContentBlockParamUnion, 0, len(m.Parts)+1)
+	if m.Content != "" {
+		// Content + Parts both populated: prepend Content as a text
+		// block. Lets a caller attach an image to a text prompt
+		// without rebuilding the text into a Part.
+		blocks = append(blocks, anthropic.NewTextBlock(m.Content))
+	}
+	for _, p := range m.Parts {
+		blk, err := anthropicContentBlock(p)
+		if err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, blk)
+	}
+	return blocks, nil
+}
+
 func assistantBlocks(m Message) ([]anthropic.ContentBlockParamUnion, error) {
 	var blocks []anthropic.ContentBlockParamUnion
+	// Assistant messages from the model never carry inline media in
+	// today's flow (Claude can return images via tools, not directly).
+	// Parts on an assistant message are still threaded through so a
+	// caller building a fake history can include them.
 	if m.Content != "" {
 		blocks = append(blocks, anthropic.NewTextBlock(m.Content))
+	}
+	for _, p := range m.Parts {
+		blk, err := anthropicContentBlock(p)
+		if err != nil {
+			return nil, err
+		}
+		blocks = append(blocks, blk)
 	}
 	for _, tc := range m.ToolCalls {
 		var input any
@@ -418,6 +481,84 @@ func assistantBlocks(m Message) ([]anthropic.ContentBlockParamUnion, error) {
 		blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, input, tc.Function.Name))
 	}
 	return blocks, nil
+}
+
+// anthropicContentBlock translates one MessagePart onto the SDK's
+// ContentBlockParamUnion. Used by user + assistant paths. Tool-result
+// blocks need a different union (toolResultBlock handles that).
+func anthropicContentBlock(p MessagePart) (anthropic.ContentBlockParamUnion, error) {
+	switch p.Type {
+	case "text":
+		return anthropic.NewTextBlock(p.Text), nil
+	case "image":
+		if len(p.Data) > 0 {
+			return anthropic.NewImageBlockBase64(p.MIMEType, base64.StdEncoding.EncodeToString(p.Data)), nil
+		}
+		if p.URI != "" {
+			return anthropic.NewImageBlock(anthropic.URLImageSourceParam{URL: p.URI}), nil
+		}
+		return anthropic.ContentBlockParamUnion{}, fmt.Errorf("anthropic: image part has no data or uri")
+	case "document":
+		if len(p.Data) > 0 {
+			return anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+				Data:      base64.StdEncoding.EncodeToString(p.Data),
+				MediaType: "application/pdf",
+			}), nil
+		}
+		if p.URI != "" {
+			return anthropic.NewDocumentBlock(anthropic.URLPDFSourceParam{URL: p.URI}), nil
+		}
+		return anthropic.ContentBlockParamUnion{}, fmt.Errorf("anthropic: document part has no data or uri")
+	default:
+		return anthropic.ContentBlockParamUnion{}, fmt.Errorf("anthropic: unknown part type %q", p.Type)
+	}
+}
+
+// toolResultBlock builds the tool_result block for a role="tool"
+// message. The block can carry text + image content when the tool
+// returned an image (e.g. read tool on a PNG); falls back to the
+// legacy single-text body when only Content is set.
+func toolResultBlock(m Message) (anthropic.ContentBlockParamUnion, error) {
+	if len(m.Parts) == 0 {
+		return anthropic.NewToolResultBlock(m.ToolCallID, m.Content, false), nil
+	}
+
+	var content []anthropic.ToolResultBlockParamContentUnion
+	if m.Content != "" {
+		content = append(content, anthropic.ToolResultBlockParamContentUnion{
+			OfText: &anthropic.TextBlockParam{Text: m.Content},
+		})
+	}
+	for _, p := range m.Parts {
+		switch p.Type {
+		case "text":
+			content = append(content, anthropic.ToolResultBlockParamContentUnion{
+				OfText: &anthropic.TextBlockParam{Text: p.Text},
+			})
+		case "image":
+			if len(p.Data) == 0 {
+				return anthropic.ContentBlockParamUnion{}, fmt.Errorf("anthropic: tool_result image part has no data")
+			}
+			content = append(content, anthropic.ToolResultBlockParamContentUnion{
+				OfImage: &anthropic.ImageBlockParam{
+					Source: anthropic.ImageBlockParamSourceUnion{
+						OfBase64: &anthropic.Base64ImageSourceParam{
+							Data:      base64.StdEncoding.EncodeToString(p.Data),
+							MediaType: anthropic.Base64ImageSourceMediaType(p.MIMEType),
+						},
+					},
+				},
+			})
+		default:
+			return anthropic.ContentBlockParamUnion{}, fmt.Errorf("anthropic: tool_result %q parts unsupported", p.Type)
+		}
+	}
+	return anthropic.ContentBlockParamUnion{
+		OfToolResult: &anthropic.ToolResultBlockParam{
+			ToolUseID: m.ToolCallID,
+			Content:   content,
+		},
+	}, nil
 }
 
 func toAnthropicTools(in []ToolDef) ([]anthropic.ToolUnionParam, error) {
