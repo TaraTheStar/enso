@@ -851,12 +851,13 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	}
 
 	for _, tc := range toolCalls {
-		out, meta := a.executeToolCall(ctx, registry, tc)
+		out, parts, meta := a.executeToolCall(ctx, registry, tc)
 		a.appendToolMessage(llm.Message{
 			Role:       "tool",
 			Name:       tc.Function.Name,
 			ToolCallID: tc.ID,
 			Content:    out,
+			Parts:      parts,
 		}, meta)
 	}
 
@@ -894,16 +895,16 @@ func (a *Agent) appendMessage(msg llm.Message) {
 // prune subsystem reads (PathsRead/PathsWritten/CacheKey); on error
 // paths Meta is the zero value, which the prune layer treats as "no
 // pruning hints."
-func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, tc llm.ToolCall) (string, tools.ResultMeta) {
+func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, tc llm.ToolCall) (string, []llm.MessagePart, tools.ResultMeta) {
 	tool := registry.Get(tc.Function.Name)
 	if tool == nil {
-		return fmt.Sprintf("error: unknown tool %q", tc.Function.Name), tools.ResultMeta{}
+		return fmt.Sprintf("error: unknown tool %q", tc.Function.Name), nil, tools.ResultMeta{}
 	}
 
 	var args map[string]interface{}
 	if tc.Function.Arguments != "" {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-			return fmt.Sprintf("error: parse arguments: %v", err), tools.ResultMeta{}
+			return fmt.Sprintf("error: parse arguments: %v", err), nil, tools.ResultMeta{}
 		}
 	}
 	if args == nil {
@@ -912,7 +913,7 @@ func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, t
 
 	decision, err := a.Perms.Check(tc.Function.Name, args, a.Bus)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err), tools.ResultMeta{}
+		return fmt.Sprintf("error: %v", err), nil, tools.ResultMeta{}
 	}
 	if decision == permissions.Prompt {
 		decision = a.requestPrompt(ctx, tc.Function.Name, args)
@@ -930,7 +931,7 @@ func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, t
 				a.AgentCtx.Logger.Error("session: append tool_call (denied)", "err", err)
 			}
 		}
-		return "permission denied by user", tools.ResultMeta{}
+		return "permission denied by user", nil, tools.ResultMeta{}
 	}
 
 	a.Bus.Publish(bus.Event{
@@ -970,9 +971,9 @@ func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, t
 	}
 
 	if runErr != nil {
-		return fmt.Sprintf("error: %v", runErr), tools.ResultMeta{}
+		return fmt.Sprintf("error: %v", runErr), nil, tools.ResultMeta{}
 	}
-	return result.LLMOutput, result.Meta
+	return result.LLMOutput, result.Parts, result.Meta
 }
 
 // requestPrompt publishes a permission request and blocks for the user's reply

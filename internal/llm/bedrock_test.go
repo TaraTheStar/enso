@@ -3,6 +3,7 @@
 package llm
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -542,5 +543,99 @@ func TestProviderFactory_OpenAIBackCompat(t *testing.T) {
 	}
 	if _, ok := client.(*OpenAIClient); !ok {
 		t.Fatalf("want *OpenAIClient (empty type), got %T", client)
+	}
+}
+
+// TestBuildConverseInput_UserImagePart confirms a user-role Message
+// with an image Part lands as a ContentBlockMemberImage on the Converse
+// request, with raw bytes + the correct ImageFormat — Bedrock requires
+// bytes (not a URI) and explicit format enum.
+func TestBuildConverseInput_UserImagePart(t *testing.T) {
+	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
+	in, err := buildConverseInput(ChatRequest{
+		Messages: []Message{
+			{
+				Role:    "user",
+				Content: "what is in this?",
+				Parts:   []MessagePart{NewImagePart("image/png", imgBytes)},
+			},
+		},
+	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
+	if err != nil {
+		t.Fatalf("buildConverseInput: %v", err)
+	}
+	if len(in.Messages) != 1 || len(in.Messages[0].Content) != 2 {
+		t.Fatalf("user content: %+v", in.Messages)
+	}
+	imgBlk, ok := in.Messages[0].Content[1].(*types.ContentBlockMemberImage)
+	if !ok {
+		t.Fatalf("Content[1] type: %T", in.Messages[0].Content[1])
+	}
+	if imgBlk.Value.Format != types.ImageFormatPng {
+		t.Fatalf("Format=%v, want png", imgBlk.Value.Format)
+	}
+	src, ok := imgBlk.Value.Source.(*types.ImageSourceMemberBytes)
+	if !ok {
+		t.Fatalf("Source type: %T", imgBlk.Value.Source)
+	}
+	if !bytes.Equal(src.Value, imgBytes) {
+		t.Fatalf("image bytes not threaded through")
+	}
+}
+
+// TestBuildConverseInput_URIImageFails locks the contract that
+// Bedrock Converse needs inline bytes — a URI-only image surfaces as
+// a clean Go error rather than a confusing 400 mid-stream.
+func TestBuildConverseInput_URIImageFails(t *testing.T) {
+	_, err := buildConverseInput(ChatRequest{
+		Messages: []Message{
+			{Role: "user", Parts: []MessagePart{NewImagePartURI("https://example.com/cat.jpg")}},
+		},
+	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
+	if err == nil {
+		t.Fatal("want error for URI-only image (Bedrock needs bytes)")
+	}
+}
+
+// TestBedrockImageFormat_UnknownMIMEFails pins the fail-loud
+// contract on the mime → format mapper. An unrecognised MIME (HEIC,
+// TIFF, AVIF) errors at translate-time so a user trying a fancy
+// format sees the limitation up front, not a silent corruption.
+func TestBedrockImageFormat_UnknownMIMEFails(t *testing.T) {
+	if _, err := bedrockImageFormat("image/heic"); err == nil {
+		t.Fatal("want error for image/heic")
+	}
+	// Aliases / casing tolerated.
+	if got, err := bedrockImageFormat("Image/JPG"); err != nil || got != types.ImageFormatJpeg {
+		t.Fatalf("image/jpg alias: got %v err=%v", got, err)
+	}
+}
+
+// TestBedrockToolResultContent_WithImage covers the tool-result
+// image path: read tool on a PNG produces a tool_result whose Content
+// carries a ToolResultContentBlockMemberImage.
+func TestBedrockToolResultContent_WithImage(t *testing.T) {
+	in, err := buildConverseInput(ChatRequest{
+		Messages: []Message{
+			{
+				Role:       "tool",
+				ToolCallID: "call_42",
+				Content:    "[image: ok.png]",
+				Parts:      []MessagePart{NewImagePart("image/png", []byte("pngdata"))},
+			},
+		},
+	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
+	if err != nil {
+		t.Fatalf("buildConverseInput: %v", err)
+	}
+	tr, ok := in.Messages[0].Content[0].(*types.ContentBlockMemberToolResult)
+	if !ok {
+		t.Fatalf("Content[0] type: %T", in.Messages[0].Content[0])
+	}
+	if len(tr.Value.Content) != 2 {
+		t.Fatalf("tool_result content blocks: want 2 (text + image), got %d", len(tr.Value.Content))
+	}
+	if _, ok := tr.Value.Content[1].(*types.ToolResultContentBlockMemberImage); !ok {
+		t.Fatalf("tool_result content[1] type: %T (want image)", tr.Value.Content[1])
 	}
 }

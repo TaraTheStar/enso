@@ -339,12 +339,16 @@ func buildConverseInput(req ChatRequest, model string, maxTokens int64) (*bedroc
 
 		case "user":
 			flushToolResults()
-			if m.Content == "" {
+			content, err := bedrockUserContent(m)
+			if err != nil {
+				return nil, err
+			}
+			if len(content) == 0 {
 				continue
 			}
 			messages = append(messages, types.Message{
 				Role:    types.ConversationRoleUser,
-				Content: []types.ContentBlock{&types.ContentBlockMemberText{Value: m.Content}},
+				Content: content,
 			})
 
 		case "assistant":
@@ -352,6 +356,13 @@ func buildConverseInput(req ChatRequest, model string, maxTokens int64) (*bedroc
 			var content []types.ContentBlock
 			if m.Content != "" {
 				content = append(content, &types.ContentBlockMemberText{Value: m.Content})
+			}
+			for _, p := range m.Parts {
+				blk, err := bedrockContentBlock(p)
+				if err != nil {
+					return nil, err
+				}
+				content = append(content, blk)
 			}
 			for _, tc := range m.ToolCalls {
 				var arg interface{}
@@ -382,12 +393,14 @@ func buildConverseInput(req ChatRequest, model string, maxTokens int64) (*bedroc
 
 		case "tool":
 			id := m.ToolCallID
+			resultContent, err := bedrockToolResultContent(m)
+			if err != nil {
+				return nil, err
+			}
 			pendingToolResults = append(pendingToolResults, &types.ContentBlockMemberToolResult{
 				Value: types.ToolResultBlock{
 					ToolUseId: &id,
-					Content: []types.ToolResultContentBlock{
-						&types.ToolResultContentBlockMemberText{Value: m.Content},
-					},
+					Content:   resultContent,
 				},
 			})
 		}
@@ -557,6 +570,117 @@ func applyBedrockGuardrail(input *bedrockruntime.ConverseStreamInput, id, versio
 		Trace:               resolved,
 	}
 	return nil
+}
+
+// bedrockUserContent builds the ContentBlock slice for a user-role
+// message. Empty Parts collapses to the single-text-block legacy shape
+// so existing flows are byte-identical on the wire.
+func bedrockUserContent(m Message) ([]types.ContentBlock, error) {
+	if len(m.Parts) == 0 {
+		if m.Content == "" {
+			return nil, nil
+		}
+		return []types.ContentBlock{&types.ContentBlockMemberText{Value: m.Content}}, nil
+	}
+	out := make([]types.ContentBlock, 0, len(m.Parts)+1)
+	if m.Content != "" {
+		out = append(out, &types.ContentBlockMemberText{Value: m.Content})
+	}
+	for _, p := range m.Parts {
+		blk, err := bedrockContentBlock(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, blk)
+	}
+	return out, nil
+}
+
+// bedrockContentBlock translates one MessagePart onto a Converse
+// ContentBlock. Bedrock requires raw bytes — URI-only images return an
+// error rather than getting silently dropped. Text parts fall through
+// to ContentBlockMemberText for callers that mix text + image in Parts.
+func bedrockContentBlock(p MessagePart) (types.ContentBlock, error) {
+	switch p.Type {
+	case "text":
+		return &types.ContentBlockMemberText{Value: p.Text}, nil
+	case "image":
+		if len(p.Data) == 0 {
+			return nil, fmt.Errorf("bedrock: image parts must carry inline bytes (URIs not supported by Converse)")
+		}
+		fmt, err := bedrockImageFormat(p.MIMEType)
+		if err != nil {
+			return nil, err
+		}
+		return &types.ContentBlockMemberImage{
+			Value: types.ImageBlock{
+				Format: fmt,
+				Source: &types.ImageSourceMemberBytes{Value: p.Data},
+			},
+		}, nil
+	case "document":
+		return nil, fmt.Errorf("bedrock: document parts not yet supported by this adapter")
+	default:
+		return nil, fmt.Errorf("bedrock: unknown part type %q", p.Type)
+	}
+}
+
+// bedrockToolResultContent maps a role="tool" Message onto the
+// ToolResult-side content union. Same legacy fall-through: text-only
+// stays single-block; Parts opt into image content for tools that
+// return non-text (the read tool on a PNG, etc.).
+func bedrockToolResultContent(m Message) ([]types.ToolResultContentBlock, error) {
+	if len(m.Parts) == 0 {
+		return []types.ToolResultContentBlock{
+			&types.ToolResultContentBlockMemberText{Value: m.Content},
+		}, nil
+	}
+	out := make([]types.ToolResultContentBlock, 0, len(m.Parts)+1)
+	if m.Content != "" {
+		out = append(out, &types.ToolResultContentBlockMemberText{Value: m.Content})
+	}
+	for _, p := range m.Parts {
+		switch p.Type {
+		case "text":
+			out = append(out, &types.ToolResultContentBlockMemberText{Value: p.Text})
+		case "image":
+			if len(p.Data) == 0 {
+				return nil, fmt.Errorf("bedrock: tool_result image needs inline bytes")
+			}
+			fmt, err := bedrockImageFormat(p.MIMEType)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, &types.ToolResultContentBlockMemberImage{
+				Value: types.ImageBlock{
+					Format: fmt,
+					Source: &types.ImageSourceMemberBytes{Value: p.Data},
+				},
+			})
+		default:
+			return nil, fmt.Errorf("bedrock: tool_result %q parts unsupported", p.Type)
+		}
+	}
+	return out, nil
+}
+
+// bedrockImageFormat maps an IANA MIME type to the AWS SDK's
+// ImageFormat enum. Bedrock Converse accepts PNG / JPEG / GIF / WebP;
+// anything else fails loud rather than getting silently dropped or
+// truncated to a wrong format.
+func bedrockImageFormat(mime string) (types.ImageFormat, error) {
+	switch strings.ToLower(strings.TrimSpace(mime)) {
+	case "image/png":
+		return types.ImageFormatPng, nil
+	case "image/jpeg", "image/jpg":
+		return types.ImageFormatJpeg, nil
+	case "image/gif":
+		return types.ImageFormatGif, nil
+	case "image/webp":
+		return types.ImageFormatWebp, nil
+	default:
+		return "", fmt.Errorf("bedrock: unsupported image mime %q (want png/jpeg/gif/webp)", mime)
+	}
 }
 
 func derefString(p *string) string {
