@@ -106,6 +106,34 @@ presence_penalty = 1.5
 # model        = "gemini-2.5-flash"
 # gcp_project  = "my-gcp-project"
 # gcp_location = "us-central1"
+#
+# Anthropic-native paths (opt-in). The bedrock/vertex blocks above route
+# Claude through the multi-vendor Converse / generateContent shapes —
+# good defaults, good enough for most users. If you need Claude features
+# that only the Anthropic Messages API exposes (prompt caching control,
+# computer-use blocks, server tools, citations), the three blocks below
+# route through anthropic-sdk-go instead. Same translator, different
+# transport + auth per block.
+#
+# [providers.anthropic]
+# type     = "anthropic"
+# model    = "claude-sonnet-4-5"
+# api_key  = "$ENSO_ANTHROPIC_KEY"
+# # endpoint = "https://api.anthropic.com"   # only set to route through a proxy
+# extended_thinking        = true
+# extended_thinking_budget = 8000
+#
+# [providers.anthropic-bedrock]
+# type       = "anthropic-bedrock"
+# model      = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+# aws_region = "us-east-1"
+# # aws_profile = "default"   # optional override of the AWS credential chain
+#
+# [providers.anthropic-vertex]
+# type         = "anthropic-vertex"
+# model        = "claude-3-5-sonnet-v2@20241022"
+# gcp_project  = "my-gcp-project"
+# gcp_location = "us-east5"
 
 [permissions]
 # Default permission mode for un-matched calls: "prompt" | "allow" | "deny".
