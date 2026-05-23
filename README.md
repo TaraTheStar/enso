@@ -155,6 +155,9 @@ status_line = ""              # text/template; replaces the right-side bar. Vars
 [hooks]
 on_file_edit   = ""           # shell command run after edit/write succeeds; vars: .Path .Tool
 on_session_end = ""           # shell command run when the agent loop returns; vars: .SessionID .Cwd
+on_event       = ""           # per-event observer hook (see "External observers"); JSON on stdin
+# on_events    = []           # explicit allowlist; omitted = curated default (excludes per-token deltas)
+# [hooks.env]                 # extra env merged onto every hook subprocess
 
 [web_fetch]
 allow_hosts = []              # opt local hosts back through the SSRF guard
@@ -296,20 +299,46 @@ Use `--ephemeral` to skip persistence.
 
 ## External observers
 
-`enso daemon` exposes its event bus over a Unix socket at
-`$XDG_RUNTIME_DIR/enso/daemon.sock` (or `~/.enso/daemon.sock` if XDG is unset).
-The wire protocol is length-prefixed JSON; subscribe to a session and you get a
-stream of typed events (`UserMessage`, `AssistantDelta`, `ToolCallStart`,
-`ToolCallEnd`, `PermissionRequest`, `AgentIdle`, `Cancelled`, …) each carrying
-a `session_id` so multi-session observers can route without keeping outer
-context. Source of truth: `internal/daemon/protocol.go` and `internal/bus/bus.go`
-(`Event.WireForm`).
+Two supported integration shapes for third-party tools that want to visualise,
+log, or react to agent activity without embedding into enso itself.
 
-This is the supported integration point for third-party tools that want to
-visualise, log, or react to agent activity without embedding into enso itself.
-A worked example is the [watchourai enso-bus
-adapter](https://github.com/TaraTheStar/watchourai.work/tree/main/adapters/enso-bus),
-which translates daemon events into a status board.
+**1. `on_event` hook (preferred for low-volume observers).** Set a hook command
+in `config.toml`; enso spawns it per event with the event as JSON on stdin. No
+extra daemon, no socket, no lifecycle to manage — just a config entry.
+
+```toml
+[hooks]
+on_event = "node /path/to/dispatch.js"
+# Optional explicit filter (default excludes per-token deltas; see
+# internal/hooks.DefaultEventFilter for the curated set).
+# on_events = ["UserMessage", "ToolCallStart", "ToolCallEnd", "AgentIdle"]
+
+[hooks.env]
+# Merged onto every hook subprocess's environment. Lets you keep
+# config out of your shell rc. The keys here are adapter-specific —
+# this block is just an example for the watchourai dispatch script.
+WATCHOURAI_URL          = "http://localhost:3456"   # watchourai server
+WATCHOURAI_TOKEN        = "..."                     # from office Tokens modal
+WATCHOURAI_REGISTER     = "enso"                    # identity prefix; cwd hash auto-appended
+WATCHOURAI_DISPLAY_NAME = "TaraTheStar (enso)"            # friendly label
+```
+
+The JSON on stdin: `{"session_id": "...", "cwd": "...", "type": "ToolCallStart",
+"payload": {...}}`. Mirrors what daemon-socket subscribers see. Process is given
+a 10s timeout and runs off the agent's hot path. Failures log; non-zero exits
+are silent (matches the existing `on_file_edit` / `on_session_end` posture).
+
+**2. Daemon-socket subscription (high-volume / stateful observers).** `enso
+daemon` exposes its event bus over a Unix socket at
+`$XDG_RUNTIME_DIR/enso/daemon.sock` (or `~/.enso/daemon.sock` if XDG is unset).
+Length-prefixed JSON; events carry `session_id` so multi-session observers
+route without keeping outer context. Source of truth:
+`internal/daemon/protocol.go` and `internal/bus/bus.go` (`Event.WireForm`).
+
+Worked example for both shapes: the [watchourai enso-bus
+adapter](https://github.com/TaraTheStar/watchourai.work/tree/main/adapters/enso-bus)
+(socket subscriber) and its `enso-hooks` sibling (hook dispatcher) translate
+agent events into a status board.
 
 ## Status
 
