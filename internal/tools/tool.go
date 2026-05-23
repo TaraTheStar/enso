@@ -143,6 +143,14 @@ type AgentContext struct {
 	// *hooks.Hooks satisfies it; nil disables the hook.
 	FileEditHook FileEditHook
 
+	// LSPNotifier, when non-nil, is called by write/edit after a
+	// successful save to surface language-server diagnostics for the
+	// just-touched file. Sibling to FileEditHook (which fires the
+	// user's shell-level on_file_edit); LSPNotifier handles the
+	// internal-only LSP push so the model learns about compile errors
+	// without an extra tool call.
+	LSPNotifier LSPNotifier
+
 	// WebFetchAllowHosts is consulted by the web_fetch tool to permit
 	// specific hosts past the SSRF guard's loopback/private-IP block
 	// (e.g. a local llama.cpp server). Each entry is "host" or
@@ -286,6 +294,21 @@ func (c DefaultOutputCaps) LineLengthFor(toolName string) int {
 // import internal/hooks.
 type FileEditHook interface {
 	OnFileEdit(cwd, path, tool string)
+}
+
+// LSPNotifier is the seam write/edit use to surface live language-
+// server diagnostics for a just-edited file. Defined here so the
+// tools package doesn't need to import internal/lsp.
+//
+// NotifyWrite blocks up to the implementation's wait window for the
+// server to publish diagnostics for absPath. The returned string,
+// when non-empty, is appended verbatim to the tool's LLMOutput so the
+// model sees compile errors in the same turn. Empty return = nothing
+// worth surfacing (no LSP configured for this language, server crashed,
+// no diagnostics produced, etc.); callers must treat the call as
+// best-effort and never let it fail the edit itself.
+type LSPNotifier interface {
+	NotifyWrite(ctx context.Context, absPath string) string
 }
 
 // SessionWriter is what tools needs from session.Writer to record

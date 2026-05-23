@@ -102,6 +102,31 @@ type DidCloseTextDocumentParams struct {
 	TextDocument TextDocumentIdentifier `json:"textDocument"`
 }
 
+// DidChangeTextDocumentParams is the payload for textDocument/didChange.
+// We only send full-document syncs (one TextDocumentContentChangeEvent
+// with the entire new text), which every server accepts even when it
+// negotiates Incremental — the spec requires servers handle Full when
+// the client sends it.
+type DidChangeTextDocumentParams struct {
+	TextDocument   VersionedTextDocumentIdentifier  `json:"textDocument"`
+	ContentChanges []TextDocumentContentChangeEvent `json:"contentChanges"`
+}
+
+// TextDocumentContentChangeEvent in its full-text form: no range, just
+// the new whole-document text. The incremental form would add Range
+// and RangeLength.
+type TextDocumentContentChangeEvent struct {
+	Text string `json:"text"`
+}
+
+// DidSaveTextDocumentParams is the payload for textDocument/didSave.
+// We omit the optional Text field — saves always follow a DidChange
+// that already carried the new content, so re-sending wastes bytes
+// and gives servers no new information.
+type DidSaveTextDocumentParams struct {
+	TextDocument TextDocumentIdentifier `json:"textDocument"`
+}
+
 // HoverResult is the response for textDocument/hover. Contents can be a
 // string, MarkupContent, or list — we accept all three via RawMessage and
 // flatten to plain text in client code.
@@ -150,3 +175,14 @@ type Diagnostic struct {
 	Source   string `json:"source,omitempty"`
 	Message  string `json:"message"`
 }
+
+// LSP severity values (Diagnostic.Severity). Smaller-is-higher per
+// spec. Severity 0 (omitted on the wire) is treated as Error by
+// downstream filters so a server that drops the field still surfaces
+// its diagnostics.
+const (
+	SeverityError       = 1
+	SeverityWarning     = 2
+	SeverityInformation = 3
+	SeverityHint        = 4
+)

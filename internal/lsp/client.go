@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Client is a single LSP server connection. It owns the JSON-RPC Conn,
@@ -22,6 +23,11 @@ type Client struct {
 
 	diagMu     sync.RWMutex
 	diagsByURI map[string][]Diagnostic
+	// diagWaiters holds one channel per URI that has at least one
+	// pending WaitForDiagnostics call. The publishDiagnostics
+	// notification handler closes-and-replaces the channel on each
+	// publication so all waiters fall through with the next batch.
+	diagWaiters map[string]chan struct{}
 }
 
 // NewClient wraps a Conn with bookkeeping. The caller must call Run on
@@ -32,6 +38,7 @@ func NewClient(conn *Conn) *Client {
 		opened:      map[string]bool{},
 		docVersions: map[string]int{},
 		diagsByURI:  map[string][]Diagnostic{},
+		diagWaiters: map[string]chan struct{}{},
 	}
 	conn.SetNotificationHandler(cl.handleNotification)
 	return cl
@@ -46,7 +53,65 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 		}
 		c.diagMu.Lock()
 		c.diagsByURI[p.URI] = p.Diagnostics
+		// Wake any WaitForDiagnostics call camped on this URI. Closing
+		// the channel broadcasts to all waiters; the map slot is
+		// cleared so the next wait registers a fresh channel rather
+		// than receiving the already-fired one.
+		if ch, ok := c.diagWaiters[p.URI]; ok {
+			close(ch)
+			delete(c.diagWaiters, p.URI)
+		}
 		c.diagMu.Unlock()
+	}
+}
+
+// WaitForDiagnostics blocks until the server publishes diagnostics for
+// uri AFTER this call begins (cached results from prior publications
+// are ignored), or ctx fires, or the optional dedup window elapses
+// after the first publication so a double-publishing server's "final"
+// answer wins. Returns the diagnostics from Client's cache at the
+// moment the wait resolves.
+//
+// `dedup` is the post-first-publication wait window — set to 0 to
+// return as soon as the first publication arrives. 100ms is a sane
+// default for servers that emit an empty "analysing..." publication
+// before the real one.
+//
+// Safe for concurrent callers on the same URI: they all observe the
+// same publication and read independent copies of the cache.
+func (c *Client) WaitForDiagnostics(ctx context.Context, uri string, dedup time.Duration) []Diagnostic {
+	c.diagMu.Lock()
+	ch, ok := c.diagWaiters[uri]
+	if !ok {
+		ch = make(chan struct{})
+		c.diagWaiters[uri] = ch
+	}
+	c.diagMu.Unlock()
+
+	select {
+	case <-ch:
+		// First publication received. If dedup > 0, give the server a
+		// short window to emit a follow-up (e.g. final results after
+		// an interim "analysing..." with no diagnostics).
+		if dedup > 0 {
+			timer := time.NewTimer(dedup)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+			}
+		}
+		return c.Diagnostics(uri)
+	case <-ctx.Done():
+		// Ctx fired before any publication. Clean up our waiter slot
+		// only if it's still the channel WE registered — a concurrent
+		// publication may have already closed-and-deleted it.
+		c.diagMu.Lock()
+		if cur, ok := c.diagWaiters[uri]; ok && cur == ch {
+			delete(c.diagWaiters, uri)
+		}
+		c.diagMu.Unlock()
+		return nil
 	}
 }
 
@@ -107,6 +172,58 @@ func (c *Client) DidOpen(uri, languageID, text string) error {
 	}
 	c.opened[uri] = true
 	return nil
+}
+
+// IsOpen reports whether DidOpen has been sent for uri (and a
+// matching DidClose hasn't fired). Used by callers that want to
+// decide between sending DidOpen vs DidChange on a buffer refresh.
+func (c *Client) IsOpen(uri string) bool {
+	c.openMu.Lock()
+	defer c.openMu.Unlock()
+	return c.opened[uri]
+}
+
+// DidChange sends textDocument/didChange with the new whole-document
+// text. The version number is bumped monotonically from whatever
+// DidOpen recorded. No-op when the document was never opened — the
+// server would reject a didChange for an unknown URI.
+//
+// Full-document sync (not incremental). Simpler than diffing the
+// previous buffer; servers must accept Full per the LSP spec even
+// when they advertise Incremental support.
+func (c *Client) DidChange(uri, text string) error {
+	c.openMu.Lock()
+	if !c.opened[uri] {
+		c.openMu.Unlock()
+		return nil
+	}
+	c.docVersions[uri]++
+	version := c.docVersions[uri]
+	c.openMu.Unlock()
+
+	return c.Conn.Notify("textDocument/didChange", DidChangeTextDocumentParams{
+		TextDocument: VersionedTextDocumentIdentifier{URI: uri, Version: version},
+		ContentChanges: []TextDocumentContentChangeEvent{
+			{Text: text},
+		},
+	})
+}
+
+// DidSave sends textDocument/didSave. Many servers trigger
+// reanalysis on save independently of didChange (gopls, pyright);
+// firing this after the file lands on disk is what makes those
+// servers' next publishDiagnostics describe the new content. No-op
+// when the document isn't open.
+func (c *Client) DidSave(uri string) error {
+	c.openMu.Lock()
+	opened := c.opened[uri]
+	c.openMu.Unlock()
+	if !opened {
+		return nil
+	}
+	return c.Conn.Notify("textDocument/didSave", DidSaveTextDocumentParams{
+		TextDocument: TextDocumentIdentifier{URI: uri},
+	})
 }
 
 // DidClose tells the server to release a document. Idempotent.
