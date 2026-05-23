@@ -230,12 +230,18 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		ExtraSystemPrompt:     applied.PromptAppend,
 		AdditionalDirectories: cfg.Permissions.AdditionalDirectories,
 		RestrictedRoots:       restrictedRoots,
-		Hooks:                 hooks.New(cfg.Hooks.OnFileEdit, cfg.Hooks.OnSessionEnd),
-		WebFetchAllowHosts:    cfg.WebFetch.AllowHosts,
-		PruneCfg:              cfg.Context.Resolve(),
-		CompactionProvider:    cfg.Compaction.Provider,
-		LSPNotifier:           lsp.NewNotifier(lspMgr, spec.Cwd, lsp.NotifierOptions{}),
-		IsolationNote:         isolationNote(spec.Isolation),
+		Hooks: hooks.New(hooks.Config{
+			OnFileEdit:   cfg.Hooks.OnFileEdit,
+			OnSessionEnd: cfg.Hooks.OnSessionEnd,
+			OnEvent:      cfg.Hooks.OnEvent,
+			OnEvents:     cfg.Hooks.OnEvents,
+			Env:          cfg.Hooks.Env,
+		}),
+		WebFetchAllowHosts: cfg.WebFetch.AllowHosts,
+		PruneCfg:           cfg.Context.Resolve(),
+		CompactionProvider: cfg.Compaction.Provider,
+		LSPNotifier:        lsp.NewNotifier(lspMgr, spec.Cwd, lsp.NotifierOptions{}),
+		IsolationNote:      isolationNote(spec.Isolation),
 	}
 	if spec.Isolation.NetworkSealed {
 		// Only a sealed worker brokers capabilities; on the unsealed
