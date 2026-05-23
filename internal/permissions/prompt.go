@@ -29,19 +29,24 @@ const (
 // roles so the prompt UI can show "[reviewer abc123]" instead of a
 // faceless tool call the user can't trace.
 type PromptRequest struct {
-	ToolName  string
-	ArgString string
-	Args      map[string]interface{}
-	Diff      string // optional unified diff for edit-like calls
-	AgentID   string
-	AgentRole string
-	Respond   chan Decision
+	ToolName  string                 `json:"tool_name"`
+	ArgString string                 `json:"arg_string,omitempty"`
+	Args      map[string]interface{} `json:"args,omitempty"`
+	Diff      string                 `json:"diff,omitempty"` // optional unified diff for edit-like calls
+	AgentID   string                 `json:"agent_id,omitempty"`
+	AgentRole string                 `json:"agent_role,omitempty"`
+	// Respond is the in-process channel the agent loop blocks on for the
+	// user's decision. Host-local only — never serialized. Daemon-socket
+	// subscribers see PermissionRequest events without it (and so cannot
+	// answer; that flow goes through PermissionResponseReq).
+	Respond chan Decision `json:"-"`
 	// Deadline is the wall-clock time at which the request will be
 	// auto-denied if no decision arrives. Set by attach mode (the
 	// daemon enforces a per-request timeout); zero in standalone mode
 	// where there's no auto-deny. The modal renders a countdown only
-	// when this is non-zero.
-	Deadline time.Time
+	// when this is non-zero. Not serialized — the per-request timeout
+	// lives in the daemon and would only be confusing on the wire.
+	Deadline time.Time `json:"-"`
 }
 
 // Checker evaluates tool calls against allowlist and config mode.
