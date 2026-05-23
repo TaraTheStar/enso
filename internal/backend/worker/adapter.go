@@ -139,6 +139,28 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 				return fmt.Errorf("worker: decode resume history: %w", err)
 			}
 		}
+		if len(spec.ResumeMessageUsage) > 0 {
+			isoUsage := map[int]llm.MessageUsage{}
+			if err := json.Unmarshal(spec.ResumeMessageUsage, &isoUsage); err != nil {
+				return fmt.Errorf("worker: decode resume message_usage: %w", err)
+			}
+			// Stage in `resumed` so the unified plumbing below picks it
+			// up — keeps the isolated and local paths converging.
+			if resumed == nil {
+				resumed = &session.State{}
+			}
+			resumed.MessageUsage = isoUsage
+		}
+		if len(spec.ResumeLastUsage) > 0 {
+			var lu llm.MessageUsage
+			if err := json.Unmarshal(spec.ResumeLastUsage, &lu); err != nil {
+				return fmt.Errorf("worker: decode resume last_usage: %w", err)
+			}
+			if resumed == nil {
+				resumed = &session.State{}
+			}
+			resumed.LastUsage = &lu
+		}
 
 	default:
 		// LOCAL backend: the worker is a host child sharing the
@@ -182,6 +204,12 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 			history = resumed.History
 		}
 	}
+	var resumedUsage map[int]llm.MessageUsage
+	var resumedLastUsage *llm.MessageUsage
+	if resumed != nil {
+		resumedUsage = resumed.MessageUsage
+		resumedLastUsage = resumed.LastUsage
+	}
 
 	maxTurns := spec.MaxTurns
 	if applied.MaxTurns > 0 {
@@ -219,6 +247,12 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 	}
 	if len(history) > 0 {
 		acfg.History = history
+	}
+	if len(resumedUsage) > 0 {
+		acfg.MessageUsage = resumedUsage
+	}
+	if resumedLastUsage != nil {
+		acfg.LastUsage = resumedLastUsage
 	}
 
 	agt, err := agent.New(acfg)
@@ -362,6 +396,14 @@ func (rw *remoteWriter) AppendMessage(msg llm.Message, agentID string) error {
 		return err
 	}
 	return rw.s.send(backend.Envelope{Kind: backend.MsgPersistMessage, Body: body})
+}
+
+func (rw *remoteWriter) AppendMessageUsage(usage llm.MessageUsage, agentID string) error {
+	body, err := backend.NewBody(wire.PersistMessageUsage{Usage: usage, AgentID: agentID})
+	if err != nil {
+		return err
+	}
+	return rw.s.send(backend.Envelope{Kind: backend.MsgPersistMessageUsage, Body: body})
 }
 
 func (rw *remoteWriter) AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error {

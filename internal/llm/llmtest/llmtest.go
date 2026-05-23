@@ -32,9 +32,9 @@ import (
 
 // Script is one scheduled response. Events fire in order:
 // optional ReasoningDelta, then TextDelta, then each ToolCall as a
-// ToolCallComplete, then (optionally) the test blocks on Gate, then
-// the channel closes — or, if Err is set, an Error event fires
-// before close.
+// ToolCallComplete, then (unless suppressed) one EventUsage, then
+// (optionally) the test blocks on Gate, then the channel closes — or,
+// if Err is set, an Error event fires before close.
 type Script struct {
 	Reasoning string
 	Text      string
@@ -47,6 +47,13 @@ type Script struct {
 	Gate <-chan struct{}
 	// Err, when non-nil, fires as an EventError just before close.
 	Err error
+	// Usage, when non-nil, is emitted verbatim as the EventUsage. nil
+	// triggers an auto-default derived from the request size and the
+	// rendered Text/ToolCalls (preserves the pre-EventUsage heuristic
+	// so tests that assert "tokens accumulated" keep passing without
+	// per-test edits). Set SuppressUsage to skip the event entirely.
+	Usage         *llm.MessageUsage
+	SuppressUsage bool
 }
 
 // Mock is a programmable ChatClient. Construct with New or NewT.
@@ -147,9 +154,52 @@ func (m *Mock) Chat(ctx context.Context, req llm.ChatRequest) (<-chan llm.Event,
 			ch <- llm.Event{Type: llm.EventError, Error: s.Err}
 			return
 		}
+		// Usage fires on the success path only, right before Done —
+		// matches real providers, where a mid-stream error never
+		// reaches the final usage payload.
+		if !s.SuppressUsage {
+			usage := s.Usage
+			if usage == nil {
+				u := autoUsage(req, s)
+				usage = &u
+			}
+			ch <- llm.Event{Type: llm.EventUsage, Usage: *usage}
+		}
 		ch <- llm.Event{Type: llm.EventDone}
 	}()
 	return ch, nil
+}
+
+// autoUsage builds a deterministic MessageUsage from request size and
+// rendered output. Same 4-char heuristic the agent used to maintain
+// before real-token-accounting landed — keeps existing tests passing.
+func autoUsage(req llm.ChatRequest, s Script) llm.MessageUsage {
+	inputChars := 0
+	for _, m := range req.Messages {
+		inputChars += len(m.Content) + len(m.Role) + len(m.ToolCallID)
+		for _, tc := range m.ToolCalls {
+			inputChars += len(tc.ID) + len(tc.Function.Name) + len(tc.Function.Arguments)
+		}
+	}
+	outChars := len(s.Text)
+	for _, tc := range s.ToolCalls {
+		outChars += len(tc.Function.Name) + len(tc.Function.Arguments)
+	}
+	in := inputChars / 4
+	out := outChars / 4
+	// Floor at 1 so a tiny scripted reply still triggers "> 0"
+	// assertions — what callers actually care about.
+	if in == 0 {
+		in = 1
+	}
+	if out == 0 && (s.Text != "" || len(s.ToolCalls) > 0) {
+		out = 1
+	}
+	return llm.MessageUsage{
+		InputTokens:  in,
+		OutputTokens: out,
+		TotalTokens:  in + out,
+	}
 }
 
 // compile-time assertion

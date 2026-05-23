@@ -48,14 +48,25 @@ type PersistToolCall struct {
 	Status     string                 `json:"status"`
 }
 
+// PersistMessageUsage is the body of MsgPersistMessageUsage: mirrors
+// session.Writer.AppendMessageUsage(usage, agentID). The receiving
+// host applies it to the most recently persisted message for the
+// (session, agent) pair — same w.seq invariant as the local
+// in-process call path.
+type PersistMessageUsage struct {
+	Usage   llm.MessageUsage `json:"usage"`
+	AgentID string           `json:"agent_id,omitempty"`
+}
+
 // LLMEvent is the serializable form of llm.Event, whose Error is an
 // `error` (not JSON-safe) and whose Type is an unexported-friendly int.
 // It is the body of a MsgInferenceEvent.
 type LLMEvent struct {
-	Type      int            `json:"type"`
-	Text      string         `json:"text,omitempty"`
-	ToolCalls []llm.ToolCall `json:"tool_calls,omitempty"`
-	Error     string         `json:"error,omitempty"`
+	Type      int               `json:"type"`
+	Text      string            `json:"text,omitempty"`
+	ToolCalls []llm.ToolCall    `json:"tool_calls,omitempty"`
+	Usage     *llm.MessageUsage `json:"usage,omitempty"`
+	Error     string            `json:"error,omitempty"`
 }
 
 // FromLLM converts an llm.Event into its wire form.
@@ -64,6 +75,10 @@ func FromLLM(ev llm.Event) LLMEvent {
 		Type:      int(ev.Type),
 		Text:      ev.Text,
 		ToolCalls: ev.ToolCalls,
+	}
+	if ev.Type == llm.EventUsage {
+		u := ev.Usage
+		w.Usage = &u
 	}
 	if ev.Error != nil {
 		w.Error = ev.Error.Error()
@@ -79,6 +94,9 @@ func (w LLMEvent) ToLLM() llm.Event {
 		Type:      llm.EventType(w.Type),
 		Text:      w.Text,
 		ToolCalls: w.ToolCalls,
+	}
+	if w.Usage != nil {
+		ev.Usage = *w.Usage
 	}
 	if w.Error != "" {
 		ev.Error = errString(w.Error)

@@ -69,20 +69,36 @@ type Agent struct {
 	compactNext   atomic.Bool
 	compactReason atomic.Pointer[string]
 
-	// estTokens caches llm.Estimate(History) so the UI goroutine can read
-	// the count without racing the agent goroutine's mutations of History.
-	// Updated on every appendMessage and after compaction.
+	// estTokens caches the best available token-count estimate for
+	// History so the UI goroutine can read without racing the agent
+	// goroutine's mutations. Updated on every appendMessage and after
+	// compaction. Prefers provider-reported usage from lastUsage when
+	// present; falls back to the 4-char heuristic otherwise.
 	estTokens atomic.Int64
 
 	// cumIn / cumOut accumulate input and output tokens across every
 	// chat completion in this session — different from estTokens
 	// (which is the *current* context-window usage). Compaction
 	// shrinks estTokens but never these two; they reflect spend, not
-	// pressure. Heuristic-based (4-char) since OpenAI streaming
-	// usage isn't currently parsed; swapping to server-reported
-	// counts only requires updating the increment site.
+	// pressure. Populated from provider-reported usage on each
+	// EventUsage; backends that don't report usage (some llama.cpp
+	// builds) leave these at 0 for the affected turns.
 	cumIn  atomic.Int64
 	cumOut atomic.Int64
+
+	// lastUsage is the provider-reported usage from the most recently
+	// completed assistant turn. nil until the first EventUsage
+	// arrives; cleared by compaction since the InputTokens count
+	// reflects a History prefix that no longer exists. estimateTokens
+	// falls back to llm.Estimate when nil.
+	lastUsage atomic.Pointer[llm.MessageUsage]
+
+	// messageUsage sidecars History — keyed by History index (the slot
+	// of each assistant message whose usage we recorded). Indices
+	// shift on compaction; the map is cleared at that point and
+	// repopulated by subsequent turns.
+	messageUsage   map[int]llm.MessageUsage
+	messageUsageMu sync.Mutex
 
 	// pruneCfg drives the stale-tool-stubbing + dedup + post-edit
 	// invalidation machinery in prune.go. Resolved once at New().
@@ -307,7 +323,76 @@ func (a *Agent) ContextWindow() int {
 // refreshEstimate recomputes the cached token count from the current history.
 // Must be called whenever history changes — appendMessage and compaction.
 func (a *Agent) refreshEstimate() {
-	a.estTokens.Store(int64(llm.Estimate(a.History)))
+	a.estTokens.Store(int64(a.estimateTokens()))
+}
+
+// estimateTokens returns the best available token count for the current
+// History. Prefers provider-reported usage from the most recent
+// assistant turn (real numbers); falls back to llm.Estimate when no
+// usage has arrived yet. Adds an estimate of any messages appended
+// since the last usage event so we don't undercount tool results and
+// the next user message — they aren't in lastUsage.InputTokens but
+// will be on the next API call.
+func (a *Agent) estimateTokens() int {
+	if u := a.lastUsage.Load(); u != nil && !u.Empty() {
+		base := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
+		return base + a.tokensAppendedSinceLastUsage()
+	}
+	return llm.Estimate(a.History)
+}
+
+// tokensAppendedSinceLastUsage estimates the size of messages added to
+// History after the last assistant turn whose usage we recorded.
+// Returns 0 when no usage has been recorded yet or when the recorded
+// turn IS the last message.
+func (a *Agent) tokensAppendedSinceLastUsage() int {
+	a.messageUsageMu.Lock()
+	defer a.messageUsageMu.Unlock()
+	lastIdx := -1
+	for i := range a.messageUsage {
+		if i > lastIdx {
+			lastIdx = i
+		}
+	}
+	if lastIdx < 0 || lastIdx >= len(a.History)-1 {
+		return 0
+	}
+	return llm.Estimate(a.History[lastIdx+1:])
+}
+
+// LastUsage returns a copy of the provider-reported usage from the most
+// recent assistant turn, or the zero value if no usage has been
+// recorded. Safe to call from any goroutine.
+func (a *Agent) LastUsage() llm.MessageUsage {
+	if u := a.lastUsage.Load(); u != nil {
+		return *u
+	}
+	return llm.MessageUsage{}
+}
+
+// stampUsage records provider-reported usage for the assistant message
+// at History index historyIdx. No-op when usage is empty (provider
+// didn't supply numbers — keep lastUsage at whatever it was and don't
+// pollute messageUsage with zero rows). Updates cumIn/cumOut from the
+// real values; persists via the Writer when available.
+func (a *Agent) stampUsage(historyIdx int, usage llm.MessageUsage) {
+	if usage.Empty() {
+		return
+	}
+	a.messageUsageMu.Lock()
+	a.messageUsage[historyIdx] = usage
+	a.messageUsageMu.Unlock()
+	a.lastUsage.Store(&usage)
+	// Cumulative-spend: real numbers. CacheRead/CacheWrite count
+	// against the input side; reasoning rides on output.
+	a.cumIn.Add(int64(usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens))
+	a.cumOut.Add(int64(usage.OutputTokens + usage.ReasoningTokens))
+	a.refreshEstimate()
+	if a.Writer != nil {
+		if err := a.Writer.AppendMessageUsage(usage, a.AgentCtx.AgentID); err != nil {
+			a.AgentCtx.Logger.Error("session: append usage", "err", err)
+		}
+	}
 }
 
 // Config bundles construction parameters for New.
@@ -328,6 +413,17 @@ type Config struct {
 	Cwd       string
 	SessionID string
 	MaxTurns  int
+
+	// MessageUsage rehydrates the agent's per-message usage sidecar on
+	// resume. Keys are History indices; values are the provider-
+	// reported token counts. Optional — empty means a fresh session or
+	// one that predates real-token-accounting; the first new
+	// EventUsage will repopulate.
+	MessageUsage map[int]llm.MessageUsage
+	// LastUsage seeds Agent.lastUsage on resume so the first
+	// MaybeCompact check after resume reads real numbers instead of
+	// falling back to the heuristic. nil leaves lastUsage unset.
+	LastUsage *llm.MessageUsage
 
 	// Subagent fields. The top-level agent leaves these zero; subagents
 	// inherit them via spawn_agent so depth limits and a shared global
@@ -516,6 +612,16 @@ func New(cfg Config) (*Agent, error) {
 		},
 	}
 
+	// Seed messageUsage from resume state when available so the first
+	// MaybeCompact reads real numbers without waiting for the first
+	// new turn.
+	mu := map[int]llm.MessageUsage{}
+	for k, v := range cfg.MessageUsage {
+		if k >= 0 && k < len(history) {
+			mu[k] = v
+		}
+	}
+
 	a := &Agent{
 		Providers:       cfg.Providers,
 		currentProvider: defaultProvider,
@@ -529,7 +635,12 @@ func New(cfg Config) (*Agent, error) {
 		Hooks:           cfg.Hooks,
 		pruneCfg:        pruneCfg,
 		toolMeta:        map[int]*toolMessageMeta{},
+		messageUsage:    mu,
 		providerCtx:     provCtx,
+	}
+	if cfg.LastUsage != nil {
+		lu := *cfg.LastUsage
+		a.lastUsage.Store(&lu)
 	}
 	// Wire the checkpoint seam so the `checkpoint` tool can queue a
 	// compaction without the tools package importing internal/agent.
@@ -734,10 +845,10 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		PresencePenalty: p.Sampler.PresencePenalty,
 	}
 
-	// Cumulative-spend tracking (input side): sample what we're sending
-	// before the call so a mid-stream cancel still counts the cost. We
-	// already paid for the prompt the moment the request hit the wire.
-	a.cumIn.Add(int64(llm.Estimate(req.Messages)))
+	// Cumulative-spend tracking is now driven by provider-reported
+	// usage (EventUsage) post-stream. Backends that don't report usage
+	// leave cumIn/cumOut unchanged for the affected turn — acceptable
+	// trade-off vs. double-counting against real numbers.
 
 	// D2: log a per-turn prefix-size breakdown so the user (and
 	// /prune debugging) can see exactly how much each category is
@@ -766,6 +877,7 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	var content strings.Builder
 	var reasoning strings.Builder
 	var toolCalls []llm.ToolCall
+	var usage llm.MessageUsage
 
 	for evt := range events {
 		switch evt.Type {
@@ -775,13 +887,14 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		case llm.EventReasoningDelta:
 			// Reasoning is shown live but NOT appended to history.Content —
 			// the model is supposed to re-derive its reasoning each turn,
-			// and saving it bloats context. We DO count it for spend
-			// tracking though: providers bill for reasoning tokens even
-			// when they aren't kept across turns.
+			// and saving it bloats context. Provider-reported reasoning
+			// token counts (when supplied) ride on the usage event below.
 			reasoning.WriteString(evt.Text)
 			a.Bus.Publish(bus.Event{Type: bus.EventReasoningDelta, Payload: evt.Text})
 		case llm.EventToolCallComplete:
 			toolCalls = append(toolCalls, evt.ToolCalls...)
+		case llm.EventUsage:
+			usage = evt.Usage
 		case llm.EventError:
 			release()
 			return false, evt.Error
@@ -818,14 +931,8 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		asst.ToolCalls = toolCalls
 	}
 
-	// Cumulative-spend tracking (output side): the assistant message
-	// captures content + tool-call args; reasoning is billed separately
-	// because we discard it from history. Using llm.Estimate for the
-	// asst message keeps the same heuristic the input side uses.
-	a.cumOut.Add(int64(llm.Estimate([]llm.Message{asst})))
-	if reasoning.Len() > 0 {
-		a.cumOut.Add(int64(reasoning.Len() / 4))
-	}
+	// Cumulative-spend tracking is driven by provider-reported usage
+	// below; nothing to do here.
 
 	// An empty assistant message (no content, no tool calls) means the model
 	// produced only reasoning or otherwise emitted nothing the API will
@@ -844,6 +951,7 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	}
 
 	a.appendMessage(asst)
+	a.stampUsage(len(a.History)-1, usage)
 	a.Bus.Publish(bus.Event{Type: bus.EventAssistantDone})
 
 	if len(toolCalls) == 0 {

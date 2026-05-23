@@ -280,8 +280,32 @@ type ChatResponseDelta struct {
 
 // ChatCompletionChunk is the OpenAI-compatible SSE chunk envelope. Servers
 // (llama.cpp, vLLM, OpenAI itself) emit one per token group.
+//
+// Usage is populated only in the trailing chunk and only when the request
+// asked for it via stream_options.include_usage = true. Servers that
+// don't implement that extension (some llama.cpp builds) leave it nil
+// and the chunk's Choices array is the only meaningful field.
 type ChatCompletionChunk struct {
 	Choices []ChunkChoice `json:"choices"`
+	Usage   *ChunkUsage   `json:"usage,omitempty"`
+}
+
+// ChunkUsage carries OpenAI's per-turn token counts. prompt_tokens is
+// the total-including-cached; prompt_tokens_details.cached_tokens is a
+// sub-line of prompt_tokens, not additive. Translated to MessageUsage
+// in the adapter; downstream code should not see this type.
+type ChunkUsage struct {
+	PromptTokens        int                       `json:"prompt_tokens"`
+	CompletionTokens    int                       `json:"completion_tokens"`
+	TotalTokens         int                       `json:"total_tokens"`
+	PromptTokensDetails *ChunkPromptTokensDetails `json:"prompt_tokens_details,omitempty"`
+}
+
+// ChunkPromptTokensDetails is the cached_tokens sub-block on
+// ChunkUsage. Separated for nil-safe access on servers that omit the
+// details object.
+type ChunkPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
 }
 
 // ChunkChoice carries the streaming delta for one choice index.
@@ -300,4 +324,39 @@ type DTCall struct {
 		Name      string      `json:"name,omitempty"`
 		Arguments interface{} `json:"arguments,omitempty"` // string or JSON object (llama.cpp quirk)
 	} `json:"function,omitempty"`
+}
+
+// MessageUsage carries provider-reported token counts for a single
+// assistant turn. Populated from the adapter's final usage event;
+// zero-valued when the provider didn't supply numbers (e.g. some
+// llama.cpp builds, mid-stream failures, or backends that don't
+// implement usage reporting yet).
+//
+// Cache accounting differs per provider:
+//   - Anthropic: InputTokens is fresh-only; cache reads/writes are
+//     reported separately in CacheReadTokens / CacheWriteTokens.
+//   - OpenAI: InputTokens (prompt_tokens) is total-including-cached;
+//     CacheReadTokens (prompt_tokens_details.cached_tokens) is a
+//     sub-line of InputTokens, not additive.
+//   - Gemini: TotalTokens is authoritative; do not recompute.
+//   - Bedrock Converse: same shape as Anthropic.
+//
+// Callers comparing against the model's context window should read
+// TotalTokens rather than summing fields manually.
+type MessageUsage struct {
+	InputTokens      int
+	OutputTokens     int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	ReasoningTokens  int
+	TotalTokens      int
+}
+
+// Empty reports whether no field has been populated. Used as the
+// "fall back to heuristic" signal — a fully zero MessageUsage means
+// the provider didn't supply usage data for this turn.
+func (u MessageUsage) Empty() bool {
+	return u.InputTokens == 0 && u.OutputTokens == 0 &&
+		u.CacheReadTokens == 0 && u.CacheWriteTokens == 0 &&
+		u.ReasoningTokens == 0 && u.TotalTokens == 0
 }
