@@ -16,7 +16,7 @@ import (
 func recordingHooks(onFileEdit, onSessionEnd string) (*Hooks, *[]string, *sync.Mutex) {
 	var mu sync.Mutex
 	var msgs []string
-	h := New(onFileEdit, onSessionEnd)
+	h := New(Config{OnFileEdit: onFileEdit, OnSessionEnd: onSessionEnd})
 	h.Warn = func(format string, args ...any) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -71,7 +71,7 @@ func TestOnFileEdit_RunsCommandAndExpandsTemplate(t *testing.T) {
 	// concatenates into a single edit:foo.go arg. The output redirect
 	// uses {{.Raw.Cwd}} explicitly so the literal path is what we
 	// expect (auto-quoted Cwd would also work but reads weirdly).
-	h := New(`echo -n {{.Tool}}:{{.Path}} > `+shellQuote(out), "")
+	h := New(Config{OnFileEdit: `echo -n {{.Tool}}:{{.Path}} > ` + shellQuote(out)})
 	h.OnFileEdit(tmp, "foo.go", "edit")
 
 	data, err := os.ReadFile(out)
@@ -84,7 +84,7 @@ func TestOnFileEdit_RunsCommandAndExpandsTemplate(t *testing.T) {
 }
 
 func TestOnFileEdit_EmptyConfigIsNoOp(t *testing.T) {
-	h := New("", "")
+	h := New(Config{})
 	// Should not panic, should not Warn.
 	h.OnFileEdit(t.TempDir(), "x.go", "edit")
 }
@@ -206,7 +206,7 @@ func TestOnSessionEnd_RunsAndExpandsVars(t *testing.T) {
 	tmp := t.TempDir()
 	out := filepath.Join(tmp, "marker")
 
-	h := New("", `echo -n {{.SessionID}} in {{.Cwd}} > `+shellQuote(out))
+	h := New(Config{OnSessionEnd: `echo -n {{.SessionID}} in {{.Cwd}} > ` + shellQuote(out)})
 	h.OnSessionEnd(tmp, "sess-123")
 
 	data, err := os.ReadFile(out)
@@ -232,7 +232,7 @@ func TestOnFileEdit_AutoQuotesShellMetacharsInPath(t *testing.T) {
 	out := filepath.Join(tmp, "out")
 	// If quoting fails, the `; rm ...` would delete the sentinel.
 	maliciousPath := "foo; rm " + sentinel
-	h := New(`echo -n {{.Path}} > `+shellQuote(out), "")
+	h := New(Config{OnFileEdit: `echo -n {{.Path}} > ` + shellQuote(out)})
 	h.OnFileEdit(tmp, maliciousPath, "edit")
 
 	if _, err := os.Stat(sentinel); os.IsNotExist(err) {
@@ -253,7 +253,7 @@ func TestOnFileEdit_AutoQuotesEmbeddedSingleQuote(t *testing.T) {
 	tmp := t.TempDir()
 	out := filepath.Join(tmp, "out")
 	weird := "it's a 'name'"
-	h := New(`echo -n {{.Path}} > `+shellQuote(out), "")
+	h := New(Config{OnFileEdit: `echo -n {{.Path}} > ` + shellQuote(out)})
 	h.OnFileEdit(tmp, weird, "edit")
 
 	data, _ := os.ReadFile(out)
@@ -272,7 +272,7 @@ func TestOnFileEdit_RawNamespaceIsUnquoted(t *testing.T) {
 		t.Fatal(err)
 	}
 	maliciousPath := "foo; rm " + sentinel
-	h := New(`echo -n {{.Raw.Path}} > /dev/null`, "")
+	h := New(Config{OnFileEdit: `echo -n {{.Raw.Path}} > /dev/null`})
 	h.OnFileEdit(tmp, maliciousPath, "edit")
 
 	if _, err := os.Stat(sentinel); !os.IsNotExist(err) {

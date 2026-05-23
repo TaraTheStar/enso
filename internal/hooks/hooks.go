@@ -28,14 +28,19 @@ package hooks
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"text/template"
 	"time"
+
+	"github.com/TaraTheStar/enso/internal/bus"
 )
 
 // DefaultTimeout caps how long a single hook command may run before
@@ -49,7 +54,25 @@ const DefaultTimeout = 10 * time.Second
 type Hooks struct {
 	OnFileEditCmd   string
 	OnSessionEndCmd string
-	Timeout         time.Duration
+	// OnEventCmd fires for every wire-safe bus event (UserMessage,
+	// AssistantDelta-class, ToolCallStart/End, AgentIdle/End, …) and
+	// receives the event as JSON on stdin rather than via template
+	// vars. Designed for observers that translate per-event into
+	// another protocol (status boards, audit pipelines).
+	OnEventCmd string
+	// OnEvents, when non-nil and non-empty, filters which event types
+	// fire OnEventCmd — list the wire type strings ("UserMessage",
+	// "ToolCallStart", …). Empty/nil uses DefaultEventFilter to skip
+	// the chatty per-token deltas that would otherwise spawn a process
+	// per token.
+	OnEvents []string
+	// Env are extra environment variables merged onto each hook
+	// subprocess's environment. Inherits os.Environ() by default; Env
+	// values override matching keys. Lets users keep secrets (e.g.
+	// WATCHOURAI_TOKEN) in enso config instead of shell rc files.
+	Env map[string]string
+
+	Timeout time.Duration
 
 	// Warn fires only for genuine misconfigurations: template render
 	// errors and command timeouts. Default routes to slog.Warn — the
@@ -57,17 +80,48 @@ type Hooks struct {
 	Warn func(format string, args ...any)
 }
 
-// New builds a Hooks from the loaded config strings. Empty strings
-// disable the corresponding event.
-func New(onFileEdit, onSessionEnd string) *Hooks {
+// Config carries every user-configurable hook setting in one struct
+// so New's signature doesn't grow per added hook.
+type Config struct {
+	OnFileEdit   string
+	OnSessionEnd string
+	OnEvent      string
+	OnEvents     []string
+	Env          map[string]string
+}
+
+// New builds a Hooks from the loaded config. Empty/nil fields disable
+// the corresponding behaviour.
+func New(c Config) *Hooks {
 	return &Hooks{
-		OnFileEditCmd:   onFileEdit,
-		OnSessionEndCmd: onSessionEnd,
+		OnFileEditCmd:   c.OnFileEdit,
+		OnSessionEndCmd: c.OnSessionEnd,
+		OnEventCmd:      c.OnEvent,
+		OnEvents:        c.OnEvents,
+		Env:             c.Env,
 		Timeout:         DefaultTimeout,
 		Warn: func(format string, args ...any) {
 			slog.Warn(fmt.Sprintf(format, args...))
 		},
 	}
+}
+
+// DefaultEventFilter is the set of event types OnEventCmd fires for
+// when the user hasn't supplied OnEvents. Deltas are excluded — at
+// per-token frequency they would spawn one subprocess per token and
+// melt the box. Observers that want deltas opt in explicitly.
+var DefaultEventFilter = []string{
+	"UserMessage",
+	"AgentStart",
+	"AgentIdle",
+	"AgentEnd",
+	"AssistantDone",
+	"Cancelled",
+	"Error",
+	"ToolCallStart",
+	"ToolCallEnd",
+	"PermissionRequest",
+	"Compacted",
 }
 
 // OnFileEdit fires the configured command (if any) after a successful
@@ -82,6 +136,65 @@ func (h *Hooks) OnFileEdit(cwd, path, tool string) {
 	})
 }
 
+// OnEvent fires the configured command (if any) for one bus event,
+// piping the event as JSON to the command's stdin. Filtered to the
+// user's OnEvents list, falling back to DefaultEventFilter when unset.
+// Unserializable events (those bus.Event.WireForm rejects) are
+// silently skipped — the host-only permission-response feedback loop,
+// for instance.
+//
+// JSON shape on stdin:
+//
+//	{
+//	  "session_id": "...",
+//	  "cwd":        "...",
+//	  "type":       "ToolCallStart",
+//	  "payload":    { ... }    // event-type specific
+//	}
+//
+// Fires synchronously to the caller's goroutine but bounded by Timeout;
+// callers are expected to call from a fanout goroutine, not the agent's
+// hot path.
+func (h *Hooks) OnEvent(cwd, sessionID string, evt bus.Event) {
+	if h == nil || h.OnEventCmd == "" {
+		return
+	}
+	typ, payload, ok := evt.WireForm()
+	if !ok {
+		return
+	}
+	if !h.eventAllowed(typ) {
+		return
+	}
+	body, err := json.Marshal(struct {
+		SessionID string          `json:"session_id"`
+		Cwd       string          `json:"cwd"`
+		Type      string          `json:"type"`
+		Payload   json.RawMessage `json:"payload,omitempty"`
+	}{
+		SessionID: sessionID,
+		Cwd:       cwd,
+		Type:      typ,
+		Payload:   payload,
+	})
+	if err != nil {
+		h.Warn("hooks: on_event marshal failed: %v", err)
+		return
+	}
+	h.runWithStdin("on_event", h.OnEventCmd, cwd, body)
+}
+
+// eventAllowed reports whether the wire type passes the configured
+// filter. Empty OnEvents → DefaultEventFilter; explicit OnEvents wins
+// entirely (no merge with defaults — listing one is "I want only these").
+func (h *Hooks) eventAllowed(typ string) bool {
+	list := h.OnEvents
+	if len(list) == 0 {
+		list = DefaultEventFilter
+	}
+	return slices.Contains(list, typ)
+}
+
 // OnSessionEnd fires when the top-level agent.Run loop returns. Vars:
 // .SessionID, .Cwd. Subagent / RunOneShot exits do NOT fire — those
 // aren't user-visible session ends.
@@ -93,6 +206,60 @@ func (h *Hooks) OnSessionEnd(cwd, sessionID string) {
 		"SessionID": sessionID,
 		"Cwd":       cwd,
 	})
+}
+
+// runWithStdin invokes the user's command with `body` piped to stdin.
+// Unlike `run`, the command is NOT template-rendered — on_event-style
+// hooks consume structured JSON, not interpolated strings. Same
+// best-effort posture: timeouts log via Warn, non-zero exits stay silent.
+func (h *Hooks) runWithStdin(label, cmdStr, cwd string, body []byte) {
+	if strings.TrimSpace(cmdStr) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), h.Timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "sh", "-c", cmdStr)
+	cmd.Dir = cwd
+	cmd.Stdin = bytes.NewReader(body)
+	cmd.Env = h.mergedEnv()
+	cmd.WaitDelay = time.Second
+
+	out, err := cmd.CombinedOutput()
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if snippet := firstNonEmptyLine(out); snippet != "" {
+			h.Warn("hooks: %s timed out after %s: %s", label, h.Timeout, snippet)
+		} else {
+			h.Warn("hooks: %s timed out after %s", label, h.Timeout)
+		}
+		return
+	}
+	_ = err
+}
+
+// mergedEnv returns os.Environ() with h.Env merged in (Env values
+// override matching keys). Returns nil when Env is empty so the
+// stdlib uses os.Environ() directly without an alloc.
+func (h *Hooks) mergedEnv() []string {
+	if len(h.Env) == 0 {
+		return nil
+	}
+	base := os.Environ()
+	// Build a key→index map for in-place override.
+	idx := make(map[string]int, len(base))
+	for i, kv := range base {
+		if j := strings.IndexByte(kv, '='); j > 0 {
+			idx[kv[:j]] = i
+		}
+	}
+	for k, v := range h.Env {
+		entry := k + "=" + v
+		if i, ok := idx[k]; ok {
+			base[i] = entry
+		} else {
+			base = append(base, entry)
+		}
+	}
+	return base
 }
 
 func (h *Hooks) run(label, tmpl, cwd string, vars map[string]any) {
