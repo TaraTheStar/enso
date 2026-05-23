@@ -696,21 +696,28 @@ func logAnthropicUsage(label string, in, out, cacheRead, cacheCreate int64) {
 }
 
 // applyAnthropicPromptCaching inserts ephemeral cache_control markers
-// on the boundaries that change rarely: the final system block and
-// the final tool. Anthropic caches the entire prefix up to and
-// including each marker, so one marker after system gives the system
-// prompt + tool definitions a stable cacheable prefix on every turn
-// that doesn't touch them. Adding a second marker on tools doubles
-// the chance the cache survives a system-prompt edit that left tools
-// alone — Anthropic permits up to 4 markers per request, so spending
-// 2 of them on the stable layers is cheap.
+// on the boundaries that change rarely: the final system block, the
+// final tool, and the last 1–2 conversation messages. Anthropic caches
+// the entire prefix up to and including each marker, so a marker after
+// system gives the system prompt + tool definitions a stable cacheable
+// prefix on every turn that doesn't touch them; markers on the tail of
+// the conversation extend that prefix across multi-turn workloads. The
+// API permits up to 4 markers per request — we spend at most 4 (system
+// + tools + last-2 messages) and always count before adding so we
+// don't exceed the limit even if future code paths consume additional
+// budget.
 //
-// No-op when there's nothing to cache (no system blocks, no tools).
+// No-op when there's nothing to cache (no system blocks, no tools,
+// no messages).
 func applyAnthropicPromptCaching(params *anthropic.MessageNewParams) {
-	if n := len(params.System); n > 0 {
+	const maxMarkers = 4
+	used := 0
+
+	if n := len(params.System); n > 0 && used < maxMarkers {
 		params.System[n-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+		used++
 	}
-	if n := len(params.Tools); n > 0 {
+	if n := len(params.Tools); n > 0 && used < maxMarkers {
 		// Tools is a union slice; cache_control lives on the
 		// ToolParam variant (OfTool). Only mark function-tool entries;
 		// other kinds (computer-use, bash, etc.) are not yet emitted
@@ -718,6 +725,31 @@ func applyAnthropicPromptCaching(params *anthropic.MessageNewParams) {
 		// nil panic.
 		if t := params.Tools[n-1].OfTool; t != nil {
 			t.CacheControl = anthropic.NewCacheControlEphemeralParam()
+			used++
+		}
+	}
+	// Mark the last block of the last 1–2 conversation messages. The
+	// trailing turn is the one most likely to be re-sent verbatim on
+	// the next iteration (the assistant turn we're about to ask the
+	// model to extend), and the one before it captures the matching
+	// user/tool-result turn. Two markers here gives the next request a
+	// shot at hitting cache for the full prefix up through the prior
+	// turn even if the user sends a small follow-up.
+	remaining := maxMarkers - used
+	if remaining > 2 {
+		remaining = 2
+	}
+	for i := 0; i < remaining; i++ {
+		idx := len(params.Messages) - 1 - i
+		if idx < 0 {
+			break
+		}
+		blocks := params.Messages[idx].Content
+		if len(blocks) == 0 {
+			continue
+		}
+		if cc := blocks[len(blocks)-1].GetCacheControl(); cc != nil {
+			*cc = anthropic.NewCacheControlEphemeralParam()
 		}
 	}
 }

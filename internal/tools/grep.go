@@ -79,8 +79,7 @@ func (t GrepTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 		output = "no matches found"
 		return Result{LLMOutput: output, FullOutput: output, DisplayOutput: output, Meta: ResultMeta{CacheKey: cacheKey}}, nil
 	}
-	cap := ac.OutputCaps.CapFor("grep")
-	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
+	truncated, full := truncateWithRecovery(ac, "grep", output)
 
 	return Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: grepDisplay(output), Meta: ResultMeta{CacheKey: cacheKey}}, nil
 }
@@ -127,7 +126,6 @@ func tryRG(ctx context.Context, path, pattern string, ac *AgentContext) *Result 
 	if output == "" {
 		return &Result{LLMOutput: "no matches found", FullOutput: "no matches found", Meta: ResultMeta{CacheKey: cacheKey}}
 	}
-	cap := ac.OutputCaps.CapFor("grep")
-	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
+	truncated, full := truncateWithRecovery(ac, "grep", output)
 	return &Result{LLMOutput: truncated, FullOutput: full, DisplayOutput: grepDisplay(output), Meta: ResultMeta{CacheKey: cacheKey}}
 }

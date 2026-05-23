@@ -299,7 +299,13 @@ type ContextPruneConfig struct {
 	SmartTruncate bool `toml:"smart_truncate"`
 }
 
-// OutputCapsConfig holds per-tool LLMOutput line caps.
+// OutputCapsConfig holds per-tool LLMOutput truncation thresholds.
+//
+// Three independent dimensions are capped: line count (`default` /
+// per-tool), byte size (`max_bytes`), and per-line character length
+// (`max_line_length`). Each cap is independent; zero = use the
+// in-tree default. The two new caps are applied alongside the line
+// cap inside capTruncate (byte cap → line cap → per-line cap).
 type OutputCapsConfig struct {
 	Default int            `toml:"default"`
 	PerTool map[string]int `toml:"-"`
@@ -315,6 +321,17 @@ type OutputCapsConfig struct {
 	Grep     int `toml:"grep"`
 	Glob     int `toml:"glob"`
 	WebFetch int `toml:"web_fetch"`
+
+	// MaxBytes is the global byte ceiling for any single tool result
+	// (0 → 50 KB default). Catches pathological one-line outputs
+	// (a minified-JS dump, a binary glob) that the line cap can't
+	// see.
+	MaxBytes int `toml:"max_bytes"`
+	// MaxLineLength is the global per-line character ceiling
+	// (0 → 2000 default). Each line longer than this gets its middle
+	// elided so a near-edge result can't sneak a 10 MB minified line
+	// past the byte cap.
+	MaxLineLength int `toml:"max_line_length"`
 }
 
 // Resolve normalises the Config into deterministic defaults the
@@ -374,6 +391,12 @@ func (c ContextPruneConfig) Resolve() ResolvedPruneConfig {
 			out.OutputCapsPerTool[k] = v
 		}
 	}
+	if c.OutputCaps.MaxBytes > 0 {
+		out.OutputMaxBytes = c.OutputCaps.MaxBytes
+	}
+	if c.OutputCaps.MaxLineLength > 0 {
+		out.OutputMaxLineLength = c.OutputCaps.MaxLineLength
+	}
 	return out
 }
 
@@ -386,6 +409,11 @@ type ResolvedPruneConfig struct {
 	SmartTruncate     bool
 	OutputCapDefault  int
 	OutputCapsPerTool map[string]int
+	// OutputMaxBytes / OutputMaxLineLength are 0 when unset; the
+	// tools package falls back to its DefaultMaxBytes / DefaultMaxLineLength
+	// in that case. Set non-zero to override.
+	OutputMaxBytes      int
+	OutputMaxLineLength int
 }
 
 // DaemonConfig holds settings that only apply when running enso under

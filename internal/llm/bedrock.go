@@ -517,22 +517,46 @@ func applyExtendedThinking(input *bedrockruntime.ConverseStreamInput, budget int
 }
 
 // applyBedrockCachePoints appends CachePoint markers after the system
-// content and after the last tool spec — same logical effect as the
-// Anthropic-native cache_control markers, just expressed in Converse's
-// shape. Bedrock caches the prefix up to and including each marker.
+// content, after the last tool spec, and at the tail of the last 1–2
+// conversation messages — same logical effect as the Anthropic-native
+// cache_control markers, just expressed in Converse's shape. Bedrock
+// caches the prefix up to and including each marker.
 //
-// No-op when there's no system content or no tools to mark. Stays
-// within Bedrock's 4-marker per-request limit (we spend at most 2).
+// No-op when there's nothing to mark. Stays within Bedrock's 4-marker
+// per-request limit (we spend at most 4: system + tools + 2 messages).
 func applyBedrockCachePoints(input *bedrockruntime.ConverseStreamInput) {
-	if len(input.System) > 0 {
+	const maxMarkers = 4
+	used := 0
+
+	if len(input.System) > 0 && used < maxMarkers {
 		input.System = append(input.System, &types.SystemContentBlockMemberCachePoint{
 			Value: types.CachePointBlock{Type: types.CachePointTypeDefault},
 		})
+		used++
 	}
-	if input.ToolConfig != nil && len(input.ToolConfig.Tools) > 0 {
+	if input.ToolConfig != nil && len(input.ToolConfig.Tools) > 0 && used < maxMarkers {
 		input.ToolConfig.Tools = append(input.ToolConfig.Tools, &types.ToolMemberCachePoint{
 			Value: types.CachePointBlock{Type: types.CachePointTypeDefault},
 		})
+		used++
+	}
+	// Append CachePoint blocks at the end of the last 1–2 conversation
+	// messages. Same intent as the Anthropic-side trailing markers: keep
+	// the prefix up through the prior turn cacheable so a small
+	// follow-up still benefits from the warm cache.
+	remaining := maxMarkers - used
+	if remaining > 2 {
+		remaining = 2
+	}
+	for i := 0; i < remaining; i++ {
+		idx := len(input.Messages) - 1 - i
+		if idx < 0 {
+			break
+		}
+		input.Messages[idx].Content = append(input.Messages[idx].Content,
+			&types.ContentBlockMemberCachePoint{
+				Value: types.CachePointBlock{Type: types.CachePointTypeDefault},
+			})
 	}
 }
 

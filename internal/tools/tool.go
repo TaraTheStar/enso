@@ -159,6 +159,14 @@ type AgentContext struct {
 	// exceeds its cap. Empty disables relevance truncation.
 	RecentUserHint string
 
+	// Spill, when non-nil, is called by truncateWithRecovery when a
+	// tool's output exceeds its caps. The returned path is embedded in
+	// the LLMOutput so the model can recover sections via the `read`
+	// tool (or filter via `grep`). Nil disables recovery; the model
+	// then just sees the head/tail truncated form and the original
+	// FullOutput stays in the session DB but isn't reachable.
+	Spill SpillWriter
+
 	// Checkpoint, when non-nil, is the seam the `checkpoint` tool uses
 	// to ask the agent loop to run a compaction pass before the next
 	// model completion. *agent.Agent satisfies it; spawn paths may pass
@@ -166,16 +174,48 @@ type AgentContext struct {
 	Checkpoint CheckpointRequester
 }
 
-// DefaultOutputCaps lets the host pin per-tool LLMOutput line caps
-// without each tool growing its own knob. Read by HeadTail callers
+// DefaultOutputCaps lets the host pin per-tool truncation thresholds
+// without each tool growing its own knob. Read by capTruncate callers
 // inside the tools package; the agent.Config plumbs values through.
+//
+// Three independent dimensions are capped, applied in this order
+// inside capTruncate: byte cap → line cap → per-line length cap. Each
+// cap is independent — a tool result can be byte-capped without
+// hitting the line cap, or vice versa.
 type DefaultOutputCaps struct {
-	Default int            // global default; 0 → 2000
-	PerTool map[string]int // tool name → override
+	Default int            // global line cap; 0 → 2000
+	PerTool map[string]int // tool name → line cap override
+
+	// MaxBytes is the global byte ceiling for one tool result. 0 →
+	// DefaultMaxBytes (50 KB). Defends against pathological single-line
+	// outputs (a minified-JS dump, a binary glob) that line counting
+	// can't catch.
+	MaxBytes int
+	// PerToolBytes overrides MaxBytes per tool name. Same lookup rules
+	// as PerTool. Value 0 means "fall through to MaxBytes".
+	PerToolBytes map[string]int
+
+	// MaxLineLength is the global per-line character ceiling. 0 →
+	// DefaultMaxLineLength (2000 chars). Long lines get their middle
+	// elided so a result staying under the line cap can't sneak a
+	// 10 MB minified line past the byte cap on a near-edge input.
+	MaxLineLength int
+	// PerToolLineLength overrides MaxLineLength per tool name.
+	PerToolLineLength map[string]int
 }
 
-// CapFor returns the cap for `toolName`, falling back to Default and
-// then 2000.
+// DefaultMaxBytes / DefaultMaxLineLength are the fallbacks when the
+// config leaves the respective cap unset. Picked to match opencode's
+// defaults so two systems pointed at the same model see similar tool
+// result sizing.
+const (
+	DefaultMaxBytes      = 50 * 1024
+	DefaultMaxLineLength = 2000
+	defaultLineCap       = 2000
+)
+
+// CapFor returns the line cap for `toolName`, falling back to Default
+// and then defaultLineCap.
 func (c DefaultOutputCaps) CapFor(toolName string) int {
 	if c.PerTool != nil {
 		if v, ok := c.PerTool[toolName]; ok && v > 0 {
@@ -185,7 +225,35 @@ func (c DefaultOutputCaps) CapFor(toolName string) int {
 	if c.Default > 0 {
 		return c.Default
 	}
-	return 2000
+	return defaultLineCap
+}
+
+// BytesFor returns the byte cap for `toolName`, falling back to
+// MaxBytes and then DefaultMaxBytes.
+func (c DefaultOutputCaps) BytesFor(toolName string) int {
+	if c.PerToolBytes != nil {
+		if v, ok := c.PerToolBytes[toolName]; ok && v > 0 {
+			return v
+		}
+	}
+	if c.MaxBytes > 0 {
+		return c.MaxBytes
+	}
+	return DefaultMaxBytes
+}
+
+// LineLengthFor returns the per-line character cap for `toolName`,
+// falling back to MaxLineLength and then DefaultMaxLineLength.
+func (c DefaultOutputCaps) LineLengthFor(toolName string) int {
+	if c.PerToolLineLength != nil {
+		if v, ok := c.PerToolLineLength[toolName]; ok && v > 0 {
+			return v
+		}
+	}
+	if c.MaxLineLength > 0 {
+		return c.MaxLineLength
+	}
+	return DefaultMaxLineLength
 }
 
 // FileEditHook is the slice of internal/hooks.Hooks the edit/write
