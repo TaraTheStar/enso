@@ -216,6 +216,7 @@ func (c *OpenAIClient) doChatRequest(ctx context.Context, body []byte) (*http.Re
 func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event, error) {
 	req.Stream = true
 	req.Model = c.Model
+	req.Messages = FilterForRequest(req.Messages)
 
 	// Wrap with stream_options.include_usage=true so the provider sends
 	// a trailing usage chunk we can translate to EventUsage. OpenAI and

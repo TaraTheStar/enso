@@ -44,6 +44,23 @@ type Config struct {
 	Context      ContextPruneConfig        `toml:"context_prune"`
 	Instructions InstructionsConfig        `toml:"instructions"`
 	Pools        map[string]PoolConfig     `toml:"pools"`
+	Compaction   CompactionConfig          `toml:"compaction"`
+}
+
+// CompactionConfig configures the summarisation pass that runs when
+// context fills past compactionThreshold (or on a /compact / checkpoint
+// trigger). Empty values fall back to the session's primary provider —
+// the common case for users who don't care to split workload.
+//
+//	[compaction]
+//	provider = "haiku"   # one of the [providers.X] names; empty = session provider
+type CompactionConfig struct {
+	// Provider names a [providers.X] key to use for the summarisation
+	// call. When empty the agent reuses the session's current provider.
+	// When set but the named provider is missing or unreachable, the
+	// agent logs a warning and falls back to the session provider —
+	// a misconfigured override must never block compaction.
+	Provider string `toml:"provider"`
 }
 
 // PoolConfig is a [pools.<name>] block: a shared-hardware / rate

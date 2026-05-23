@@ -138,6 +138,22 @@ type Agent struct {
 	// goes stale until next session. The clean fix, if ever needed, is
 	// architectural: regenerate the system message per turn.
 	providerCtx *instructions.ProviderContext
+
+	// compactionProviderName is the [providers.X] key (from
+	// `[compaction] provider`) routing summarisation calls to a
+	// dedicated endpoint. Empty = use the session's current provider.
+	// Resolved lazily by compactionProvider() so a runtime /model swap
+	// or a /reload that adds the provider can take effect mid-session.
+	compactionProviderName string
+
+	// injectedInstructions tracks which deep ENSO.md / AGENTS.md files
+	// have already been surfaced via contextual injection in this
+	// session. Keyed by absolute path. Survives compaction (the content
+	// is in History already; re-injecting on every read would burn
+	// cache budget). Top-level only — sub-agents get their own tracker
+	// via spawn_agent's `New`.
+	injectedInstructions   map[string]struct{}
+	injectedInstructionsMu sync.Mutex
 }
 
 // providerContext builds the *instructions.ProviderContext for the
@@ -492,6 +508,12 @@ type Config struct {
 	// Zero value = defaults via config.ContextPruneConfig.Resolve().
 	PruneCfg config.ResolvedPruneConfig
 
+	// CompactionProvider names the [providers.X] entry to route
+	// summarisation calls through. Empty = use the session's primary
+	// provider. When the named provider is missing in Providers, the
+	// agent logs a warning and falls back to the session provider.
+	CompactionProvider string
+
 	// Capabilities is the tier-3 broker handle, forwarded to
 	// AgentContext (and inherited by spawned sub-agents). Non-nil only
 	// behind the Backend seam; nil elsewhere (tools behave as today).
@@ -628,20 +650,22 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	a := &Agent{
-		Providers:       cfg.Providers,
-		currentProvider: defaultProvider,
-		History:         history,
-		Bus:             cfg.Bus,
-		Registry:        cfg.Registry,
-		Perms:           cfg.Perms,
-		AgentCtx:        ac,
-		Writer:          cfg.Writer,
-		MaxTurns:        maxTurns,
-		Hooks:           cfg.Hooks,
-		pruneCfg:        pruneCfg,
-		toolMeta:        map[int]*toolMessageMeta{},
-		messageUsage:    mu,
-		providerCtx:     provCtx,
+		Providers:              cfg.Providers,
+		currentProvider:        defaultProvider,
+		History:                history,
+		Bus:                    cfg.Bus,
+		Registry:               cfg.Registry,
+		Perms:                  cfg.Perms,
+		AgentCtx:               ac,
+		Writer:                 cfg.Writer,
+		MaxTurns:               maxTurns,
+		Hooks:                  cfg.Hooks,
+		pruneCfg:               pruneCfg,
+		toolMeta:               map[int]*toolMessageMeta{},
+		messageUsage:           mu,
+		providerCtx:            provCtx,
+		compactionProviderName: cfg.CompactionProvider,
+		injectedInstructions:   map[string]struct{}{},
 	}
 	if cfg.LastUsage != nil {
 		lu := *cfg.LastUsage
@@ -652,8 +676,60 @@ func New(cfg Config) (*Agent, error) {
 	// Each Agent gets its own AgentContext via New(), so a sub-agent's
 	// checkpoint compacts only its own history.
 	ac.Checkpoint = a
+	ac.InstructionResolver = a
 	a.refreshEstimate()
 	return a, nil
+}
+
+// ResolveOnRead implements tools.InstructionResolver for contextual
+// instruction injection. Walks up from absPath collecting ENSO.md /
+// AGENTS.md files that govern the path but weren't already folded
+// into the static system prompt (those at or above cfg.Cwd are
+// covered there); returns a single newline-joined reminder block
+// ready to append to the read tool's LLMOutput.
+//
+// Per-session dedup: each path that produces a reminder is recorded
+// so a second read of the same file (or a sibling under the same
+// instruction dir) skips the injection. Survives compaction —
+// re-injecting would just bloat context.
+//
+// Returns "" when there's nothing new to inject, when AgentCtx.Cwd
+// is empty (e.g. a sub-agent without a cwd), or when the resolver
+// surfaces an error (silently swallowed — instructions are
+// best-effort enrichment, never a hard failure).
+func (a *Agent) ResolveOnRead(absPath string) string {
+	if absPath == "" || a.AgentCtx == nil || a.AgentCtx.Cwd == "" {
+		return ""
+	}
+	layers, err := instructions.ResolveForPath(absPath, a.AgentCtx.Cwd)
+	if err != nil || len(layers) == 0 {
+		return ""
+	}
+
+	a.injectedInstructionsMu.Lock()
+	defer a.injectedInstructionsMu.Unlock()
+
+	var fresh []instructions.Layer
+	for _, l := range layers {
+		if _, seen := a.injectedInstructions[l.Name]; seen {
+			continue
+		}
+		fresh = append(fresh, l)
+		a.injectedInstructions[l.Name] = struct{}{}
+	}
+	if len(fresh) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	for i, l := range fresh {
+		if i > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "<system-reminder>\nDirectory-scoped instructions from %s — these govern files under that directory:\n\n%s\n</system-reminder>",
+			l.Name, l.Body)
+	}
+	return b.String()
 }
 
 // RunOneShot submits a single user prompt, drives the chat→tool loop until

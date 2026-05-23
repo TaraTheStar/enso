@@ -172,6 +172,31 @@ type AgentContext struct {
 	// model completion. *agent.Agent satisfies it; spawn paths may pass
 	// nil so subagents can't compact the top-level history.
 	Checkpoint CheckpointRequester
+
+	// InstructionResolver, when non-nil, is the seam the `read` tool
+	// uses for contextual ENSO.md / AGENTS.md injection. Called with
+	// the absolute path of a just-read file; the implementation walks
+	// up to the cwd collecting any directory-scoped instruction files
+	// NOT already in the static system prompt or previously injected
+	// this session. Returns formatted reminder text (or "" when
+	// nothing new) to append to the LLM-visible result. *agent.Agent
+	// satisfies it; tests pass nil.
+	InstructionResolver InstructionResolver
+}
+
+// InstructionResolver is the seam tools use to ask the agent for any
+// directory-scoped instruction content to attach to a tool result.
+// Defined here (rather than in internal/instructions) so the tools
+// package doesn't have to import instructions just for the type.
+type InstructionResolver interface {
+	// ResolveOnRead returns reminder text to append to the LLMOutput
+	// of a successful `read` of absPath. Implementations track which
+	// files have already produced reminders this session so the same
+	// instructions are not re-injected on subsequent reads. The
+	// returned string, when non-empty, should already include any
+	// <system-reminder>...</system-reminder> wrapping the model
+	// expects to see.
+	ResolveOnRead(absPath string) string
 }
 
 // DefaultOutputCaps lets the host pin per-tool truncation thresholds
