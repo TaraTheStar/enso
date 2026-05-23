@@ -169,6 +169,11 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 
 		stream := sdk.GenerateContentStream(ctx, model, contents, cfg)
 		var streamErr error
+		// Gemini reports a running UsageMetadata on each chunk; the
+		// final chunk carries the authoritative numbers. Keep the
+		// latest seen and emit once at end-of-stream.
+		var lastUsage MessageUsage
+		var sawUsage bool
 
 		stream(func(resp *genai.GenerateContentResponse, err error) bool {
 			if err != nil {
@@ -177,12 +182,16 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			}
 			if u := resp.UsageMetadata; u != nil && (u.PromptTokenCount > 0 || u.CachedContentTokenCount > 0) {
 				// Gemini 2.5+ reports CachedContentTokenCount when
-				// implicit caching hits; log so cache effectiveness
-				// is visible in the debug stream. Agent's local
-				// token estimator is unchanged.
+				// implicit caching hits; log for the debug stream and
+				// stash for emission below.
 				fmt.Fprintf(debugLog(), "vertex usage: prompt=%d candidates=%d cached=%d total=%d\n",
 					u.PromptTokenCount, u.CandidatesTokenCount,
 					u.CachedContentTokenCount, u.TotalTokenCount)
+				lastUsage = vertexUsageFrom(
+					u.PromptTokenCount, u.CandidatesTokenCount,
+					u.CachedContentTokenCount, u.TotalTokenCount,
+				)
+				sawUsage = true
 			}
 			for _, cand := range resp.Candidates {
 				if cand == nil || cand.Content == nil {
@@ -235,6 +244,9 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			}
 			eventCh <- Event{Type: EventError, Error: fmt.Errorf("vertex: %w", streamErr)}
 			return
+		}
+		if sawUsage {
+			eventCh <- Event{Type: EventUsage, Usage: lastUsage}
 		}
 		eventCh <- Event{Type: EventDone}
 	}()
@@ -594,4 +606,21 @@ func applyVertexSafety(cfg *genai.GenerateContentConfig, settings map[string]str
 	}
 	cfg.SafetySettings = out
 	return nil
+}
+
+// vertexUsageFrom translates Vertex/Gemini UsageMetadata counts to a
+// MessageUsage. Pulled out of the stream callback so the translation
+// can be unit-tested without a live SDK iterator.
+//
+// Gemini semantics: TotalTokenCount is authoritative (do not
+// recompute). CachedContentTokenCount is a sub-line of
+// PromptTokenCount, not additive — same shape as OpenAI's
+// prompt_tokens_details.cached_tokens.
+func vertexUsageFrom(prompt, candidates, cached, total int32) MessageUsage {
+	return MessageUsage{
+		InputTokens:     int(prompt),
+		OutputTokens:    int(candidates),
+		CacheReadTokens: int(cached),
+		TotalTokens:     int(total),
+	}
 }

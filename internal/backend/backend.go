@@ -122,6 +122,17 @@ type TaskSpec struct {
 	// the typed (de)serialization. Nil = fresh system prompt.
 	ResumeHistory json.RawMessage `json:"resume_history,omitempty"`
 
+	// ResumeMessageUsage is the pre-serialized map[int]llm.MessageUsage
+	// (post-backfill History index → usage). Empty when the session
+	// predates real-token-accounting. Same opacity reasoning as
+	// ResumeHistory.
+	ResumeMessageUsage json.RawMessage `json:"resume_message_usage,omitempty"`
+
+	// ResumeLastUsage is the pre-serialized *llm.MessageUsage for the
+	// most recently recorded assistant turn. Nil/empty when no usage
+	// rows exist for the session being resumed.
+	ResumeLastUsage json.RawMessage `json:"resume_last_usage,omitempty"`
+
 	// ResolvedConfig is the host's already-loaded *config.Config,
 	// serialized. The worker uses it verbatim rather than re-running
 	// config.Load, so host and worker cannot drift on layered-config
@@ -297,8 +308,9 @@ const (
 	// applies it to the host store. Fire-and-forget, ordered (the seam
 	// send is serialized, the host loop processes in receipt order),
 	// same shape discipline as MsgEvent. Body in wire (needs llm).
-	MsgPersistMessage  MsgKind = "persist_message"   // worker -> host (wire.PersistMessage)
-	MsgPersistToolCall MsgKind = "persist_tool_call" // worker -> host (wire.PersistToolCall)
+	MsgPersistMessage      MsgKind = "persist_message"       // worker -> host (wire.PersistMessage)
+	MsgPersistMessageUsage MsgKind = "persist_message_usage" // worker -> host (wire.PersistMessageUsage)
+	MsgPersistToolCall     MsgKind = "persist_tool_call"     // worker -> host (wire.PersistToolCall)
 )
 
 // Envelope is the single wire unit. Body holds the kind-specific

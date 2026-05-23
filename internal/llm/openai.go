@@ -68,15 +68,25 @@ const (
 	EventTextDelta EventType = iota
 	EventReasoningDelta
 	EventToolCallComplete
+	// EventUsage carries provider-reported token counts for the turn
+	// that's about to finish. Adapters emit at most one per Chat()
+	// call, after the final content/tool-call events and before
+	// EventDone. Consumers that don't track usage may safely ignore
+	// it — Type checks default-fall-through.
+	EventUsage
 	EventDone
 	EventError
 )
 
 // Event is a single item emitted by the streaming Chat loop.
+//
+// Usage is populated only when Type == EventUsage; for all other
+// kinds it carries the zero value and should not be inspected.
 type Event struct {
 	Type      EventType
 	Text      string
 	ToolCalls []ToolCall
+	Usage     MessageUsage
 	Error     error
 }
 
@@ -207,7 +217,20 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 	req.Stream = true
 	req.Model = c.Model
 
-	data, err := json.Marshal(req)
+	// Wrap with stream_options.include_usage=true so the provider sends
+	// a trailing usage chunk we can translate to EventUsage. OpenAI and
+	// vLLM honour this; servers that don't (some llama.cpp builds) treat
+	// it as an unknown field and ignore it — we'll fall back to the
+	// heuristic estimate on the agent side when no usage arrives.
+	type streamOptions struct {
+		IncludeUsage bool `json:"include_usage"`
+	}
+	wrapped := struct {
+		ChatRequest
+		StreamOptions streamOptions `json:"stream_options"`
+	}{ChatRequest: req, StreamOptions: streamOptions{IncludeUsage: true}}
+
+	data, err := json.Marshal(wrapped)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
@@ -253,6 +276,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		sseDone := make(chan []byte)
 		go ParseSSE(resp.Body, sseDone)
 
+		var lastUsage *ChunkUsage
 		for raw := range sseDone {
 			fmt.Fprintf(debugLog(), "sse: %s\n", string(raw))
 			var chunk ChatCompletionChunk
@@ -276,10 +300,33 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 					}
 				}
 			}
+			// OpenAI sends usage on the trailing chunk (Choices empty).
+			// vLLM matches the shape; non-supporting servers leave Usage
+			// nil and we silently fall back to heuristic on the agent
+			// side.
+			if chunk.Usage != nil {
+				lastUsage = chunk.Usage
+			}
 		}
 
 		if calls := acc.Finalize(); len(calls) > 0 {
 			eventCh <- Event{Type: EventToolCallComplete, ToolCalls: calls}
+		}
+
+		if lastUsage != nil {
+			usage := MessageUsage{
+				InputTokens:  lastUsage.PromptTokens,
+				OutputTokens: lastUsage.CompletionTokens,
+				TotalTokens:  lastUsage.TotalTokens,
+			}
+			// OpenAI counts cached_tokens as a sub-line of prompt_tokens
+			// (not additive). Surface separately so downstream
+			// observability can show cache hit ratio, but don't add to
+			// TotalTokens — that would double-count.
+			if lastUsage.PromptTokensDetails != nil {
+				usage.CacheReadTokens = lastUsage.PromptTokensDetails.CachedTokens
+			}
+			eventCh <- Event{Type: EventUsage, Usage: usage}
 		}
 
 		eventCh <- Event{Type: EventDone}

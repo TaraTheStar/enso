@@ -198,8 +198,18 @@ type FileEditHook interface {
 // SessionWriter is what tools needs from session.Writer to record
 // messages and tool calls. Defined here so the tools package doesn't
 // import session. Implemented by *session.Writer.
+//
+// AppendMessageUsage records provider-reported token counts for the
+// most recently appended message in this writer's session. Must be
+// called immediately after AppendMessage (before any other Append*
+// call) so the writer's internal seq cursor still points at the
+// message the usage describes. No-op semantics are acceptable when
+// the writer can't apply (e.g. usage arrives without a prior
+// AppendMessage); implementations should not return an error in that
+// case but may log.
 type SessionWriter interface {
 	AppendMessage(msg llm.Message, agentID string) error
+	AppendMessageUsage(usage llm.MessageUsage, agentID string) error
 	AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error
 	SessionID() string
 }

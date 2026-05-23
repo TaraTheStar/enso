@@ -64,7 +64,7 @@ func (a *Agent) MaybeCompact(ctx context.Context) (bool, error) {
 	if p == nil || p.ContextWindow <= 0 {
 		return false, nil
 	}
-	used := llm.Estimate(a.History)
+	used := a.estimateTokens()
 	threshold := int(float64(p.ContextWindow) * compactionThreshold)
 	if used < threshold {
 		return false, nil
@@ -211,8 +211,15 @@ func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (
 
 	a.History = rebuilt
 	a.rebuildToolMeta(preserve)
+	// lastUsage's InputTokens count described a History prefix that no
+	// longer exists. Drop both lastUsage and the messageUsage sidecar;
+	// the next assistant turn will repopulate.
+	a.lastUsage.Store(nil)
+	a.messageUsageMu.Lock()
+	a.messageUsage = map[int]llm.MessageUsage{}
+	a.messageUsageMu.Unlock()
 	a.refreshEstimate()
-	afterTokens := llm.Estimate(a.History)
+	afterTokens := a.estimateTokens()
 
 	a.Bus.Publish(bus.Event{
 		Type: bus.EventCompacted,
