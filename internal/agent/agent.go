@@ -514,6 +514,13 @@ type Config struct {
 	// agent logs a warning and falls back to the session provider.
 	CompactionProvider string
 
+	// LSPNotifier, when non-nil, is propagated to AgentContext so
+	// the write/edit tools can surface live language-server
+	// diagnostics in their tool results. Constructed worker-side
+	// (where the lsp.Manager lives); nil disables the path and
+	// matches pre-Phase-1 behaviour.
+	LSPNotifier tools.LSPNotifier
+
 	// Capabilities is the tier-3 broker handle, forwarded to
 	// AgentContext (and inherited by spawned sub-agents). Non-nil only
 	// behind the Backend seam; nil elsewhere (tools behave as today).
@@ -627,6 +634,7 @@ func New(cfg Config) (*Agent, error) {
 		Writer:             cfg.Writer,
 		RestrictedRoots:    cfg.RestrictedRoots,
 		FileEditHook:       fileEditHookOf(cfg.Hooks),
+		LSPNotifier:        cfg.LSPNotifier,
 		WebFetchAllowHosts: cfg.WebFetchAllowHosts,
 		Capabilities:       cfg.Capabilities,
 		IsolationNote:      cfg.IsolationNote,

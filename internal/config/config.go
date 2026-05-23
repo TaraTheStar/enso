@@ -30,21 +30,27 @@ type Config struct {
 	// [providers.X] section in the file (TOML scoping).
 	DefaultProvider string `toml:"default_provider"`
 
-	Providers    map[string]ProviderConfig `toml:"providers"`
-	MCP          map[string]MCPConfig      `toml:"mcp"`
-	Permissions  PermConfig                `toml:"permissions"`
-	UI           UIConfig                  `toml:"ui"`
-	Git          GitConfig                 `toml:"git"`
-	LSP          map[string]LSPConfig      `toml:"lsp"`
-	Backend      BackendConfig             `toml:"backend"`
-	Hooks        HooksConfig               `toml:"hooks"`
-	WebFetch     WebFetchConfig            `toml:"web_fetch"`
-	Search       SearchConfig              `toml:"search"`
-	Daemon       DaemonConfig              `toml:"daemon"`
-	Context      ContextPruneConfig        `toml:"context_prune"`
-	Instructions InstructionsConfig        `toml:"instructions"`
-	Pools        map[string]PoolConfig     `toml:"pools"`
-	Compaction   CompactionConfig          `toml:"compaction"`
+	Providers   map[string]ProviderConfig `toml:"providers"`
+	MCP         map[string]MCPConfig      `toml:"mcp"`
+	Permissions PermConfig                `toml:"permissions"`
+	UI          UIConfig                  `toml:"ui"`
+	Git         GitConfig                 `toml:"git"`
+	LSP         map[string]LSPConfig      `toml:"lsp"`
+	// LSPBuiltinsDisabled, when true, suppresses the lsp.Manager's
+	// auto-activation of language servers whose binary is on PATH
+	// (gopls/typescript-language-server/pyright-langserver/rust-analyzer).
+	// Per-server disable is also available by declaring `[lsp.<name>]`
+	// with `command = ""`. Defaults to false — auto-activation is on.
+	LSPBuiltinsDisabled bool                  `toml:"lsp_builtins_disabled"`
+	Backend             BackendConfig         `toml:"backend"`
+	Hooks               HooksConfig           `toml:"hooks"`
+	WebFetch            WebFetchConfig        `toml:"web_fetch"`
+	Search              SearchConfig          `toml:"search"`
+	Daemon              DaemonConfig          `toml:"daemon"`
+	Context             ContextPruneConfig    `toml:"context_prune"`
+	Instructions        InstructionsConfig    `toml:"instructions"`
+	Pools               map[string]PoolConfig `toml:"pools"`
+	Compaction          CompactionConfig      `toml:"compaction"`
 }
 
 // CompactionConfig configures the summarisation pass that runs when

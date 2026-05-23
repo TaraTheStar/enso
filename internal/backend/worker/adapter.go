@@ -83,7 +83,7 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 	}
 	defer mcpMgr.Close()
 
-	lspMgr := lsp.NewManager(spec.Cwd, cfg.LSP)
+	lspMgr := lsp.NewManager(spec.Cwd, cfg.LSP, cfg.LSPBuiltinsDisabled)
 	tools.RegisterLSP(registry, lspMgr)
 	defer lspMgr.Close()
 
@@ -234,6 +234,7 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		WebFetchAllowHosts:    cfg.WebFetch.AllowHosts,
 		PruneCfg:              cfg.Context.Resolve(),
 		CompactionProvider:    cfg.Compaction.Provider,
+		LSPNotifier:           lsp.NewNotifier(lspMgr, spec.Cwd, lsp.NotifierOptions{}),
 		IsolationNote:         isolationNote(spec.Isolation),
 	}
 	if spec.Isolation.NetworkSealed {
