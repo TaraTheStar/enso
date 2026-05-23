@@ -56,8 +56,12 @@ func (t WriteTool) Run(ctx context.Context, args map[string]interface{}, ac *Age
 		ac.FileEditHook.OnFileEdit(ac.Cwd, abs, "write")
 	}
 
+	llmOut := fmt.Sprintf("wrote %d bytes to %s", len(content), abs)
+	if ac.LSPNotifier != nil {
+		llmOut += ac.LSPNotifier.NotifyWrite(ctx, abs)
+	}
 	return Result{
-		LLMOutput:  fmt.Sprintf("wrote %d bytes to %s", len(content), abs),
+		LLMOutput:  llmOut,
 		FullOutput: fmt.Sprintf("wrote %d bytes to %s\n---\n%s", len(content), abs, content),
 		Meta: ResultMeta{
 			PathsWritten: []string{abs},

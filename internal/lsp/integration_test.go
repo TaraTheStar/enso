@@ -47,7 +47,7 @@ func main() {
 			Extensions:  []string{".go"},
 			RootMarkers: []string{"go.mod"},
 		},
-	})
+	}, true)
 	defer mgr.Close()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

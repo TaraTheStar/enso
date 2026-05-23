@@ -17,7 +17,7 @@ func TestManagerMatchByExtension(t *testing.T) {
 		"go":         {Command: "gopls", Extensions: []string{".go"}},
 		"typescript": {Command: "tsserver", Extensions: []string{".ts", ".tsx"}},
 	}
-	m := NewManager("/tmp/proj", cfgs)
+	m := NewManager("/tmp/proj", cfgs, true)
 	cases := []struct {
 		path string
 		want string
@@ -86,10 +86,10 @@ func TestHasServers(t *testing.T) {
 	if (*Manager)(nil).HasServers() {
 		t.Errorf("nil manager should report HasServers=false")
 	}
-	if NewManager("/", map[string]config.LSPConfig{}).HasServers() {
+	if NewManager("/", map[string]config.LSPConfig{}, true).HasServers() {
 		t.Errorf("empty config should report HasServers=false")
 	}
-	if !NewManager("/", map[string]config.LSPConfig{"go": {Command: "gopls"}}).HasServers() {
+	if !NewManager("/", map[string]config.LSPConfig{"go": {Command: "gopls"}}, true).HasServers() {
 		t.Errorf("non-empty config should report HasServers=true")
 	}
 }
