@@ -293,6 +293,7 @@ func buildVertexRequest(req ChatRequest, maxTokens int64) ([]*genai.Content, *ge
 	if maxTokens == 0 {
 		maxTokens = defaultVertexMaxTokens
 	}
+	req.Messages = FilterForRequest(req.Messages)
 
 	// First pass: index tool_call IDs → function names so role="tool"
 	// messages can recover the name Gemini needs.

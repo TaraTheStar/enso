@@ -191,7 +191,7 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 	// firewall's allowed proxy port must be refreshed to match. A guest
 	// without iptables, or any other failure, REFUSES the launch — a
 	// box that cannot be sealed must never run while the prompt claims
-	// it is (the Phase-6 honesty invariant).
+	// it is.
 	proxyURL := ""
 	if b.Sealed {
 		proxyURL = guestProxyURL(b.EgressProxy)

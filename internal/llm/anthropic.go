@@ -356,7 +356,7 @@ func toAnthropicParams(req ChatRequest, model string, maxTokens int64) (anthropi
 		MaxTokens: maxTokens,
 	}
 
-	system, msgs, err := splitSystem(req.Messages)
+	system, msgs, err := splitSystem(FilterForRequest(req.Messages))
 	if err != nil {
 		return params, err
 	}

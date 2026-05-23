@@ -34,6 +34,50 @@ type Message struct {
 	ToolCalls  []ToolCall    `json:"tool_calls,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
 	Name       string        `json:"name,omitempty"`
+
+	// Synthetic marks a message injected programmatically — compaction
+	// summaries, environment reminders, contextual-instruction
+	// injections. Still sent to the model verbatim; the agent uses this
+	// flag to detect a prior compaction summary on resume (so a second
+	// compaction pass can UPDATE it rather than re-summarize lossily)
+	// and the TUI may render these turns dimmed. Not serialized on the
+	// wire — internal-only metadata.
+	Synthetic bool `json:"-"`
+
+	// Ignored marks a message present in History for display/audit but
+	// excluded from the outgoing ChatRequest.Messages payload sent to
+	// providers. Useful for "operator left a comment" rows or similar
+	// audit traces. Adapters MUST filter these out during serialization;
+	// FilterForRequest centralises that walk.
+	Ignored bool `json:"-"`
+}
+
+// FilterForRequest returns msgs with Ignored entries removed. Provider
+// adapters call this immediately before serializing so audit-only
+// rows never reach the wire. Synthetic rows are preserved — they're
+// real wire-level messages, just programmatically generated.
+//
+// Returns the input slice unchanged when no Ignored entries are
+// present (the common case), avoiding allocation in the hot path.
+func FilterForRequest(msgs []Message) []Message {
+	keep := true
+	for _, m := range msgs {
+		if m.Ignored {
+			keep = false
+			break
+		}
+	}
+	if keep {
+		return msgs
+	}
+	out := make([]Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Ignored {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // MessagePart is one element of a multi-block message body. Type

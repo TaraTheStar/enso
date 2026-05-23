@@ -233,6 +233,7 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		Hooks:                 hooks.New(cfg.Hooks.OnFileEdit, cfg.Hooks.OnSessionEnd),
 		WebFetchAllowHosts:    cfg.WebFetch.AllowHosts,
 		PruneCfg:              cfg.Context.Resolve(),
+		CompactionProvider:    cfg.Compaction.Provider,
 		IsolationNote:         isolationNote(spec.Isolation),
 	}
 	if spec.Isolation.NetworkSealed {

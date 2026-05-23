@@ -56,7 +56,7 @@ func Load(s *Store, sessionID string) (*State, error) {
 	// resumed conversation isn't polluted with workflow / spawn_agent
 	// transcripts. Use LoadAgentTranscript for those.
 	rows, err := s.DB.Query(
-		`SELECT role, content, tool_call_id, name, tool_calls
+		`SELECT role, content, tool_call_id, name, tool_calls, synthetic, ignored
 		 FROM messages WHERE session_id = ? AND agent_id = '' ORDER BY seq ASC`, sessionID,
 	)
 	if err != nil {
@@ -68,7 +68,9 @@ func Load(s *Store, sessionID string) (*State, error) {
 	for rows.Next() {
 		var m llm.Message
 		var toolCallsJSON string
-		if err := rows.Scan(&m.Role, &m.Content, &m.ToolCallID, &m.Name, &toolCallsJSON); err != nil {
+		var synthetic, ignored int
+		if err := rows.Scan(&m.Role, &m.Content, &m.ToolCallID, &m.Name, &toolCallsJSON,
+			&synthetic, &ignored); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		if toolCallsJSON != "" {
@@ -76,6 +78,8 @@ func Load(s *Store, sessionID string) (*State, error) {
 				return nil, fmt.Errorf("unmarshal tool_calls: %w", err)
 			}
 		}
+		m.Synthetic = synthetic != 0
+		m.Ignored = ignored != 0
 		history = append(history, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -146,7 +150,7 @@ func Load(s *Store, sessionID string) (*State, error) {
 // the regular Load only returns top-level rows.
 func LoadAgentTranscript(s *Store, sessionID, agentID string) ([]llm.Message, error) {
 	rows, err := s.DB.Query(
-		`SELECT role, content, tool_call_id, name, tool_calls
+		`SELECT role, content, tool_call_id, name, tool_calls, synthetic, ignored
 		 FROM messages WHERE session_id = ? AND agent_id = ? ORDER BY seq ASC`,
 		sessionID, agentID,
 	)
@@ -159,7 +163,9 @@ func LoadAgentTranscript(s *Store, sessionID, agentID string) ([]llm.Message, er
 	for rows.Next() {
 		var m llm.Message
 		var toolCallsJSON string
-		if err := rows.Scan(&m.Role, &m.Content, &m.ToolCallID, &m.Name, &toolCallsJSON); err != nil {
+		var synthetic, ignored int
+		if err := rows.Scan(&m.Role, &m.Content, &m.ToolCallID, &m.Name, &toolCallsJSON,
+			&synthetic, &ignored); err != nil {
 			return nil, fmt.Errorf("scan transcript: %w", err)
 		}
 		if toolCallsJSON != "" {
@@ -167,6 +173,8 @@ func LoadAgentTranscript(s *Store, sessionID, agentID string) ([]llm.Message, er
 				return nil, fmt.Errorf("unmarshal tool_calls: %w", err)
 			}
 		}
+		m.Synthetic = synthetic != 0
+		m.Ignored = ignored != 0
 		history = append(history, m)
 	}
 	return history, rows.Err()
@@ -207,6 +215,7 @@ func backfillInterrupted(history []llm.Message) ([]llm.Message, bool) {
 				Name:       tc.Function.Name,
 				ToolCallID: tc.ID,
 				Content:    syntheticInterruptedContent,
+				Synthetic:  true,
 			})
 			answered[tc.ID] = true
 		}
