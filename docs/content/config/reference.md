@@ -492,21 +492,42 @@ See [TUI]({{< relref "../docs/tui.md" >}}) and themes (drop a
 ## `[hooks]`
 
 Shell commands run at well-known lifecycle moments. Empty strings
-disable the corresponding event. `sh -c` invocation; 10s timeout;
-templates use Go `text/template` syntax against per-event variables.
+disable the corresponding event. `sh -c` invocation; 10s timeout.
 Timeouts and template errors surface as a yellow chat line and a
 slog warning; non-zero exit codes from your command are silent.
+
+Two flavours: **template hooks** (`on_file_edit`, `on_session_end`)
+use Go `text/template` syntax against per-event variables;
+**event hooks** (`on_event`) receive the event as JSON on stdin
+instead.
 
 ```toml
 [hooks]
 on_file_edit   = "gofmt -w {{.Path}}"
 on_session_end = "notify-send 'enso done'"
+on_event       = "node /path/to/dispatch.js"   # JSON on stdin
+# on_events    = ["UserMessage", "ToolCallStart", "ToolCallEnd"]
+#                # explicit allowlist; omit to use DefaultEventFilter
+#                # (curated set that excludes per-token deltas).
+
+[hooks.env]
+# Merged onto every hook subprocess's environment, overriding
+# matching keys from os.Environ(). Lets observers keep secrets out
+# of shell rc files.
+WATCHOURAI_TOKEN = "..."
 ```
 
-| Event            | Fires when                                                          | Template vars              |
+| Event            | Fires when                                                          | Payload                    |
 | ---------------- | ------------------------------------------------------------------- | -------------------------- |
-| `on_file_edit`   | After the `edit` or `write` tool succeeds; before the result returns to the agent. Synchronous, so subsequent reads in the same turn see the post-hook file. | `.Path`, `.Tool` (`"edit"` / `"write"`) |
-| `on_session_end` | When the top-level `agent.Run` loop returns (any cause). Subagents and workflow roles do not fire this.                                                       | `.SessionID`, `.Cwd`        |
+| `on_file_edit`   | After the `edit` or `write` tool succeeds; before the result returns to the agent. Synchronous, so subsequent reads in the same turn see the post-hook file. | Template vars: `.Path`, `.Tool` (`"edit"` / `"write"`) |
+| `on_session_end` | When the top-level `agent.Run` loop returns (any cause). Subagents and workflow roles do not fire this.                                                       | Template vars: `.SessionID`, `.Cwd` |
+| `on_event`       | Per bus event after publication, filtered by `on_events` (default: `DefaultEventFilter`, excludes per-token deltas). Fires off the agent's hot path on a fanout goroutine, bounded by the 10s timeout. | JSON on stdin: `{session_id, cwd, type, payload}` |
+
+`on_event` is the supported low-friction integration point for
+external observers (status boards, audit pipelines, watchourai-style
+visualisers). See the **External observers** section of the README
+for the end-to-end shape, including the daemon-socket subscription
+alternative for high-volume / stateful consumers.
 
 ## `[mcp.<name>]`
 

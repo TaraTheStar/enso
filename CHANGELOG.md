@@ -4,6 +4,164 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.8.0] - 2026-05-23
+
+This release focuses on **context-management parity with state-of-the-art
+coding agents** (real token accounting, structured compaction, contextual
+instructions), **live LSP integration** for instant feedback on edits, and
+a **first-class observer protocol** so third-party tools can visualise and
+react to agent activity without embedding into enso itself.
+
+### Added
+
+#### Context management
+
+- **Real per-message token accounting.** Provider-reported token counts
+  (input / output / cache-read / cache-write / reasoning / total) are
+  parsed from every adapter (`anthropic`, `anthropic-bedrock`,
+  `anthropic-vertex`, `bedrock`, `openai`, `vertex`) and stored alongside
+  each assistant message in a new `message_usage` table (migration auto-
+  applied on session-DB open). The agent's compaction threshold,
+  status-line token display, and resume hydration all switch from the
+  4-char heuristic to real numbers; the heuristic stays as a last-resort
+  fallback when usage is missing (first turn, or a provider that doesn't
+  report it).
+- **Structured Markdown compaction summaries.** The summariser is now
+  prompted for a fixed seven-section structure (`## Goal`,
+  `## Constraints & Preferences`, `## Progress` with Done/In Progress/
+  Blocked subsections, `## Key Decisions`, `## Next Steps`,
+  `## Critical Context`, `## Relevant Files`). Long sessions stay
+  legible across multiple compactions.
+- **Update-mode compaction.** On the second and later compactions of a
+  session, the summariser is fed the prior summary alongside the new
+  events and asked to *update* the seven sections rather than re-summarise
+  from scratch. Detection is anchored on the new `Synthetic` flag (with a
+  legacy bracket-prefix fallback for pre-flag session DBs). Stops the
+  "summary of a summary" lossy-degradation problem.
+- **Token-budgeted recent-turn tail.** Compaction's pinned-tail size is
+  now driven by `min(8000, max(2000, ctxWindow * 0.25))` tokens rather
+  than a fixed 6 turns. A session that just emitted a 20 KB grep result
+  pins fewer turns; a session of tight conversation pins more.
+- **`[compaction] provider` config.** Optional override that routes the
+  summarisation pass through a different `[providers.<name>]` entry
+  (e.g. cheap-and-fast for compaction, slow-and-careful for the main
+  loop). Falls back to the session provider with a warn log when the
+  named provider is missing.
+- **Contextual ENSO.md / AGENTS.md injection on `read`.** When the
+  model reads a file that lives below a directory with its own
+  `ENSO.md` or `AGENTS.md` not covered by the static system prompt,
+  that instruction file is appended to the read tool's result wrapped
+  in a `<system-reminder>` block. Per-session dedup so the same
+  instruction never lands twice; survives compaction.
+- **`Synthetic` / `Ignored` flags on `llm.Message`.** `Synthetic` marks
+  programmatically-injected messages (compaction summaries, env
+  reminders, contextual instructions) — sent to the model but
+  distinguishable. `Ignored` marks audit-only rows kept in history but
+  filtered from the outgoing `ChatRequest`. Persisted via a new
+  migration; threaded through all provider adapters'
+  `FilterForRequest` pass.
+
+#### Output truncation
+
+- **Trailing-message prompt-cache markers (Anthropic + Bedrock).** The
+  `prompt_caching = true` providers now mark the last 1–2 conversation
+  messages with `cache_control: ephemeral` (Anthropic) or `CachePoint`
+  (Bedrock) in addition to the previously-marked system block and
+  final tool. Total markers respect the 4-marker hard cap. Boosts cache
+  hit ratio on multi-turn workloads where the user sends short
+  follow-ups.
+- **`MaxBytes` and `MaxLineLength` output caps.** `DefaultOutputCaps`
+  gains byte-ceiling (50 KB default) and per-line-character (2000 char
+  default) thresholds applied alongside the existing line cap inside
+  `capTruncate` (byte → line → per-line). Catches pathological
+  single-line outputs the line cap can't see (a minified-JS dump, a
+  binary blob accidentally cat'd). Per-tool overrides via
+  `[context_prune.output_caps]`.
+- **Spill recovery for truncated tool output.** When a tool result is
+  capped, the full output is persisted to
+  `$XDG_STATE_HOME/enso/truncated/<session>/<hash>.txt` and the
+  model-visible string ends with a `[full output: <path> — use 'read'
+  with offset/limit to recover sections, or 'grep' to filter]` footer.
+  Lets the model self-recover when something it needs was in the
+  elided middle. Spill dirs are TTL-swept (7 days) on `Agent.New`.
+
+#### LSP
+
+- **Live diagnostics on write/edit.** When an LSP server is configured
+  for the file's language, the `write` and `edit` tools refresh the
+  server's view of the buffer (`DidChange` + `DidSave`) after a
+  successful save and append filtered diagnostics to the tool result.
+  The model learns about compile errors instantly, without an extra
+  `lsp_diagnostics` call or a project build. Bounded 500ms wait with a
+  100ms dedup window (gopls and pyright commonly emit an interim empty
+  publication before the real one). Errors-only by default; configurable
+  via `NotifierOptions`.
+- **`Client.DidChange` and `Client.DidSave`.** Per LSP spec, with
+  monotonic per-URI versions. Servers that only react to `didChange`
+  (rather than fsnotify) now see edits the agent makes.
+- **Builtin LSP auto-activation.** `gopls`, `typescript-language-server`,
+  `pyright-langserver`, and `rust-analyzer` are auto-activated when the
+  binary is on `PATH` — no `[lsp.<name>]` declaration required.
+  Override per-server by declaring `[lsp.<name>]` with the same name;
+  disable a single builtin via `command = ""`; disable all with
+  `lsp_builtins_disabled = true`.
+
+#### Daemon / observer protocol
+
+- **`session_id` on daemon event envelopes.** Every event the daemon
+  socket emits now carries its originating session id, so multi-session
+  observers can route on the envelope alone without keeping their own
+  outer subscribe context.
+- **Wire-form `PermissionRequest`.** `EventPermissionRequest` now
+  serialises a sanitised payload (`tool_name`, `args`, `agent_id`,
+  `agent_role`, `diff`) for daemon-socket observers. The
+  unserialisable `Respond` channel and `Deadline` are excluded via
+  `json:"-"`. In-process consumers reach permissions through the
+  unchanged `pendingPerms` / `PermissionResponseReq` path. Daemon-socket
+  observers can finally show "awaiting permission" state.
+- **`on_event` hook (`[hooks] on_event = "..."`)** — generic per-event
+  shell hook that receives the event as JSON on stdin
+  (`{session_id, cwd, type, payload}`). Fires off the agent loop on a
+  dedicated fanout goroutine, bounded by the 10s hook timeout. Filtered
+  by `on_events = [...]` or by the curated `DefaultEventFilter` (which
+  excludes per-token deltas so the hook isn't spawned tens of thousands
+  of times per turn). Complementary to the daemon-socket subscription
+  path: this is the low-friction option for status boards, audit
+  pipelines, and watchourai-style visualisers that don't want to manage
+  a long-lived process.
+- **`[hooks.env]` table.** Extra environment variables merged onto
+  every hook subprocess's environment, overriding matching keys from
+  `os.Environ()`. Lets observers keep tokens out of shell rc files.
+- **External observers section** in README + `docs/content/config/
+  reference.md` documenting both integration shapes (hook + daemon
+  socket) with a pointer to the watchourai adapter as a worked
+  example.
+
+#### TUI
+
+- **Double-Esc chord to cancel the in-flight turn.** When the input
+  line is empty and a turn is in progress, two Esc keystrokes within
+  the standard chord window send `MsgCancel` to the worker — the
+  agent stops cleanly and emits `EventCancelled`. A "press esc again
+  to stop" hint renders between the two presses. Single Esc remains a
+  no-op so a stray keystroke can't kill a long-running task.
+
+### Changed
+
+- **`hooks.New` signature.** Replaced the multi-positional
+  `New(onFileEdit, onSessionEnd string)` with a single
+  `New(hooks.Config)` so the hook surface can grow without rippling
+  through every embedder. The two internal callers
+  (`internal/daemon/server.go`, `internal/backend/worker/adapter.go`)
+  have been updated. External embedders that constructed
+  `*hooks.Hooks` directly will need a one-line migration.
+
+### Fixed
+
+- **GitHub code-scanning autofixes.** Two Copilot Autofix patches:
+  workflow permissions explicitly declared, and a slice-allocation
+  size computation that could theoretically overflow.
+
 ## [v2.7.0] - 2026-05-22
 
 ### Added
