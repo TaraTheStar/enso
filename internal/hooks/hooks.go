@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os/exec"
 	"strings"
 	"text/template"
@@ -172,7 +173,11 @@ func renderTemplate(tmpl string, vars map[string]any) (string, error) {
 // commands safe against shell-metachar injection from model-controlled
 // values like file paths.
 func prepareVars(in map[string]any) map[string]any {
-	out := make(map[string]any, len(in)+1)
+	outCap := len(in)
+	if len(in) < math.MaxInt {
+		outCap = len(in) + 1
+	}
+	out := make(map[string]any, outCap)
 	raw := make(map[string]any, len(in))
 	for k, v := range in {
 		s := fmt.Sprint(v)
