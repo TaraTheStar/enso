@@ -641,8 +641,9 @@ func TestBedrockToolResultContent_WithImage(t *testing.T) {
 }
 
 // TestApplyBedrockCachePoints_InsertsMarkers confirms cache point
-// blocks land after system content and after the last tool — the
-// Converse equivalent of Anthropic's cache_control:ephemeral markers.
+// blocks land after system content, after the last tool, and at the
+// tail of the trailing conversation message — the Converse equivalent
+// of Anthropic's cache_control:ephemeral markers.
 func TestApplyBedrockCachePoints_InsertsMarkers(t *testing.T) {
 	in, err := buildConverseInput(ChatRequest{
 		Messages: []Message{
@@ -677,12 +678,76 @@ func TestApplyBedrockCachePoints_InsertsMarkers(t *testing.T) {
 	if _, ok := in.ToolConfig.Tools[1].(*types.ToolMemberCachePoint); !ok {
 		t.Fatalf("Tools[1] type: %T (want ToolMemberCachePoint)", in.ToolConfig.Tools[1])
 	}
+
+	// Trailing user message should end in a CachePoint.
+	if len(in.Messages) != 1 {
+		t.Fatalf("Messages: want 1, got %d", len(in.Messages))
+	}
+	msg := in.Messages[0]
+	if n := len(msg.Content); n < 2 {
+		t.Fatalf("trailing message Content: want >=2 (text + cachepoint), got %d", n)
+	}
+	if _, ok := msg.Content[len(msg.Content)-1].(*types.ContentBlockMemberCachePoint); !ok {
+		t.Fatalf("last content block type: %T (want ContentBlockMemberCachePoint)",
+			msg.Content[len(msg.Content)-1])
+	}
 }
 
-// TestApplyBedrockCachePoints_NoSystemNoTools covers the empty case:
-// nothing to cache, no markers inserted. Without this guard the helper
-// would happily wedge a CachePoint into a System=nil slice and
-// surface as a "system blocks must be non-empty" 400 mid-stream.
+// TestApplyBedrockCachePoints_CapsAtFour verifies the 4-marker hard
+// cap: system + tool + last-2 messages exhausts the budget, and a
+// third trailing message stays unmarked. Bedrock Converse rejects
+// requests that exceed the cache-point cap.
+func TestApplyBedrockCachePoints_CapsAtFour(t *testing.T) {
+	in, err := buildConverseInput(ChatRequest{
+		Messages: []Message{
+			{Role: "system", Content: "be brief"},
+			{Role: "user", Content: "one"},
+			{Role: "assistant", Content: "two"},
+			{Role: "user", Content: "three"},
+			{Role: "assistant", Content: "four"},
+			{Role: "user", Content: "five"},
+		},
+		Tools: []ToolDef{{
+			Type: "function",
+			Function: ToolFunctionDef{
+				Name: "read", Description: "x", Parameters: map[string]interface{}{"type": "object"},
+			},
+		}},
+	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
+	if err != nil {
+		t.Fatalf("buildConverseInput: %v", err)
+	}
+	applyBedrockCachePoints(in)
+
+	cachePoints := 0
+	for _, sb := range in.System {
+		if _, ok := sb.(*types.SystemContentBlockMemberCachePoint); ok {
+			cachePoints++
+		}
+	}
+	if in.ToolConfig != nil {
+		for _, tl := range in.ToolConfig.Tools {
+			if _, ok := tl.(*types.ToolMemberCachePoint); ok {
+				cachePoints++
+			}
+		}
+	}
+	for _, m := range in.Messages {
+		for _, cb := range m.Content {
+			if _, ok := cb.(*types.ContentBlockMemberCachePoint); ok {
+				cachePoints++
+			}
+		}
+	}
+	if cachePoints != 4 {
+		t.Fatalf("cache-point total: want exactly 4 (hard cap), got %d", cachePoints)
+	}
+}
+
+// TestApplyBedrockCachePoints_NoSystemNoTools covers the system-less /
+// tool-less case: the trailing message is still a valid cache anchor
+// for multi-turn workloads, but system/tool slices must stay empty
+// (Converse rejects empty-System=non-empty payloads).
 func TestApplyBedrockCachePoints_NoSystemNoTools(t *testing.T) {
 	in, err := buildConverseInput(ChatRequest{
 		Messages: []Message{{Role: "user", Content: "hi"}},
@@ -696,6 +761,15 @@ func TestApplyBedrockCachePoints_NoSystemNoTools(t *testing.T) {
 	}
 	if in.ToolConfig != nil {
 		t.Fatalf("ToolConfig unexpectedly created: %+v", in.ToolConfig)
+	}
+	// Trailing message should still carry one cache marker.
+	if len(in.Messages) != 1 {
+		t.Fatalf("Messages: want 1, got %d", len(in.Messages))
+	}
+	msg := in.Messages[0]
+	if _, ok := msg.Content[len(msg.Content)-1].(*types.ContentBlockMemberCachePoint); !ok {
+		t.Fatalf("last content block type: %T (want ContentBlockMemberCachePoint)",
+			msg.Content[len(msg.Content)-1])
 	}
 }
 

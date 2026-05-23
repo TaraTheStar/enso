@@ -343,9 +343,10 @@ func TestAnthropicContentBlock_ImageWithoutDataErrors(t *testing.T) {
 }
 
 // TestAnthropicBuildParams_PromptCaching confirms cache_control:
-// ephemeral markers land on the last system block and the last tool.
-// JSON shape pinning — the SDK's omitzero machinery is finicky, and a
-// silently-empty CacheControl wouldn't reach the wire.
+// ephemeral markers land on the last system block, the last tool, and
+// the trailing conversation message. JSON shape pinning — the SDK's
+// omitzero machinery is finicky, and a silently-empty CacheControl
+// wouldn't reach the wire.
 func TestAnthropicBuildParams_PromptCaching(t *testing.T) {
 	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: true}
 	params, err := c.buildParams(ChatRequest{
@@ -370,13 +371,46 @@ func TestAnthropicBuildParams_PromptCaching(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	js := string(data)
-	// Both system and tools should carry cache_control: ephemeral.
+	// System, tools, and the lone user message all carry markers.
 	// SDK marshals CacheControlEphemeralParam as {"type":"ephemeral"}.
-	if strings.Count(js, `"cache_control"`) != 2 {
-		t.Fatalf("want 2 cache_control markers, got: %s", js)
+	if strings.Count(js, `"cache_control"`) != 3 {
+		t.Fatalf("want 3 cache_control markers (system + tool + last msg), got: %s", js)
 	}
-	if strings.Count(js, `"type":"ephemeral"`) != 2 {
-		t.Fatalf("want 2 ephemeral types, got: %s", js)
+	if strings.Count(js, `"type":"ephemeral"`) != 3 {
+		t.Fatalf("want 3 ephemeral types, got: %s", js)
+	}
+}
+
+// TestAnthropicBuildParams_PromptCachingCapsAtFour confirms the hard
+// 4-marker limit is respected: system + tool + last-2 messages = 4,
+// and a third trailing message stays unmarked. Anthropic rejects
+// requests with more than 4 cache_control markers, so the count must
+// never exceed it even when there are plenty of messages to mark.
+func TestAnthropicBuildParams_PromptCachingCapsAtFour(t *testing.T) {
+	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: true}
+	params, err := c.buildParams(ChatRequest{
+		Messages: []Message{
+			{Role: "system", Content: "be brief"},
+			{Role: "user", Content: "one"},
+			{Role: "assistant", Content: "two"},
+			{Role: "user", Content: "three"},
+			{Role: "assistant", Content: "four"},
+			{Role: "user", Content: "five"},
+		},
+		Tools: []ToolDef{{
+			Type: "function",
+			Function: ToolFunctionDef{
+				Name: "read", Description: "x", Parameters: map[string]interface{}{"type": "object"},
+			},
+		}},
+	}, 8192)
+	if err != nil {
+		t.Fatalf("buildParams: %v", err)
+	}
+	data, _ := json.Marshal(params)
+	js := string(data)
+	if got := strings.Count(js, `"cache_control"`); got != 4 {
+		t.Fatalf("want exactly 4 markers (4-marker hard cap), got %d: %s", got, js)
 	}
 }
 
@@ -401,11 +435,10 @@ func TestAnthropicBuildParams_PromptCachingDisabled(t *testing.T) {
 	}
 }
 
-// TestAnthropicPromptCaching_NoSystemNoTools covers the no-op path:
-// no system + no tools = no markers (instead of panicking on empty
-// slice access). This is also the local-llama case if someone
-// accidentally enables PromptCaching on the OpenAI-compat adapter
-// (factory routes correctly today, but defensive code is cheap).
+// TestAnthropicPromptCaching_NoSystemNoTools covers the system-less /
+// tool-less path: the trailing message is still a valid cache anchor
+// for multi-turn workloads. Important is that empty system + empty
+// tools doesn't panic on slice access.
 func TestAnthropicPromptCaching_NoSystemNoTools(t *testing.T) {
 	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: true}
 	params, err := c.buildParams(ChatRequest{
@@ -415,8 +448,9 @@ func TestAnthropicPromptCaching_NoSystemNoTools(t *testing.T) {
 		t.Fatalf("buildParams: %v", err)
 	}
 	data, _ := json.Marshal(params)
-	if strings.Contains(string(data), `"cache_control"`) {
-		t.Fatalf("no markers expected without system/tools: %s", data)
+	js := string(data)
+	if got := strings.Count(js, `"cache_control"`); got != 1 {
+		t.Fatalf("want 1 trailing-message marker without system/tools, got %d: %s", got, js)
 	}
 }
 

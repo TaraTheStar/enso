@@ -42,10 +42,9 @@ func (t WebFetchTool) Parameters() map[string]interface{} {
 }
 
 const (
-	webFetchTimeout    = 30 * time.Second
-	webFetchMaxBytes   = 200 * 1024
-	webFetchMaxRedirs  = 10
-	webFetchSummaryCap = 2000
+	webFetchTimeout   = 30 * time.Second
+	webFetchMaxBytes  = 200 * 1024
+	webFetchMaxRedirs = 10
 )
 
 func (t WebFetchTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
@@ -95,11 +94,7 @@ func (t WebFetchTool) Run(ctx context.Context, args map[string]interface{}, ac *
 		content = stripHTML(content)
 	}
 
-	cap := webFetchSummaryCap
-	if c := ac.OutputCaps.CapFor("web_fetch"); c > 0 {
-		cap = c
-	}
-	truncated, full := capTruncate(content, cap, ac.RecentUserHint)
+	truncated, full := truncateWithRecovery(ac, "web_fetch", content)
 
 	return Result{
 		LLMOutput:     truncated,

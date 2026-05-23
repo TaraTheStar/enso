@@ -95,8 +95,7 @@ func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	}
 
 	content := sb.String()
-	cap := ac.OutputCaps.CapFor("read")
-	truncated, full := capTruncate(content, cap, ac.RecentUserHint)
+	truncated, full := truncateWithRecovery(ac, "read", content)
 
 	// File contents are huge; the call signature already shows the path
 	// (and any range args). Scrollback gets a count instead of pages of
