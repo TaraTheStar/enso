@@ -105,6 +105,15 @@ func (e Event) WireForm() (typ string, payload json.RawMessage, ok bool) {
 		typ = "AgentIdle"
 	case EventInputDiscarded:
 		typ = "InputDiscarded"
+	case EventPermissionRequest:
+		// PermissionRequest's payload (*permissions.PromptRequest)
+		// carries a live Respond channel + Deadline (time.Time). Both
+		// are json:"-" on the struct so json.Marshal silently skips
+		// them, leaving only the wire-safe fields (tool_name, args,
+		// agent_id, agent_role). Observers see the request shape and
+		// can render an "awaiting permission" indicator; they don't
+		// get to answer (that goes through PermissionResponseReq).
+		typ = "PermissionRequest"
 	default:
 		return "", nil, false
 	}
@@ -192,6 +201,16 @@ func FromWire(typ string, payload json.RawMessage) (Event, bool) {
 		var n float64
 		_ = json.Unmarshal(payload, &n)
 		return Event{Type: EventInputDiscarded, Payload: int(n)}, true
+	case "PermissionRequest":
+		// Asymmetric on purpose: WireForm emits this for external
+		// observers reading raw daemon.Event records, but FromWire
+		// returns ok=false because the in-process consumers
+		// (attach.go's renderer, worker→host channel) reach
+		// permission events through a separate dedicated path
+		// (pendingPerms + PermissionResponseReq). Reconstructing a
+		// channel-less PromptRequest here would confuse the modal
+		// renderer that expects a live Respond channel.
+		return Event{}, false
 	}
 	return Event{}, false
 }
