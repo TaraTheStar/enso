@@ -536,16 +536,32 @@ func (c *Config) ResolveSearchSecrets(warn io.Writer) {
 	sx.CACertPEM = pem
 }
 
-// HooksConfig holds the two supported lifecycle commands. Empty
-// strings disable the corresponding hook. Templates use Go's
-// text/template syntax against vars documented in internal/hooks.
+// HooksConfig holds user-configurable lifecycle hooks. Empty strings
+// disable the corresponding hook. Templates use Go's text/template
+// syntax against vars documented in internal/hooks; on_event is
+// different — it pipes JSON to stdin (see below).
 //
 //	[hooks]
 //	on_file_edit   = "gofmt -w {{.Path}}"
 //	on_session_end = "notify-send 'enso done'"
+//
+//	# Fires for every wire-safe bus event; receives JSON on stdin.
+//	# Default event filter excludes per-token deltas; override with
+//	# on_events = ["UserMessage", "ToolCallStart", ...] for an
+//	# explicit allowlist.
+//	on_event = "node /path/to/dispatch.js"
+//
+//	[hooks.env]
+//	# Merged into every hook subprocess's environment, overriding
+//	# values inherited from os.Environ(). Lets users keep tokens out
+//	# of their shell rc.
+//	WATCHOURAI_TOKEN = "..."
 type HooksConfig struct {
-	OnFileEdit   string `toml:"on_file_edit"`
-	OnSessionEnd string `toml:"on_session_end"`
+	OnFileEdit   string            `toml:"on_file_edit"`
+	OnSessionEnd string            `toml:"on_session_end"`
+	OnEvent      string            `toml:"on_event"`
+	OnEvents     []string          `toml:"on_events"`
+	Env          map[string]string `toml:"env"`
 }
 
 // ProviderConfig holds settings for a single LLM endpoint.

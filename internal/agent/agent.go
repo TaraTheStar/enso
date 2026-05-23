@@ -686,7 +686,33 @@ func New(cfg Config) (*Agent, error) {
 	ac.Checkpoint = a
 	ac.InstructionResolver = a
 	a.refreshEstimate()
+	a.startEventHookFanout()
 	return a, nil
+}
+
+// startEventHookFanout subscribes to the agent's bus and pumps each
+// event through Hooks.OnEvent on a dedicated goroutine. No-op when no
+// on_event command is configured. The goroutine exits when the bus
+// closes the subscriber channel (which happens never today — buses
+// outlive agents — but the goroutine is cheap to leave running for the
+// agent's lifetime and unsubscribes on best-effort GC).
+//
+// Runs OFF the agent loop so a slow on_event hook can't stall the
+// agent. The subscriber channel is buffered; bursty events that
+// outpace the hook are dropped at the bus's normal slow-consumer
+// boundary (logged once per drop interval).
+func (a *Agent) startEventHookFanout() {
+	if a.Hooks == nil || a.Hooks.OnEventCmd == "" || a.Bus == nil {
+		return
+	}
+	cwd := a.AgentCtx.Cwd
+	sessionID := a.AgentCtx.SessionID
+	ch := a.Bus.Subscribe(64)
+	go func() {
+		for evt := range ch {
+			a.Hooks.OnEvent(cwd, sessionID, evt)
+		}
+	}()
 }
 
 // ResolveOnRead implements tools.InstructionResolver for contextual
