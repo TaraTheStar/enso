@@ -434,6 +434,7 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 		WebFetchAllowHosts: s.cfg.WebFetch.AllowHosts,
 		RestrictedRoots:    restrictedRoots,
 		PruneCfg:           s.cfg.Context.Resolve(),
+		CompactionProvider: s.cfg.Compaction.Provider,
 	})
 	if err != nil {
 		return fmt.Errorf("agent: %w", err)
