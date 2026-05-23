@@ -59,7 +59,6 @@ func runBashHost(ctx context.Context, cmdStr string, ac *AgentContext) (Result, 
 
 	runErr := cmd.Run()
 
-	cap := ac.OutputCaps.CapFor("bash")
 	cacheKey := bashCacheKey(cmdStr)
 
 	if runErr != nil {
@@ -67,7 +66,7 @@ func runBashHost(ctx context.Context, cmdStr string, ac *AgentContext) (Result, 
 		if output == "" {
 			output = runErr.Error()
 		}
-		truncated, full := capTruncate(output, cap, ac.RecentUserHint)
+		truncated, full := truncateWithRecovery(ac, "bash", output)
 		return Result{
 			LLMOutput:  fmt.Sprintf("exit %d\n%s", cmd.ProcessState.ExitCode(), truncated),
 			FullOutput: fmt.Sprintf("exit %d\nstdout: %s\nstderr: %s", cmd.ProcessState.ExitCode(), stdoutBuf.String(), full),
@@ -76,7 +75,7 @@ func runBashHost(ctx context.Context, cmdStr string, ac *AgentContext) (Result, 
 	}
 
 	output := stdoutBuf.String()
-	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
+	truncated, full := truncateWithRecovery(ac, "bash", output)
 	llm := truncated
 	if llm == "" {
 		// A model can't interpret an empty tool message, and some

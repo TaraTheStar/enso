@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/TaraTheStar/enso/internal/hooks"
 	"github.com/TaraTheStar/enso/internal/instructions"
 	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/paths"
 	"github.com/TaraTheStar/enso/internal/permissions"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
@@ -607,9 +609,12 @@ func New(cfg Config) (*Agent, error) {
 		Capabilities:       cfg.Capabilities,
 		IsolationNote:      cfg.IsolationNote,
 		OutputCaps: tools.DefaultOutputCaps{
-			Default: pruneCfg.OutputCapDefault,
-			PerTool: pruneCfg.OutputCapsPerTool,
+			Default:       pruneCfg.OutputCapDefault,
+			PerTool:       pruneCfg.OutputCapsPerTool,
+			MaxBytes:      pruneCfg.OutputMaxBytes,
+			MaxLineLength: pruneCfg.OutputMaxLineLength,
 		},
+		Spill: makeSpillWriter(cfg.SessionID),
 	}
 
 	// Seed messageUsage from resume state when available so the first
@@ -1104,4 +1109,32 @@ func (a *Agent) requestPrompt(ctx context.Context, toolName string, args map[str
 	case <-ctx.Done():
 		return permissions.Deny
 	}
+}
+
+// makeSpillWriter returns a SpillWriter rooted at <state-dir>/truncated
+// for the given session, and fires a best-effort sweep of expired
+// spill files (7-day TTL) in the background so stale files don't
+// accumulate on long-lived hosts. Returns nil if state dir resolution
+// fails or session ID is empty — truncateWithRecovery then degrades
+// to plain truncation.
+func makeSpillWriter(sessionID string) tools.SpillWriter {
+	if sessionID == "" {
+		return nil
+	}
+	stateDir, err := paths.StateDir()
+	if err != nil || stateDir == "" {
+		return nil
+	}
+	root := filepath.Join(stateDir, "truncated")
+	go func() {
+		// Best-effort sweep — failure here must not affect agent
+		// startup. Log via slog so operators can spot a hung disk.
+		if removed, err := tools.SweepSpills(root, tools.DefaultSpillMaxAge); err != nil {
+			slog.Warn("spill sweep failed", "root", root, "err", err)
+		} else if removed > 0 {
+			slog.Debug("spill sweep removed expired files",
+				"root", root, "removed", removed)
+		}
+	}()
+	return &tools.FileSpill{Root: root, SessionID: sessionID}
 }

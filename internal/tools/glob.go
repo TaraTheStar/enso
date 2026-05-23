@@ -64,8 +64,7 @@ func (t GlobTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	}
 
 	output := sb.String()
-	cap := ac.OutputCaps.CapFor("glob")
-	truncated, full := capTruncate(output, cap, ac.RecentUserHint)
+	truncated, full := truncateWithRecovery(ac, "glob", output)
 
 	display := fmt.Sprintf("%d match%s", len(matches), matchPlural(len(matches)))
 
