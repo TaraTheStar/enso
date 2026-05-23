@@ -443,7 +443,8 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 			extraDirs:      cfg.Permissions.AdditionalDirectories,
 			ignorePatterns: ignorePatterns,
 		},
-		sessions: &sessionsOverlayData{store: store},
+		sessions:   &sessionsOverlayData{store: store},
+		cancelTurn: sess.Cancel,
 	}
 	// Enforcing checker is worker-side: leaving permCheckerCwd.checker
 	// nil makes the modal's "always/turn" honestly degrade to
