@@ -3,11 +3,159 @@
 package lsp
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 	"time"
 )
+
+// newTestClient constructs a Client without any backing Conn so the
+// notification path can be driven synthetically. handleNotification
+// uses Conn only on outbound calls, so leaving it nil is fine for the
+// WaitForDiagnostics state-machine tests.
+func newTestClient() *Client {
+	return &Client{
+		opened:      map[string]bool{},
+		docVersions: map[string]int{},
+		diagsByURI:  map[string][]Diagnostic{},
+		diagWaiters: map[string]chan struct{}{},
+	}
+}
+
+func mkDiagPayload(uri string, diags []Diagnostic) json.RawMessage {
+	type publishParams struct {
+		URI         string       `json:"uri"`
+		Diagnostics []Diagnostic `json:"diagnostics"`
+	}
+	b, _ := json.Marshal(publishParams{URI: uri, Diagnostics: diags})
+	return b
+}
+
+// TestWaitForDiagnostics_ReceivesNextPublication confirms the channel
+// fires only on publications that arrive AFTER the wait starts —
+// cached diagnostics from an earlier publication are not enough.
+func TestWaitForDiagnostics_ReceivesNextPublication(t *testing.T) {
+	c := newTestClient()
+	uri := "file:///a.go"
+
+	// Pre-seed the cache with a stale publication; WaitForDiagnostics
+	// must NOT short-circuit on this.
+	c.handleNotification("textDocument/publishDiagnostics",
+		mkDiagPayload(uri, []Diagnostic{{Message: "old"}}))
+
+	got := make(chan []Diagnostic, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		got <- c.WaitForDiagnostics(ctx, uri, 0)
+	}()
+
+	// Give the goroutine a moment to register its waiter, then publish.
+	time.Sleep(20 * time.Millisecond)
+	c.handleNotification("textDocument/publishDiagnostics",
+		mkDiagPayload(uri, []Diagnostic{{Message: "fresh"}}))
+
+	select {
+	case d := <-got:
+		if len(d) != 1 || d[0].Message != "fresh" {
+			t.Errorf("got %+v, want one fresh diagnostic", d)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitForDiagnostics didn't return after publication")
+	}
+}
+
+// TestWaitForDiagnostics_CtxCancel exercises the cancellation path:
+// when the context fires before any publication, WaitForDiagnostics
+// returns nil and tidies its waiter slot (so a subsequent publication
+// for the same URI doesn't crash trying to close an absent channel).
+func TestWaitForDiagnostics_CtxCancel(t *testing.T) {
+	c := newTestClient()
+	uri := "file:///b.go"
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	got := c.WaitForDiagnostics(ctx, uri, 0)
+	if got != nil {
+		t.Errorf("expected nil on ctx timeout, got %+v", got)
+	}
+
+	// Publication AFTER ctx fired must not panic; the waiter slot is
+	// gone, so this is just a plain cache write.
+	c.handleNotification("textDocument/publishDiagnostics",
+		mkDiagPayload(uri, []Diagnostic{{Message: "late"}}))
+}
+
+// TestWaitForDiagnostics_DedupWindow checks the second-publication
+// behaviour: when dedup > 0, a server that emits "interim" diagnostics
+// followed by a "real" set in quick succession has the FINAL state
+// observed.
+func TestWaitForDiagnostics_DedupWindow(t *testing.T) {
+	c := newTestClient()
+	uri := "file:///c.go"
+
+	got := make(chan []Diagnostic, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		got <- c.WaitForDiagnostics(ctx, uri, 80*time.Millisecond)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	// First publication: empty "analysing..." style.
+	c.handleNotification("textDocument/publishDiagnostics",
+		mkDiagPayload(uri, []Diagnostic{}))
+	// Second publication arrives within the dedup window with the
+	// real answer.
+	time.Sleep(20 * time.Millisecond)
+	c.handleNotification("textDocument/publishDiagnostics",
+		mkDiagPayload(uri, []Diagnostic{{Message: "real error"}}))
+
+	select {
+	case d := <-got:
+		if len(d) != 1 || d[0].Message != "real error" {
+			t.Errorf("dedup window did not surface follow-up: got %+v", d)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitForDiagnostics did not return")
+	}
+}
+
+// TestWaitForDiagnostics_MultipleWaitersSameURI verifies the broadcast
+// behaviour: two concurrent callers on the same URI both wake on a
+// single publication.
+func TestWaitForDiagnostics_MultipleWaitersSameURI(t *testing.T) {
+	c := newTestClient()
+	uri := "file:///d.go"
+
+	done1 := make(chan struct{})
+	done2 := make(chan struct{})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = c.WaitForDiagnostics(ctx, uri, 0)
+		close(done1)
+	}()
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = c.WaitForDiagnostics(ctx, uri, 0)
+		close(done2)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	c.handleNotification("textDocument/publishDiagnostics",
+		mkDiagPayload(uri, []Diagnostic{{Message: "shared"}}))
+
+	for i, ch := range []chan struct{}{done1, done2} {
+		select {
+		case <-ch:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("waiter %d didn't wake on single publication", i+1)
+		}
+	}
+}
 
 // TestFlattenHoverContents covers the four shapes hover responses come
 // in: MarkupContent, plain string, MarkedString, and array of mixed.

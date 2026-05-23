@@ -82,8 +82,12 @@ func (t EditTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 		ac.FileEditHook.OnFileEdit(ac.Cwd, abs, "edit")
 	}
 
+	llmOut := fmt.Sprintf("edited %s (%d replacement%s)\n---\n%s", abs, count, plural(count), unified)
+	if ac.LSPNotifier != nil {
+		llmOut += ac.LSPNotifier.NotifyWrite(ctx, abs)
+	}
 	return Result{
-		LLMOutput:  fmt.Sprintf("edited %s (%d replacement%s)\n---\n%s", abs, count, plural(count), unified),
+		LLMOutput:  llmOut,
 		FullOutput: fmt.Sprintf("edited %s\n---\n%s", abs, updated),
 		Display:    unified,
 		Meta: ResultMeta{

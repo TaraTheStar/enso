@@ -48,10 +48,16 @@ type serverInstance struct {
 // NewManager constructs a Manager around the parsed `[lsp]` config map
 // and the project cwd. Servers are NOT spawned eagerly; the first call
 // to ClientFor lazily starts the matching one.
-func NewManager(cwd string, configs map[string]config.LSPConfig) *Manager {
+//
+// Builtin defaults (gopls / typescript-language-server / pyright-
+// langserver / rust-analyzer) are auto-activated when their binary is
+// on PATH and the user hasn't overridden the same name. Set
+// `disableBuiltins` to true (config: `lsp_builtins_disabled = true`)
+// to suppress this and stick strictly to user-declared servers.
+func NewManager(cwd string, configs map[string]config.LSPConfig, disableBuiltins bool) *Manager {
 	return &Manager{
 		cwd:     cwd,
-		configs: configs,
+		configs: mergeBuiltinLSPs(configs, disableBuiltins),
 		clients: map[string]*serverInstance{},
 	}
 }

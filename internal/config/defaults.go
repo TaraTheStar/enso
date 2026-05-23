@@ -253,26 +253,39 @@ attribution_name = "enso"
 # headers = { Authorization = "Bearer $ENSO_NOTION_TOKEN" }
 
 # LSP servers. One block per language server. When at least one is
-# configured, the lsp_hover / lsp_definition / lsp_references /
-# lsp_diagnostics tools become available. Servers are spawned lazily on
-# the first request that touches a matching extension.
+# configured (or a builtin auto-activates), the lsp_hover /
+# lsp_definition / lsp_references / lsp_diagnostics tools become
+# available AND the write/edit tools surface live diagnostics for the
+# file just edited. Servers are spawned lazily on the first request
+# that touches a matching extension.
+#
+# Builtin defaults auto-activate when the binary is on PATH; you do
+# NOT need to declare these to use them. Override or replace by
+# adding a [lsp.<name>] block with the same name (your config wins
+# entirely). Disable a single builtin by setting command = "" in its
+# block; disable them all with the top-level
+#   lsp_builtins_disabled = true
+#
+#   builtin name  | command (must be on PATH)
+#   --------------|--------------------------------
+#   go            | gopls
+#   typescript    | typescript-language-server --stdio
+#   python        | pyright-langserver --stdio
+#   rust          | rust-analyzer
+#
+# Example override (force a specific gopls path):
 #
 # [lsp.go]
-# command = "gopls"
-# extensions = [".go"]
-# root_markers = ["go.mod", ".git"]
+# command = "/opt/gopls/bin/gopls-experimental"
 #
-# [lsp.typescript]
-# command = "typescript-language-server"
-# args = ["--stdio"]
-# extensions = [".ts", ".tsx", ".js", ".jsx"]
-# root_markers = ["package.json", "tsconfig.json", ".git"]
+# Example custom server entirely outside the builtin set:
 #
-# [lsp.python]
-# command = "pyright-langserver"
-# args = ["--stdio"]
-# extensions = [".py"]
-# root_markers = ["pyproject.toml", "setup.py", ".git"]
+# [lsp.zig]
+# command = "zls"
+# extensions = [".zig"]
+# root_markers = ["build.zig", ".git"]
+#
+# lsp_builtins_disabled = false   # set true to suppress auto-activation
 
 # Web search. The web_search tool is always available; by default it
 # scrapes DuckDuckGo's html endpoint (no signup, no API key). For higher-
