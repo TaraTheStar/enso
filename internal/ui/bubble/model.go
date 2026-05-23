@@ -68,6 +68,13 @@ func spinTick() tea.Cmd {
 type model struct {
 	inputCh chan<- string
 
+	// cancelTurn aborts the in-flight agent turn (sess.Cancel: ships
+	// MsgCancel to the worker, which calls agt.Cancel() and emits
+	// bus.EventCancelled). Bound by run.go; nil-safe so tests can
+	// construct a bare model. Triggered by double-Esc when the input
+	// buffer is empty and a turn is in progress.
+	cancelTurn func()
+
 	// Identity for status line. Only the model name is shown by default;
 	// provider/base URL/context window live in /info and the Ctrl-Space
 	// session inspector overlay. Showing the provider
@@ -370,12 +377,22 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "esc":
-		// Double-Esc clears the input line. Single Esc is a no-op
-		// here in non-vim mode (vim mode handles it earlier as
-		// "enter normal" and never falls through to this switch).
-		// Keeps Esc cheap and undoable: a stray single Esc does
-		// nothing, but a deliberate two-tap wipes a misstart.
+		// Double-Esc means "undo": on an empty input line while a
+		// turn is in flight it cancels the turn; on a non-empty line
+		// it wipes the buffer. Single Esc is a no-op in either case
+		// (vim mode handles Esc earlier as "enter normal" and never
+		// falls through to this switch). A stray single Esc does
+		// nothing; a deliberate two-tap is the commit.
+		inProgress := m.busy || m.conv.Live() != nil
 		if m.input.buf == "" {
+			if !inProgress || m.cancelTurn == nil {
+				return m, nil
+			}
+			if !prevEscAt.IsZero() && time.Since(prevEscAt) < escDoubleWindow {
+				m.cancelTurn()
+				return m, nil
+			}
+			m.lastEscAt = time.Now()
 			return m, nil
 		}
 		if !prevEscAt.IsZero() && time.Since(prevEscAt) < escDoubleWindow {
@@ -839,6 +856,16 @@ func (m *model) View() tea.View {
 		if remaining > 0 {
 			status = status + statusStyle.Render("  · auto-deny in "+fmtCountdown(remaining))
 		}
+	}
+	// Between the two Esc presses of the cancel chord, hint at what
+	// the second press will do. Naturally clears: the spin tick
+	// re-renders every spinFrameMs while busy/live, so once the
+	// double-Esc window expires the next frame drops this string;
+	// any non-Esc key zeroes lastEscAt at the top of handleKey and
+	// removes it immediately.
+	if !m.lastEscAt.IsZero() && m.input.buf == "" && (m.busy || m.conv.Live() != nil) &&
+		time.Since(m.lastEscAt) < escDoubleWindow {
+		status = status + statusStyle.Render("  · press esc again to stop")
 	}
 	sb.WriteString(status)
 	// Blank line between the status indicator and the input prompt so
