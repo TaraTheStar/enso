@@ -257,6 +257,16 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 			if rh, mErr := json.Marshal(resumed.History); mErr == nil {
 				spec.ResumeHistory = rh
 			}
+			if len(resumed.MessageUsage) > 0 {
+				if rmu, mErr := json.Marshal(resumed.MessageUsage); mErr == nil {
+					spec.ResumeMessageUsage = rmu
+				}
+			}
+			if resumed.LastUsage != nil {
+				if rlu, mErr := json.Marshal(resumed.LastUsage); mErr == nil {
+					spec.ResumeLastUsage = rlu
+				}
+			}
 		}
 		bopts = append(bopts, host.WithWriter(writer))
 	}

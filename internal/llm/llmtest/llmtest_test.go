@@ -20,14 +20,18 @@ func TestMock_TextThenDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := drain(events)
-	if len(got) != 2 {
-		t.Fatalf("want 2 events (text+done), got %d", len(got))
+	// Order: TextDelta, Usage (auto-default), Done.
+	if len(got) != 3 {
+		t.Fatalf("want 3 events (text+usage+done), got %d", len(got))
 	}
 	if got[0].Type != llm.EventTextDelta || got[0].Text != "hello" {
 		t.Errorf("got[0] = %+v", got[0])
 	}
-	if got[1].Type != llm.EventDone {
-		t.Errorf("got[1] = %+v", got[1])
+	if got[1].Type != llm.EventUsage || got[1].Usage.Empty() {
+		t.Errorf("got[1] = %+v (expected non-empty usage)", got[1])
+	}
+	if got[2].Type != llm.EventDone {
+		t.Errorf("got[2] = %+v", got[2])
 	}
 }
 
@@ -39,11 +43,18 @@ func TestMock_ToolCallEmitted(t *testing.T) {
 	m.Push(llmtest.Script{ToolCalls: []llm.ToolCall{tc}})
 	ch, _ := m.Chat(context.Background(), llm.ChatRequest{})
 	got := drain(ch)
-	if len(got) != 2 || got[0].Type != llm.EventToolCallComplete {
-		t.Fatalf("expected tool call then done: %+v", got)
+	// Order: ToolCallComplete, Usage (auto-default), Done.
+	if len(got) != 3 || got[0].Type != llm.EventToolCallComplete {
+		t.Fatalf("expected tool call + usage + done: %+v", got)
 	}
 	if got[0].ToolCalls[0].Function.Name != "read" {
 		t.Errorf("tool name lost: %+v", got[0].ToolCalls)
+	}
+	if got[1].Type != llm.EventUsage {
+		t.Errorf("expected usage at [1], got %+v", got[1])
+	}
+	if got[2].Type != llm.EventDone {
+		t.Errorf("expected done at [2], got %+v", got[2])
 	}
 }
 
@@ -82,7 +93,8 @@ func TestMock_Gate(t *testing.T) {
 	}
 	close(gate)
 	tail := drain(ch)
-	if len(tail) != 1 || tail[0].Type != llm.EventDone {
+	// Post-gate tail is Usage then Done.
+	if len(tail) != 2 || tail[0].Type != llm.EventUsage || tail[1].Type != llm.EventDone {
 		t.Errorf("post-gate tail: %+v", tail)
 	}
 }

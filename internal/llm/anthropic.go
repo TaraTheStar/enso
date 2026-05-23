@@ -232,6 +232,10 @@ func streamAnthropic(
 					md.Usage.OutputTokens,
 					md.Usage.CacheReadInputTokens,
 					md.Usage.CacheCreationInputTokens)
+				eventCh <- Event{Type: EventUsage, Usage: anthropicUsageFrom(
+					md.Usage.InputTokens, md.Usage.OutputTokens,
+					md.Usage.CacheReadInputTokens, md.Usage.CacheCreationInputTokens,
+				)}
 
 			case "message_stop":
 				// Real terminator; the loop will exit on next Next().
@@ -661,11 +665,28 @@ func toStringSlice(v interface{}) ([]string, error) {
 	}
 }
 
+// anthropicUsageFrom translates Anthropic SDK usage counts to a
+// MessageUsage. Pulled out of the message_delta handler so the
+// translation can be unit-tested without a live SDK stream.
+//
+// Anthropic semantics: InputTokens is fresh-only (cache reads and
+// writes are reported separately), so summing all four gives the
+// authoritative total for the turn.
+func anthropicUsageFrom(input, output, cacheRead, cacheWrite int64) MessageUsage {
+	u := MessageUsage{
+		InputTokens:      int(input),
+		OutputTokens:     int(output),
+		CacheReadTokens:  int(cacheRead),
+		CacheWriteTokens: int(cacheWrite),
+	}
+	u.TotalTokens = u.InputTokens + u.OutputTokens +
+		u.CacheReadTokens + u.CacheWriteTokens
+	return u
+}
+
 // logAnthropicUsage emits a debug-log line summarising input / output
-// / cache token counts. We don't surface this through the Event channel
-// yet — the agent's token accounting still uses local estimation —
-// but logging means cache effectiveness shows up in the debug stream
-// without having to crack open the cloud-side dashboard.
+// / cache token counts. Surfaced through the Event channel via
+// anthropicUsageFrom; this stays for debug-stream visibility.
 func logAnthropicUsage(label string, in, out, cacheRead, cacheCreate int64) {
 	if in == 0 && out == 0 && cacheRead == 0 && cacheCreate == 0 {
 		return

@@ -515,6 +515,18 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 				}
 			}
 
+		case backend.MsgPersistMessageUsage:
+			// Worker reports the usage immediately after its
+			// MsgPersistMessage, so the host writer's seq still points
+			// at the just-inserted message — same invariant as the
+			// in-process call site.
+			if s.writer != nil {
+				var pu wire.PersistMessageUsage
+				if json.Unmarshal(env.Body, &pu) == nil {
+					_ = s.writer.AppendMessageUsage(pu.Usage, pu.AgentID)
+				}
+			}
+
 		case backend.MsgPersistToolCall:
 			if s.writer != nil {
 				var pt wire.PersistToolCall

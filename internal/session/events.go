@@ -166,6 +166,47 @@ func (w *Writer) AppendMessage(msg llm.Message, agentID string) error {
 	return nil
 }
 
+// AppendMessageUsage records provider-reported token counts for the
+// message most recently appended via AppendMessage. Targets
+// (session_id, w.seq, agentID) — that triple must already exist in
+// the messages table, or the row will be orphaned (kept as a no-op,
+// since the FK is on session_id only). Re-emission for the same key
+// overwrites via ON CONFLICT.
+//
+// The caller-side invariant is documented on tools.SessionWriter:
+// call this immediately after AppendMessage so w.seq still points at
+// the row the usage describes.
+func (w *Writer) AppendMessageUsage(usage llm.MessageUsage, agentID string) error {
+	if w.seq == 0 {
+		// AppendMessage hasn't been called on this writer yet —
+		// nothing to attach to. Log via the caller's path; here we
+		// return nil so the agent loop doesn't surface a transient
+		// boot-time hiccup.
+		return nil
+	}
+	_, err := w.db.Exec(
+		`INSERT INTO message_usage(session_id, seq, agent_id,
+		    input_tokens, output_tokens, cache_read_tokens,
+		    cache_write_tokens, reasoning_tokens, total_tokens)
+		 VALUES(?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(session_id, seq, agent_id) DO UPDATE SET
+		    input_tokens=excluded.input_tokens,
+		    output_tokens=excluded.output_tokens,
+		    cache_read_tokens=excluded.cache_read_tokens,
+		    cache_write_tokens=excluded.cache_write_tokens,
+		    reasoning_tokens=excluded.reasoning_tokens,
+		    total_tokens=excluded.total_tokens`,
+		w.sessionID, w.seq, agentID,
+		usage.InputTokens, usage.OutputTokens,
+		usage.CacheReadTokens, usage.CacheWriteTokens,
+		usage.ReasoningTokens, usage.TotalTokens,
+	)
+	if err != nil {
+		return fmt.Errorf("insert message_usage: %w", err)
+	}
+	return nil
+}
+
 // SetLabel overrides the session's display label. Input is normalised
 // through the same slugifier as the auto-label so /rename and
 // auto-derivation produce labels in the same shape. Empty input clears
