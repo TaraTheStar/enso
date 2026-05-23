@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,12 +100,17 @@ func TestUsage_FallsBackWhenAbsent(t *testing.T) {
 // stamped InputTokens count described a History prefix that no longer
 // exists, so it must not bleed into the next threshold check.
 func TestUsage_ClearedOnCompaction(t *testing.T) {
-	// Build a history big enough that compactionBoundary returns ok.
+	// Build a history big enough — in tokens, not just turn count — that
+	// compactionBoundary returns ok under the token-budget tail (which
+	// would otherwise happily pin all of a tiny test history). 12 turns
+	// × ~4 KB each ≈ ~12 KB tokens, easily over the 2-8 KB trailing-turn
+	// budget; oldest turns spill into the older block.
+	bulk := strings.Repeat("data ", 800) // ~4 KB
 	hist := []llm.Message{{Role: "system", Content: "sys"}}
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 12; i++ {
 		hist = append(hist,
-			llm.Message{Role: "user", Content: "u"},
-			llm.Message{Role: "assistant", Content: "a"},
+			llm.Message{Role: "user", Content: bulk},
+			llm.Message{Role: "assistant", Content: bulk},
 		)
 	}
 

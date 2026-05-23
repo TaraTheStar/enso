@@ -97,6 +97,17 @@ func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	content := sb.String()
 	truncated, full := truncateWithRecovery(ac, "read", content)
 
+	// Contextual injection: when the read surfaces a file living under
+	// a subdir with its own ENSO.md / AGENTS.md that the static system
+	// prompt didn't include, append that content as a system reminder.
+	// The resolver tracks per-session "already injected" so the same
+	// file's instructions only land once.
+	if ac.InstructionResolver != nil {
+		if reminder := ac.InstructionResolver.ResolveOnRead(abs); reminder != "" {
+			truncated = truncated + "\n\n" + reminder
+		}
+	}
+
 	// File contents are huge; the call signature already shows the path
 	// (and any range args). Scrollback gets a count instead of pages of
 	// numbered source. The model still receives `truncated` as before.

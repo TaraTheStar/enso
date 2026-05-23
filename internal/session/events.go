@@ -131,9 +131,10 @@ func (w *Writer) AppendMessage(msg llm.Message, agentID string) error {
 		return fmt.Errorf("begin tx: %w", err)
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO messages(session_id, seq, role, content, tool_call_id, name, tool_calls, agent_id)
-		 VALUES(?,?,?,?,?,?,?,?)`,
+		`INSERT INTO messages(session_id, seq, role, content, tool_call_id, name, tool_calls, agent_id, synthetic, ignored)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		w.sessionID, w.seq, msg.Role, msg.Content, msg.ToolCallID, msg.Name, toolCallsJSON, agentID,
+		boolToInt(msg.Synthetic), boolToInt(msg.Ignored),
 	); err != nil {
 		tx.Rollback()
 		return fmt.Errorf("insert message: %w", err)
@@ -430,4 +431,14 @@ func ListRecent(s *Store, limit int) ([]SessionInfo, error) {
 		out = append(out, info)
 	}
 	return out, rows.Err()
+}
+
+// boolToInt collapses Go bool to SQLite INTEGER 0/1 — the column type
+// for the synthetic/ignored message flags. Keeps the call site at
+// AppendMessage readable without inline ternaries.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }

@@ -336,6 +336,7 @@ func buildConverseInput(req ChatRequest, model string, maxTokens int64) (*bedroc
 	if maxTokens == 0 {
 		maxTokens = defaultBedrockMaxTokens
 	}
+	req.Messages = FilterForRequest(req.Messages)
 
 	var system []types.SystemContentBlock
 	var messages []types.Message

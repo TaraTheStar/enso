@@ -265,6 +265,87 @@ func loadMemories(cwd string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// ResolveForPath returns ENSO.md / AGENTS.md files that govern `target`
+// but are NOT already covered by the static system prompt's
+// findClosestPaths walk from `rootCwd`. Used by contextual injection:
+// when the `read` tool surfaces a deeper file, any directory-scoped
+// instructions that live between rootCwd and that file's directory
+// are appended to the tool result as a system reminder.
+//
+// rootCwd is the agent's working directory — the same dir used when
+// the static system prompt was built. ENSO.md and AGENTS.md files at
+// or above rootCwd are deliberately skipped (those are already in
+// the system prompt; re-injecting them would just spend cache budget).
+//
+// target must be an absolute path; rootCwd should be too. Returns a
+// slice of Layer values (Name = absolute path, Body = file body
+// without the system-prompt header wrapping) ordered top-down so the
+// caller can render them in declaration order.
+//
+// `replace: true` frontmatter on a deep file is IGNORED here — it's a
+// system-prompt-layer feature, not meaningful for inline reminders.
+func ResolveForPath(target, rootCwd string) ([]Layer, error) {
+	if target == "" || rootCwd == "" {
+		return nil, nil
+	}
+	targetDir := filepath.Dir(target)
+	absRoot, err := filepath.Abs(rootCwd)
+	if err != nil {
+		absRoot = rootCwd
+	}
+	absTarget, err := filepath.Abs(targetDir)
+	if err != nil {
+		absTarget = targetDir
+	}
+	// Only walk INSIDE rootCwd. Files outside the project root (a
+	// symlink to /etc, a parent-relative path) don't get contextual
+	// instructions — the root-level files in the system prompt are
+	// the contract there.
+	rel, err := filepath.Rel(absRoot, absTarget)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return nil, nil
+	}
+
+	// Collect ENSO.md / AGENTS.md from absTarget walking UP, stopping
+	// at absRoot inclusive — but skip absRoot itself (its files are in
+	// the static prompt already).
+	var paths []string
+	for d := absTarget; d != absRoot && d != ""; {
+		for _, name := range []string{"ENSO.md", "AGENTS.md"} {
+			p := filepath.Join(d, name)
+			if _, statErr := os.Stat(p); statErr == nil {
+				paths = append(paths, p)
+			}
+		}
+		parent := filepath.Dir(d)
+		if parent == d {
+			break
+		}
+		d = parent
+	}
+
+	// Walk produced bottom-up; reverse for declarative top-down order.
+	for i, j := 0, len(paths)-1; i < j; i, j = i+1, j-1 {
+		paths[i], paths[j] = paths[j], paths[i]
+	}
+
+	out := make([]Layer, 0, len(paths))
+	for _, p := range paths {
+		l, ok, lerr := loadLayerFile(p, p, "")
+		if lerr != nil {
+			return out, lerr
+		}
+		if !ok {
+			continue
+		}
+		// Strip any replace:true intent — contextual injection is
+		// additive, not authoritative.
+		l.Replace = false
+		out = append(out, l)
+	}
+	return out, nil
+}
+
 // findClosestPaths returns the absolute path to the closest ENSO.md and
 // AGENTS.md walking up from dir. Either may be "" if not found.
 func findClosestPaths(dir string) (string, string) {

@@ -85,7 +85,7 @@ func HeadTail(s string, maxLines int) (truncated string, full string) {
 //
 // Each cap is independent; zero (or negative) values disable that
 // pass. The `full` return is always the untouched input, so callers
-// can persist the original (e.g. for Phase 2c's spill recovery).
+// can persist the original (e.g. for spill recovery).
 //
 // The hint is typically AgentContext.RecentUserHint — the most recent
 // user message text. Empty disables the relevance pass; the
