@@ -294,6 +294,23 @@ interrupted call surfaced as a synthetic tool result.
 
 Use `--ephemeral` to skip persistence.
 
+## External observers
+
+`enso daemon` exposes its event bus over a Unix socket at
+`$XDG_RUNTIME_DIR/enso/daemon.sock` (or `~/.enso/daemon.sock` if XDG is unset).
+The wire protocol is length-prefixed JSON; subscribe to a session and you get a
+stream of typed events (`UserMessage`, `AssistantDelta`, `ToolCallStart`,
+`ToolCallEnd`, `PermissionRequest`, `AgentIdle`, `Cancelled`, …) each carrying
+a `session_id` so multi-session observers can route without keeping outer
+context. Source of truth: `internal/daemon/protocol.go` and `internal/bus/bus.go`
+(`Event.WireForm`).
+
+This is the supported integration point for third-party tools that want to
+visualise, log, or react to agent activity without embedding into enso itself.
+A worked example is the [watchourai enso-bus
+adapter](https://github.com/TaraTheStar/watchourai.work/tree/main/adapters/enso-bus),
+which translates daemon events into a status board.
+
 ## Status
 
 v2 ships the Bubble Tea TUI migration; the binary is in daily use.

@@ -126,10 +126,18 @@ type SessionList struct {
 
 // Event is the over-the-wire form of a bus event. Payloads are limited to
 // JSON-safe primitives to keep the protocol stable.
+//
+// SessionID identifies which session produced the event. Redundant in a
+// per-session subscribe stream (the caller already knows which session
+// it subscribed to) but essential for any observer that consumes events
+// across multiple sessions without keeping the outer subscribe context.
+// Always populated on outbound events; tolerated empty on inbound for
+// compatibility with older clients.
 type Event struct {
-	Seq     int64           `json:"seq"`
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload,omitempty"`
+	SessionID string          `json:"session_id,omitempty"`
+	Seq       int64           `json:"seq"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
 // AckResp signals success without a body.

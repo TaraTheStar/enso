@@ -660,6 +660,7 @@ func (st *sessionState) recordAndFan(evt bus.Event) {
 	if !ok {
 		return
 	}
+	wireEvt.SessionID = st.id
 	st.mu.Lock()
 	st.seq++
 	wireEvt.Seq = st.seq

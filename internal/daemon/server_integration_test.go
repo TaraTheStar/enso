@@ -139,6 +139,11 @@ func TestDaemon_CreateSessionStreamsEvents(t *testing.T) {
 			if !ok {
 				t.Fatalf("event stream closed early: user=%v delta=%v done=%v", sawUser, sawDelta, sawDone)
 			}
+			// Every event must carry its session_id so multi-session
+			// observers can route without keeping outer context.
+			if e.SessionID != info.ID {
+				t.Errorf("event %q: SessionID=%q, want %q", e.Type, e.SessionID, info.ID)
+			}
 			switch e.Type {
 			case "UserMessage":
 				sawUser = true
