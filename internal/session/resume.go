@@ -15,7 +15,22 @@ type State struct {
 	Info        SessionInfo
 	History     []llm.Message
 	Interrupted bool // true if the last assistant turn left tool_calls without matching tool messages
+	// MessageUsage carries provider-reported usage for each persisted
+	// assistant message, keyed by post-backfill History index. Empty
+	// when the session predates real-token-accounting or no usage
+	// rows exist for this session.
+	MessageUsage map[int]llm.MessageUsage
+	// LastUsage is the usage of the most recent assistant message
+	// that had a recorded usage row. nil when MessageUsage is empty.
+	// Agent.New uses this to seed lastUsage so the first MaybeCompact
+	// after resume operates on real numbers.
+	LastUsage *llm.MessageUsage
 }
+
+// syntheticInterruptedContent is the literal Content used for
+// backfill-inserted "tool call interrupted" rows. Recognising it lets
+// the usage-row index-mapper skip these (they have no DB seq).
+const syntheticInterruptedContent = "tool call interrupted (process exited before completion); user has resumed the session"
 
 // Load reads a session and rebuilds its message history. If the session ends
 // with assistant tool_calls that lack matching tool replies, synthetic
@@ -71,6 +86,57 @@ func Load(s *Store, sessionID string) (*State, error) {
 
 	// Detect interruption: any tool_call without a matching tool message after it.
 	state.History, state.Interrupted = backfillInterrupted(state.History)
+
+	// Build a post-backfill seq → History-index map so usage rows
+	// (keyed by seq) can be translated to the in-memory History
+	// indices the agent uses. Synthetic interrupted-tool rows have
+	// no seq; skip them while assigning.
+	seqToIdx := make(map[int]int, len(state.History))
+	seq := 0
+	for i, m := range state.History {
+		if m.Role == "tool" && m.Content == syntheticInterruptedContent {
+			continue
+		}
+		seq++
+		seqToIdx[seq] = i
+	}
+
+	usageRows, err := s.DB.Query(
+		`SELECT seq, input_tokens, output_tokens, cache_read_tokens,
+		        cache_write_tokens, reasoning_tokens, total_tokens
+		 FROM message_usage WHERE session_id = ? AND agent_id = ''
+		 ORDER BY seq ASC`, sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("load message_usage: %w", err)
+	}
+	defer usageRows.Close()
+	for usageRows.Next() {
+		var rowSeq int
+		var u llm.MessageUsage
+		if err := usageRows.Scan(&rowSeq, &u.InputTokens, &u.OutputTokens,
+			&u.CacheReadTokens, &u.CacheWriteTokens,
+			&u.ReasoningTokens, &u.TotalTokens); err != nil {
+			return nil, fmt.Errorf("scan message_usage: %w", err)
+		}
+		idx, ok := seqToIdx[rowSeq]
+		if !ok {
+			// Orphan row (its message was deleted, or backfill mismatch).
+			// Skip rather than fail — usage is observability, not
+			// load-bearing for resume correctness.
+			continue
+		}
+		if state.MessageUsage == nil {
+			state.MessageUsage = map[int]llm.MessageUsage{}
+		}
+		state.MessageUsage[idx] = u
+		uCopy := u
+		state.LastUsage = &uCopy
+	}
+	if err := usageRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate message_usage: %w", err)
+	}
+
 	return state, nil
 }
 
@@ -140,7 +206,7 @@ func backfillInterrupted(history []llm.Message) ([]llm.Message, bool) {
 				Role:       "tool",
 				Name:       tc.Function.Name,
 				ToolCallID: tc.ID,
-				Content:    "tool call interrupted (process exited before completion); user has resumed the session",
+				Content:    syntheticInterruptedContent,
 			})
 			answered[tc.ID] = true
 		}

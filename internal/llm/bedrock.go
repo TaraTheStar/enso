@@ -254,14 +254,17 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 
 			case *types.ConverseStreamOutputMemberMetadata:
 				// Metadata carries TokenUsage including cache hit
-				// counters. Log it so cache effectiveness shows up
-				// in the debug stream; the agent's accounting still
-				// uses local estimation today (separate observability
-				// patch will plumb this through the Event channel).
+				// counters. Log for the debug stream and emit via the
+				// Event channel so the agent can use real numbers
+				// instead of the 4-char heuristic.
 				if u := e.Value.Usage; u != nil {
 					fmt.Fprintf(debugLog(), "bedrock usage: in=%d out=%d cache_read=%d cache_write=%d\n",
 						derefInt32(u.InputTokens), derefInt32(u.OutputTokens),
 						derefInt32(u.CacheReadInputTokens), derefInt32(u.CacheWriteInputTokens))
+					eventCh <- Event{Type: EventUsage, Usage: bedrockUsageFrom(
+						derefInt32(u.InputTokens), derefInt32(u.OutputTokens),
+						derefInt32(u.CacheReadInputTokens), derefInt32(u.CacheWriteInputTokens),
+					)}
 				}
 
 			case *types.ConverseStreamOutputMemberMessageStart,
@@ -737,4 +740,23 @@ func derefInt32(p *int32) int32 {
 		return 0
 	}
 	return *p
+}
+
+// bedrockUsageFrom translates Bedrock Converse usage counts to a
+// MessageUsage. Pulled out of the Metadata handler so the translation
+// can be unit-tested without driving a live stream.
+//
+// Bedrock Converse mirrors Anthropic's semantics: InputTokens is
+// fresh-only (cache reads and writes are reported separately), so
+// summing all four gives the authoritative total.
+func bedrockUsageFrom(input, output, cacheRead, cacheWrite int32) MessageUsage {
+	u := MessageUsage{
+		InputTokens:      int(input),
+		OutputTokens:     int(output),
+		CacheReadTokens:  int(cacheRead),
+		CacheWriteTokens: int(cacheWrite),
+	}
+	u.TotalTokens = u.InputTokens + u.OutputTokens +
+		u.CacheReadTokens + u.CacheWriteTokens
+	return u
 }
