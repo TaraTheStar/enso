@@ -371,8 +371,12 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+c":
-		// Ctrl-C currently quits the app; distinguishing "cancel
-		// current turn" from "quit app" the way tui does is not yet wired.
+		// Cancel an in-flight turn; quit only when idle. Press again
+		// after the turn winds down to exit.
+		if (m.busy || m.conv.Live() != nil) && m.cancelTurn != nil {
+			m.cancelTurn()
+			return m, nil
+		}
 		m.quitting = true
 		return m, tea.Quit
 
