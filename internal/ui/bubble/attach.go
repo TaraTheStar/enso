@@ -65,6 +65,15 @@ func RunAttached(sessionID string) error {
 		// without a local agent. picker still works against the local
 		// cwd because file paths are interpreted on the input side.
 		picker: &pickerData{cwd: "."},
+		// Ctrl-C in attach mode must forward to the daemon's Cancel
+		// RPC — leaving this nil would make ctrl-c always quit the
+		// local TUI instead of cancelling the running task on the
+		// daemon. Best-effort send: a daemon-side failure has nothing
+		// actionable in the local UI, and the model layer doesn't
+		// surface return values from cancelTurn anyway.
+		cancelTurn: func() {
+			_ = ac.Cancel(daemon.CancelReq{SessionID: sessionID})
+		},
 	}
 	// Permission "remember" / "turn-allow" need to mutate the local
 	// checker + persist to local config; in attach the checker lives
