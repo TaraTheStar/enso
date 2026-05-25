@@ -46,7 +46,7 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 
 	s := &seam{
 		ch:        ch,
-		inflight:  map[string]chan llm.Event{},
+		inflight:  map[string]*inflightStream{},
 		pending:   map[string]chan permissions.Decision{},
 		capWait:   map[string]chan wire.CapabilityGrant{},
 		cancelAll: cancel,
@@ -324,7 +324,7 @@ type seam struct {
 	inputOnce sync.Once
 
 	mu       sync.Mutex
-	inflight map[string]chan llm.Event            // inference corr -> stream
+	inflight map[string]*inflightStream           // inference corr -> stream + done
 	pending  map[string]chan permissions.Decision // permission corr -> respond
 	capWait  map[string]chan wire.CapabilityGrant // capability corr -> grant
 	corrSeq  uint64
@@ -579,8 +579,9 @@ func (c chanChatClient) Chat(ctx context.Context, req llm.ChatRequest) (<-chan l
 	corr := c.s.nextCorr("inf")
 	stream := make(chan llm.Event, 32)
 
+	entry := &inflightStream{ch: stream, done: make(chan struct{})}
 	c.s.mu.Lock()
-	c.s.inflight[corr] = stream
+	c.s.inflight[corr] = entry
 	c.s.mu.Unlock()
 
 	body, err := backend.NewBody(wire.InferenceRequest{
@@ -597,25 +598,54 @@ func (c chanChatClient) Chat(ctx context.Context, req llm.ChatRequest) (<-chan l
 		c.s.dropInflight(corr)
 		return nil, fmt.Errorf("worker: send inference request: %w", err)
 	}
+
+	// Propagate caller-side cancellation upstream. agent.Cancel() cancels
+	// the turn ctx; without this, the host's HTTP call keeps streaming and
+	// the agent's `for evt := range events` never returns. We don't close
+	// the stream here — the host responds to MsgInferenceCancel by
+	// aborting its provider call, which closes its event channel, sends
+	// MsgInferenceDone, and routeInference drops the inflight entry
+	// (closing stream). That single-writer discipline avoids a
+	// send-on-closed-channel race with concurrent MsgInferenceEvent
+	// deliveries.
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = c.s.send(backend.Envelope{Kind: backend.MsgInferenceCancel, Corr: corr})
+		case <-entry.done:
+			// stream completed normally; nothing to do.
+		}
+	}()
 	return stream, nil
+}
+
+// inflightStream tracks one in-flight host-proxied inference. ch carries
+// streamed events to the consumer; done is closed by dropInflight so the
+// per-call cancel goroutine in Chat can exit on natural completion
+// instead of leaking until ctx fires.
+type inflightStream struct {
+	ch   chan llm.Event
+	done chan struct{}
 }
 
 func (s *seam) dropInflight(corr string) {
 	s.mu.Lock()
-	if ch, ok := s.inflight[corr]; ok {
+	if entry, ok := s.inflight[corr]; ok {
 		delete(s.inflight, corr)
-		close(ch)
+		close(entry.ch)
+		close(entry.done)
 	}
 	s.mu.Unlock()
 }
 
 func (s *seam) routeInference(env backend.Envelope) {
 	s.mu.Lock()
-	stream, ok := s.inflight[env.Corr]
+	entry, ok := s.inflight[env.Corr]
 	s.mu.Unlock()
 	if !ok {
 		return
 	}
+	stream := entry.ch
 	switch env.Kind {
 	case backend.MsgInferenceEvent:
 		var w wire.LLMEvent
