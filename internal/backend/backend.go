@@ -281,6 +281,15 @@ const (
 	MsgInferenceEvent   MsgKind = "inference_event"   // host -> worker: one streamed llm.Event
 	MsgInferenceDone    MsgKind = "inference_done"    // host -> worker: stream complete
 	MsgInferenceError   MsgKind = "inference_error"   // host -> worker: stream failed (Body: ErrorBody)
+	// MsgInferenceCancel asks the host to abort an in-flight inference
+	// for the given Corr. Without this, agent.Cancel() on the worker
+	// only marks the turn ctx done — the worker's proxied event stream
+	// is still fed by the host's HTTP call, which runs to completion;
+	// the agent stays blocked in `for evt := range events`. The host
+	// reacts by cancelling the per-call ctx it threaded into the real
+	// provider client; the natural MsgInferenceDone/Error then closes
+	// the worker-side stream and the agent unwinds. Body is empty.
+	MsgInferenceCancel MsgKind = "inference_cancel" // worker -> host: abort the in-flight inference for Corr
 
 	// Human-in-the-loop leg. Mirrors daemon's PermissionRequestPayload
 	// / PermissionResponseReq, correlated by Envelope.Corr.

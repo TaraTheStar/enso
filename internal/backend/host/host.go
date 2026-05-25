@@ -211,6 +211,14 @@ type Session struct {
 	ctlSeq     uint64
 	ctlPending map[string]chan wire.ControlResponse
 
+	// infMu guards infCancel — the per-corr cancellers for in-flight
+	// host-proxied inferences. The worker sends MsgInferenceCancel when
+	// agent.Cancel() fires, and the demux loop looks the corr up here to
+	// abort the real provider call. Without this the HTTP stream runs to
+	// completion and the worker-side agent stays blocked.
+	infMu     sync.Mutex
+	infCancel map[string]context.CancelFunc
+
 	broker CapabilityBroker
 
 	// writer, when set (WithWriter), is the HOST-side session writer an
@@ -382,6 +390,7 @@ func Start(
 		bus:        busInst,
 		done:       make(chan error, 1),
 		ctlPending: map[string]chan wire.ControlResponse{},
+		infCancel:  map[string]context.CancelFunc{},
 		broker:     denyBroker{},
 	}
 	for _, o := range opts {
@@ -551,6 +560,14 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 
 		case backend.MsgInferenceRequest:
 			go s.serveInference(ctx, env.Corr, env.Body)
+
+		case backend.MsgInferenceCancel:
+			s.infMu.Lock()
+			cancel, ok := s.infCancel[env.Corr]
+			s.infMu.Unlock()
+			if ok {
+				cancel()
+			}
 
 		case backend.MsgPermissionRequest:
 			go s.servePermission(ctx, env.Corr, env.Body)
@@ -739,14 +756,29 @@ func (s *Session) serveInference(ctx context.Context, corr string, body json.Raw
 		return
 	}
 
-	release, err := p.Pool.Acquire(ctx)
+	// Per-call cancel: registered before Pool.Acquire so a cancel that
+	// arrives while we're queued on the pool still aborts. The demux
+	// loop's MsgInferenceCancel handler invokes this; without it,
+	// agent.Cancel() on the worker can't reach the upstream HTTP call.
+	callCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	s.infMu.Lock()
+	s.infCancel[corr] = cancel
+	s.infMu.Unlock()
+	defer func() {
+		s.infMu.Lock()
+		delete(s.infCancel, corr)
+		s.infMu.Unlock()
+	}()
+
+	release, err := p.Pool.Acquire(callCtx)
 	if err != nil {
 		s.sendInferenceError(corr, fmt.Sprintf("pool: %v", err))
 		return
 	}
 	defer release()
 
-	evCh, err := p.Client.Chat(ctx, ir.Request)
+	evCh, err := p.Client.Chat(callCtx, ir.Request)
 	if err != nil {
 		s.sendInferenceError(corr, err.Error())
 		return
