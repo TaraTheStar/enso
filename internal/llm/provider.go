@@ -4,9 +4,70 @@ package llm
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/TaraTheStar/enso/internal/config"
 )
+
+// Defaults for the OpenAI/llama.cpp generation guards. Token counts and
+// stall-on-silence are hardware-independent, so these same values are
+// correct across a fast GPU and a slow large-context box.
+const (
+	// defaultMaxTokensCap is the derived output-token ceiling when no
+	// explicit max_tokens is set. Chosen to cover near-all legitimate
+	// single-turn code edits while still cutting a degeneration loop off
+	// long before it fills a large context. Matches OpenAI's gpt-4o cap.
+	defaultMaxTokensCap = 16384
+	// defaultStallTimeout aborts a stream that produces no token for this
+	// long. Generous enough to tolerate prompt-processing pauses and
+	// speculative/MTP bursts on a big context.
+	defaultStallTimeout = 60 * time.Second
+	// defaultRecoverAttempts bounds agent-side auto-recovery per turn.
+	defaultRecoverAttempts = 2
+)
+
+// resolveMaxTokens picks the output-token cap for the OpenAI/llama.cpp
+// path. An explicit MaxTokens wins; otherwise derive a safe default —
+// half the context window, capped at defaultMaxTokensCap — so a fresh
+// install is protected without truncating legitimate long edits.
+func resolveMaxTokens(cfg config.ProviderConfig) int {
+	if cfg.MaxTokens > 0 {
+		return int(cfg.MaxTokens)
+	}
+	limit := defaultMaxTokensCap
+	if cw := cfg.ContextWindow; cw > 0 && cw/2 < limit {
+		limit = cw / 2
+	}
+	return limit
+}
+
+// resolveStallTimeout parses the configured duration; empty = default,
+// "0s" disables the watchdog, malformed falls back to the default.
+func resolveStallTimeout(g config.GenerationConfig) time.Duration {
+	if g.StallTimeout == "" {
+		return defaultStallTimeout
+	}
+	d, err := time.ParseDuration(g.StallTimeout)
+	if err != nil || d < 0 {
+		return defaultStallTimeout
+	}
+	return d
+}
+
+func resolveRecoverAttempts(g config.GenerationConfig) int {
+	if g.MaxRecoverAttempts > 0 {
+		return g.MaxRecoverAttempts
+	}
+	return defaultRecoverAttempts
+}
+
+// boolOr returns *p, or def when p is nil (config field unset).
+func boolOr(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}
 
 // Provider wraps one OpenAI-compatible endpoint with its pool and config.
 // Client is held as the ChatClient interface so tests can substitute a
@@ -46,6 +107,15 @@ type Provider struct {
 	// local model" and the sidebar hides its cost segment.
 	InputPrice  float64
 	OutputPrice float64
+
+	// AutoRecover and MaxRecoverAttempts drive the agent's belt-and-
+	// suspenders recovery from a length-truncated or repetition-aborted
+	// turn (see Event.FinishReason). Copied from config so the active
+	// provider carries its own policy across a /model swap and into
+	// spawned sub-agents. Only the OpenAI/llama.cpp adapter reports the
+	// finish reasons that trigger recovery; for others these are inert.
+	AutoRecover        bool
+	MaxRecoverAttempts int
 }
 
 // BuildProviders constructs every Provider in cfg, keyed by its
@@ -100,17 +170,19 @@ func NewProvider(name string, cfg config.ProviderConfig, pool *Pool, poolName st
 		return nil, err
 	}
 	return &Provider{
-		Name:             name,
-		Client:           client,
-		Model:            cfg.Model,
-		ContextWindow:    cfg.ContextWindow,
-		Sampler:          cfg.Sampler,
-		Pool:             pool,
-		PoolName:         poolName,
-		Description:      cfg.Description,
-		IncludeProviders: true,
-		InputPrice:       cfg.InputPricePerMillion,
-		OutputPrice:      cfg.OutputPricePerMillion,
+		Name:               name,
+		Client:             client,
+		Model:              cfg.Model,
+		ContextWindow:      cfg.ContextWindow,
+		Sampler:            cfg.Sampler,
+		Pool:               pool,
+		PoolName:           poolName,
+		Description:        cfg.Description,
+		IncludeProviders:   true,
+		InputPrice:         cfg.InputPricePerMillion,
+		OutputPrice:        cfg.OutputPricePerMillion,
+		AutoRecover:        boolOr(cfg.Generation.AutoRecover, true),
+		MaxRecoverAttempts: resolveRecoverAttempts(cfg.Generation),
 	}, nil
 }
 
@@ -122,7 +194,14 @@ func NewProvider(name string, cfg config.ProviderConfig, pool *Pool, poolName st
 func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 	switch cfg.Type {
 	case "", "openai":
-		return &OpenAIClient{Endpoint: cfg.Endpoint, APIKey: cfg.APIKey, Model: cfg.Model}, nil
+		return &OpenAIClient{
+			Endpoint:     cfg.Endpoint,
+			APIKey:       cfg.APIKey,
+			Model:        cfg.Model,
+			MaxTokens:    resolveMaxTokens(cfg),
+			StallTimeout: resolveStallTimeout(cfg.Generation),
+			LoopGuard:    boolOr(cfg.Generation.LoopGuard, true),
+		}, nil
 	case "bedrock":
 		return &BedrockClient{
 			Model:                  cfg.Model,
