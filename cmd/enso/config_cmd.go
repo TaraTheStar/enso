@@ -3,7 +3,9 @@
 package main
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -32,6 +34,15 @@ var configInitCmd = &cobra.Command{
 	Short: "Write the default config to the user config path (or --path)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if flagInitProject {
+			// --wizard generates provider config (api_key etc.) into
+			// the user-scoped file; --project generates backend-env
+			// (image, init, egress) into the repo-scoped file. They
+			// target different layers, so combining them would be a
+			// silent ignore today. Reject explicitly until we wire a
+			// merged flow.
+			if flagInitWizard {
+				return errors.New("--project and --wizard cannot be combined: --wizard generates provider config (user-scoped), --project generates backend env (project-scoped)")
+			}
 			return runProjectInit()
 		}
 		// --print is a pure stdout dump; never touches disk.
@@ -47,7 +58,9 @@ var configInitCmd = &cobra.Command{
 			}
 			path = p
 		}
-		if _, err := os.Stat(path); err == nil && !flagInitForce {
+		if exists, err := pathExists(path); err != nil {
+			return fmt.Errorf("stat %s: %w", path, err)
+		} else if exists && !flagInitForce {
 			return fmt.Errorf("%s already exists (pass --force to overwrite)", path)
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -77,11 +90,35 @@ var configInitCmd = &cobra.Command{
 	},
 }
 
+// pathExists reports whether path resolves. A non-IsNotExist Stat
+// error (EACCES on parent, ENOTDIR, weird ACLs) is returned to the
+// caller rather than silently treated as "missing" — otherwise a
+// permission-shadowed pre-existing file would be clobbered without
+// --force.
+func pathExists(path string) (bool, error) {
+	_, err := os.Stat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
 // runProjectInit scaffolds <cwd>/.enso/config.toml with backend
 // environment defaults tuned to the detected language. Prompts the
 // user under a TTY; emits a fixed result under pipes/CI. Honors the
 // existing --print / --force / --path / --lang / --backend flags.
 func runProjectInit() error {
+	// Validate --backend up front so a typo doesn't get silently
+	// coerced to podman deep inside RunProjectInit.
+	switch flagInitBackend {
+	case "", "podman", "lima":
+	default:
+		return fmt.Errorf("--backend must be one of: podman, lima (got %q)", flagInitBackend)
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -94,7 +131,9 @@ func runProjectInit() error {
 	// who can't proceed doesn't waste time answering questions.
 	// --print short-circuits below and never writes.
 	if !flagInitPrint {
-		if _, err := os.Stat(path); err == nil && !flagInitForce {
+		if exists, err := pathExists(path); err != nil {
+			return fmt.Errorf("stat %s: %w", path, err)
+		} else if exists && !flagInitForce {
 			return fmt.Errorf("%s already exists (pass --force to overwrite)", path)
 		}
 	}
@@ -115,10 +154,16 @@ func runProjectInit() error {
 		fmt.Print(body)
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	// Project config can carry project-scoped provider overrides
+	// (api_key, endpoint creds) — match the user-config tightening
+	// of 0o700 dir / 0o600 file, with a Chmod clamp in case the
+	// dir predates this code.
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create dir: %w", err)
 	}
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+	_ = os.Chmod(dir, 0o700)
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	fmt.Printf("wrote project config to %s\n", path)

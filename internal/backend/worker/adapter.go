@@ -609,8 +609,28 @@ func (c chanChatClient) Chat(ctx context.Context, req llm.ChatRequest) (<-chan l
 	// send-on-closed-channel race with concurrent MsgInferenceEvent
 	// deliveries.
 	go func() {
+		// Prefer entry.done when both channels are ready: a clean
+		// stream completion racing with a caller-side ctx cancel
+		// would otherwise pick randomly and emit a spurious
+		// MsgInferenceCancel for a corr the host has already
+		// deleted from infCancel. Polling done first keeps the
+		// invariant "a Cancel always corresponds to an in-flight
+		// corr" so future audit/log can rely on it.
+		select {
+		case <-entry.done:
+			return
+		default:
+		}
 		select {
 		case <-ctx.Done():
+			// Re-check done in case the stream finished while we
+			// were entering the second select — same race, tighter
+			// window.
+			select {
+			case <-entry.done:
+				return
+			default:
+			}
 			_ = c.s.send(backend.Envelope{Kind: backend.MsgInferenceCancel, Corr: corr})
 		case <-entry.done:
 			// stream completed normally; nothing to do.

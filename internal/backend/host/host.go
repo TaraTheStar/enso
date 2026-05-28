@@ -559,7 +559,18 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 			s.routeControl(env)
 
 		case backend.MsgInferenceRequest:
-			go s.serveInference(ctx, env.Corr, env.Body)
+			// Register the per-corr canceller synchronously, BEFORE
+			// dispatching the goroutine, so a MsgInferenceCancel that
+			// arrives in the next demux iteration can't race past an
+			// unregistered corr. Without this, the goroutine might not
+			// have scheduled before the cancel envelope is processed,
+			// the lookup would miss, and the upstream HTTP would run
+			// to completion despite the cancel.
+			callCtx, cancel := context.WithCancel(ctx)
+			s.infMu.Lock()
+			s.infCancel[env.Corr] = cancel
+			s.infMu.Unlock()
+			go s.serveInference(callCtx, cancel, env.Corr, env.Body)
 
 		case backend.MsgInferenceCancel:
 			s.infMu.Lock()
@@ -744,7 +755,20 @@ func (s *Session) serveCapability(ctx context.Context, corr string, body json.Ra
 // serveInference runs one host-proxied model call. The host owns the
 // real provider (endpoint/key) and the real Pool — rate/concurrency
 // gating is centralized here, across every worker and sub-agent.
-func (s *Session) serveInference(ctx context.Context, corr string, body json.RawMessage) {
+//
+// callCtx + cancel are registered SYNCHRONOUSLY by the demux loop
+// before this goroutine is launched (see MsgInferenceRequest), so a
+// MsgInferenceCancel arriving immediately after the request envelope
+// always finds the corr in s.infCancel. This goroutine owns cleanup:
+// it calls cancel() and deletes the map entry on return.
+func (s *Session) serveInference(callCtx context.Context, cancel context.CancelFunc, corr string, body json.RawMessage) {
+	defer cancel()
+	defer func() {
+		s.infMu.Lock()
+		delete(s.infCancel, corr)
+		s.infMu.Unlock()
+	}()
+
 	var ir wire.InferenceRequest
 	if err := json.Unmarshal(body, &ir); err != nil {
 		s.sendInferenceError(corr, fmt.Sprintf("decode request: %v", err))
@@ -755,21 +779,6 @@ func (s *Session) serveInference(ctx context.Context, corr string, body json.Raw
 		s.sendInferenceError(corr, fmt.Sprintf("unknown provider %q", ir.Provider))
 		return
 	}
-
-	// Per-call cancel: registered before Pool.Acquire so a cancel that
-	// arrives while we're queued on the pool still aborts. The demux
-	// loop's MsgInferenceCancel handler invokes this; without it,
-	// agent.Cancel() on the worker can't reach the upstream HTTP call.
-	callCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	s.infMu.Lock()
-	s.infCancel[corr] = cancel
-	s.infMu.Unlock()
-	defer func() {
-		s.infMu.Lock()
-		delete(s.infCancel, corr)
-		s.infMu.Unlock()
-	}()
 
 	release, err := p.Pool.Acquire(callCtx)
 	if err != nil {
