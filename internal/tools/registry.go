@@ -2,7 +2,11 @@
 
 package tools
 
-import "github.com/TaraTheStar/enso/internal/llm"
+import (
+	"sort"
+
+	"github.com/TaraTheStar/enso/internal/llm"
+)
 
 // Registry holds the available tools.
 type Registry struct {
@@ -82,9 +86,19 @@ func (r *Registry) Without(names []string) *Registry {
 }
 
 // ToolDefs returns the registry's tools as OpenAI-compatible llm.ToolDef entries.
+//
+// Sorted by name so the serialized prompt prefix is byte-stable across turns —
+// otherwise Go's randomized map iteration shuffles the tools array each call
+// and busts the llama.cpp prompt-prefix cache, forcing a full re-prefill.
 func (r *Registry) ToolDefs() []llm.ToolDef {
-	defs := make([]llm.ToolDef, 0, len(r.tools))
-	for _, t := range r.tools {
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	defs := make([]llm.ToolDef, 0, len(names))
+	for _, name := range names {
+		t := r.tools[name]
 		defs = append(defs, llm.ToolDef{
 			Type: "function",
 			Function: llm.ToolFunctionDef{
