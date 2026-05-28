@@ -161,6 +161,12 @@ type model struct {
 	// non-Esc key in between breaks the chord.
 	lastEscAt time.Time
 
+	// lastCancelAt is the time of the previous Ctrl-C while busy. A
+	// second Ctrl-C within escDoubleWindow force-quits even if the
+	// turn-cancel path itself is stuck (provider not honouring ctx,
+	// daemon RPC wedged). Cleared by any non-Ctrl-C key.
+	lastCancelAt time.Time
+
 	width, height int
 	quitting      bool
 }
@@ -266,6 +272,14 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// against.
 	prevEscAt := m.lastEscAt
 	m.lastEscAt = time.Time{}
+
+	// Same chord-break for the Ctrl-C "press again to force quit"
+	// affordance: any non-Ctrl-C key resets the timer. The Ctrl-C
+	// case below re-sets it.
+	prevCancelAt := m.lastCancelAt
+	if msg.String() != "ctrl+c" {
+		m.lastCancelAt = time.Time{}
+	}
 
 	// File picker handling: when open, all keys route to the picker.
 	if m.pickerOpen {
@@ -379,11 +393,19 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+c":
-		// Cancel an in-flight turn; quit only when idle. Press again
-		// after the turn winds down to exit.
-		if (m.busy || m.conv.Live() != nil) && m.cancelTurn != nil {
+		// First Ctrl-C while busy: cancel the in-flight turn. Second
+		// Ctrl-C within the chord window: force-quit, even if the
+		// cancel itself hung (provider not honouring ctx, daemon RPC
+		// wedged). Ctrl-C while idle: quit immediately, as before.
+		busy := m.busy || m.conv.Live() != nil
+		if busy && m.cancelTurn != nil {
+			if !prevCancelAt.IsZero() && time.Since(prevCancelAt) < escDoubleWindow {
+				m.quitting = true
+				return m, tea.Quit
+			}
 			m.cancelTurn()
-			return m, nil
+			m.lastCancelAt = time.Now()
+			return m, tea.Println(statusStyle.Render("(cancelling turn — press Ctrl-C again to force quit)"))
 		}
 		m.quitting = true
 		return m, tea.Quit
@@ -630,6 +652,30 @@ func (m *model) handleBusEvent(ev bus.Event) (tea.Model, tea.Cmd) {
 	case bus.EventAgentIdle, bus.EventCancelled, bus.EventError:
 		m.busy = false
 		m.busySince = time.Time{}
+		// Also clear any in-flight permission/egress prompts: the
+		// agent goroutine that would have read req.Respond is gone, so
+		// the View()'s pinned "▸ awaiting…" hint and handleKey's
+		// y/n/a/t intercepts would otherwise stay live for a dead
+		// resolver. Reply Deny on a background goroutine so a still-
+		// living waiter (rare but possible on EventError before the
+		// agent fully unwinds) gets a definite answer rather than a
+		// closed Respond channel.
+		if m.perm != nil && m.perm.req != nil {
+			req := m.perm.req
+			m.perm = nil
+			go func() {
+				defer func() { _ = recover() }()
+				req.Respond <- permissions.Deny
+			}()
+		}
+		if m.egress != nil && m.egress.req != nil {
+			req := m.egress.req
+			m.egress = nil
+			go func() {
+				defer func() { _ = recover() }()
+				req.Respond <- permissions.EgressDeny
+			}()
+		}
 	}
 
 	// Permission prompt: an EventPermissionRequest is the agent
@@ -860,13 +906,15 @@ func (m *model) View() tea.View {
 	if status == "" {
 		status = statusStyle.Render(m.modelName)
 	}
-	// While a permission or egress prompt is pending, replace the
-	// status with a pinned reminder so the user always sees that an
-	// answer is owed — the full Println'd prompt can scroll off-screen
-	// when reasoning streams above it, but this hint sits on the
-	// status line which stays anchored above the input box.
+	// While a permission or egress prompt is pending, APPEND a pinned
+	// reminder so the user always sees that an answer is owed — the
+	// full Println'd prompt can scroll off-screen when reasoning streams
+	// above it, but this hint sits on the status line which stays
+	// anchored above the input box. Appending (not replacing) keeps the
+	// live tool spinner / elapsed / model-name base visible so the user
+	// retains the existing situational cues while answering.
 	if m.perm != nil && m.perm.req != nil {
-		status = permPendingHint(m.perm.req)
+		status += statusStyle.Render("  · ") + permPendingHint(m.perm.req)
 		if !m.perm.req.Deadline.IsZero() {
 			remaining := time.Until(m.perm.req.Deadline)
 			if remaining > 0 {
@@ -874,7 +922,7 @@ func (m *model) View() tea.View {
 			}
 		}
 	} else if m.egress != nil && m.egress.req != nil {
-		status = egressPendingHint(m.egress.req)
+		status += statusStyle.Render("  · ") + egressPendingHint(m.egress.req)
 	}
 	// Between the two Esc presses of the cancel chord, hint at what
 	// the second press will do. Naturally clears: the spin tick

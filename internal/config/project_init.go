@@ -136,6 +136,13 @@ func RunProjectInit(in io.Reader, out io.Writer, opts ProjectInitOptions) (Proje
 	if backend == "" {
 		backend = "podman"
 	}
+	// Validate up front: callers (cmd/enso/config_cmd.go) should have
+	// already vetted user-facing flag values, so an invalid Backend at
+	// this layer is a programming error rather than a typo to silently
+	// massage into podman.
+	if backend != "podman" && backend != "lima" {
+		return ProjectInitResult{}, "", fmt.Errorf("invalid backend %q (want podman or lima)", backend)
+	}
 
 	if opts.Interactive && in != nil {
 		var detected string
@@ -143,10 +150,6 @@ func RunProjectInit(in io.Reader, out io.Writer, opts ProjectInitOptions) (Proje
 			detected = lang
 		}
 		lang, backend = projectInitPrompt(in, out, lang, backend, detected)
-	}
-
-	if backend != "podman" && backend != "lima" {
-		backend = "podman"
 	}
 
 	preset := presetBySlug(lang)
