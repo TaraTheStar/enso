@@ -300,9 +300,17 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		req := m.egress.req
+		// Mirror the perm flow's "remembered" line: when the user
+		// scopes the grant to the task ([t]), surface a confirmation
+		// so they know the broker will let further calls to the same
+		// target through without prompting.
+		var cmd tea.Cmd
+		if decision == permissions.EgressAllowTask {
+			cmd = tea.Println(statusStyle.Render("→ allowing " + req.Target + " for this task"))
+		}
 		m.egress = nil
 		go func() { req.Respond <- decision }()
-		return m, nil
+		return m, cmd
 	}
 
 	// Session-inspector overlay handling: Ctrl-Space toggles, Esc
@@ -852,14 +860,21 @@ func (m *model) View() tea.View {
 	if status == "" {
 		status = statusStyle.Render(m.modelName)
 	}
-	// While a permission prompt with a deadline is pending, surface
-	// the countdown next to the model name so the user can see how
-	// long they have before auto-deny.
-	if m.perm != nil && m.perm.req != nil && !m.perm.req.Deadline.IsZero() {
-		remaining := time.Until(m.perm.req.Deadline)
-		if remaining > 0 {
-			status = status + statusStyle.Render("  · auto-deny in "+fmtCountdown(remaining))
+	// While a permission or egress prompt is pending, replace the
+	// status with a pinned reminder so the user always sees that an
+	// answer is owed — the full Println'd prompt can scroll off-screen
+	// when reasoning streams above it, but this hint sits on the
+	// status line which stays anchored above the input box.
+	if m.perm != nil && m.perm.req != nil {
+		status = permPendingHint(m.perm.req)
+		if !m.perm.req.Deadline.IsZero() {
+			remaining := time.Until(m.perm.req.Deadline)
+			if remaining > 0 {
+				status += statusStyle.Render("  · auto-deny in " + fmtCountdown(remaining))
+			}
 		}
+	} else if m.egress != nil && m.egress.req != nil {
+		status = egressPendingHint(m.egress.req)
 	}
 	// Between the two Esc presses of the cancel chord, hint at what
 	// the second press will do. Naturally clears: the spin tick
