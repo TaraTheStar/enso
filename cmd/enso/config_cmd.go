@@ -13,10 +13,13 @@ import (
 )
 
 var (
-	flagInitPrint  bool
-	flagInitForce  bool
-	flagInitPath   string
-	flagInitWizard bool
+	flagInitPrint   bool
+	flagInitForce   bool
+	flagInitPath    string
+	flagInitWizard  bool
+	flagInitProject bool
+	flagInitLang    string
+	flagInitBackend string
 )
 
 var configCmd = &cobra.Command{
@@ -28,6 +31,9 @@ var configInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Write the default config to the user config path (or --path)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if flagInitProject {
+			return runProjectInit()
+		}
 		// --print is a pure stdout dump; never touches disk.
 		if flagInitPrint {
 			fmt.Print(config.DefaultTOML())
@@ -71,6 +77,54 @@ var configInitCmd = &cobra.Command{
 	},
 }
 
+// runProjectInit scaffolds <cwd>/.enso/config.toml with backend
+// environment defaults tuned to the detected language. Prompts the
+// user under a TTY; emits a fixed result under pipes/CI. Honors the
+// existing --print / --force / --path / --lang / --backend flags.
+func runProjectInit() error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	path := flagInitPath
+	if path == "" {
+		path = filepath.Join(cwd, ".enso", "config.toml")
+	}
+	// Refuse to clobber BEFORE prompting, so an interactive user
+	// who can't proceed doesn't waste time answering questions.
+	// --print short-circuits below and never writes.
+	if !flagInitPrint {
+		if _, err := os.Stat(path); err == nil && !flagInitForce {
+			return fmt.Errorf("%s already exists (pass --force to overwrite)", path)
+		}
+	}
+	// Suppress prompts when the caller has already pinned everything
+	// via flags — at that point there's nothing left to ask.
+	interactive := !flagInitPrint && stdinIsTTY() && (flagInitLang == "" || flagInitBackend == "")
+	opts := config.ProjectInitOptions{
+		Lang:        flagInitLang,
+		Backend:     flagInitBackend,
+		Interactive: interactive,
+		Workdir:     cwd,
+	}
+	_, body, err := config.RunProjectInit(os.Stdin, os.Stdout, opts)
+	if err != nil {
+		return fmt.Errorf("project init: %w", err)
+	}
+	if flagInitPrint {
+		fmt.Print(body)
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create dir: %w", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	fmt.Printf("wrote project config to %s\n", path)
+	return nil
+}
+
 var configShowCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Print the layered config search paths and which ones exist",
@@ -95,8 +149,11 @@ var configShowCmd = &cobra.Command{
 func init() {
 	configInitCmd.Flags().BoolVarP(&flagInitPrint, "print", "p", false, "print the default config to stdout instead of writing a file")
 	configInitCmd.Flags().BoolVarP(&flagInitForce, "force", "f", false, "overwrite if the destination already exists")
-	configInitCmd.Flags().StringVar(&flagInitPath, "path", "", "destination path (defaults to $XDG_CONFIG_HOME/enso/config.toml)")
+	configInitCmd.Flags().StringVar(&flagInitPath, "path", "", "destination path (defaults to $XDG_CONFIG_HOME/enso/config.toml, or <cwd>/.enso/config.toml with --project)")
 	configInitCmd.Flags().BoolVarP(&flagInitWizard, "wizard", "w", false, "interactive prompt: pick a provider preset, model, and (optional) API key")
+	configInitCmd.Flags().BoolVar(&flagInitProject, "project", false, "scaffold <cwd>/.enso/config.toml (backend env for this repo) instead of the user config")
+	configInitCmd.Flags().StringVar(&flagInitLang, "lang", "", "language preset for --project (go|node|python|rust|generic); empty = auto-detect")
+	configInitCmd.Flags().StringVar(&flagInitBackend, "backend", "", "backend to highlight in --project output (podman|lima); default podman")
 	configCmd.AddCommand(configInitCmd, configShowCmd)
 	rootCmd.AddCommand(configCmd)
 }
