@@ -47,6 +47,10 @@ type Script struct {
 	Gate <-chan struct{}
 	// Err, when non-nil, fires as an EventError just before close.
 	Err error
+	// FinishReason rides on the terminal EventDone, mirroring what the
+	// OpenAIClient reports ("length", "repetition", "stall", …). Empty =
+	// a healthy finish. Drives agent-side auto-recovery tests.
+	FinishReason string
 	// Usage, when non-nil, is emitted verbatim as the EventUsage. nil
 	// triggers an auto-default derived from the request size and the
 	// rendered Text/ToolCalls (preserves the pre-EventUsage heuristic
@@ -165,7 +169,7 @@ func (m *Mock) Chat(ctx context.Context, req llm.ChatRequest) (<-chan llm.Event,
 			}
 			ch <- llm.Event{Type: llm.EventUsage, Usage: *usage}
 		}
-		ch <- llm.Event{Type: llm.EventDone}
+		ch <- llm.Event{Type: llm.EventDone, FinishReason: s.FinishReason}
 	}()
 	return ch, nil
 }

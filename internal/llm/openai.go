@@ -88,7 +88,23 @@ type Event struct {
 	ToolCalls []ToolCall
 	Usage     MessageUsage
 	Error     error
+	// FinishReason is set only on EventDone. It carries the provider's
+	// reported reason ("stop", "length", "tool_calls") plus two synthetic
+	// values the OpenAI adapter raises itself: "repetition" when the loop
+	// guard tripped and "stall" when the stream went silent past the
+	// configured timeout. The agent uses it to drive auto-recovery; other
+	// adapters leave it "" and recovery is a no-op for them.
+	FinishReason string
 }
+
+// Finish-reason values the OpenAI adapter raises beyond the provider's
+// own "stop" / "length" / "tool_calls". Kept as constants so the agent's
+// recovery switch and the adapter stay in lockstep.
+const (
+	FinishLength     = "length"     // provider hit the max_tokens cap
+	FinishRepetition = "repetition" // loop guard tripped mid-stream
+	FinishStall      = "stall"      // no token for StallTimeout
+)
 
 // ChatClient is the streaming-chat interface the agent and compaction
 // loop use. *OpenAIClient is one production implementation (alongside
@@ -103,6 +119,24 @@ type OpenAIClient struct {
 	Endpoint string
 	APIKey   string
 	Model    string
+
+	// MaxTokens caps a single generation (sent as max_tokens / n_predict).
+	// Zero means "send no cap" — the server's own default applies. Set by
+	// provider.go from resolved config (explicit value, else derived from
+	// the context window). The hard backstop against runaway generation.
+	MaxTokens int
+
+	// StallTimeout aborts a stream that produces no token for this long.
+	// Rate-independent by design: it fires on silence, not slowness, so
+	// the same value works across a fast GPU and a slow large-context box.
+	// Zero disables the watchdog.
+	StallTimeout time.Duration
+
+	// LoopGuard enables mid-stream repetition detection — when the tail of
+	// the output collapses into a short repeating cycle, the stream is
+	// aborted with FinishRepetition so the agent can recover before the
+	// max_tokens cap is even reached.
+	LoopGuard bool
 
 	// HTTPClient is the transport used for both /chat/completions and
 	// the recovery probe. nil means http.DefaultClient — production
@@ -217,6 +251,9 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 	req.Stream = true
 	req.Model = c.Model
 	req.Messages = FilterForRequest(req.Messages)
+	if c.MaxTokens > 0 {
+		req.MaxTokens = c.MaxTokens
+	}
 
 	// Wrap with stream_options.include_usage=true so the provider sends
 	// a trailing usage chunk we can translate to EventUsage. OpenAI and
@@ -277,8 +314,63 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		sseDone := make(chan []byte)
 		go ParseSSE(resp.Body, sseDone)
 
+		var detector *repetitionDetector
+		if c.LoopGuard {
+			detector = newRepetitionDetector()
+		}
+
 		var lastUsage *ChunkUsage
-		for raw := range sseDone {
+		finishReason := ""
+
+		// abort tears down a stream we've decided to stop reading early
+		// (stall watchdog or loop guard). Closing the body unblocks
+		// ParseSSE's in-flight Read; draining sseDone lets it finish any
+		// pending send and exit instead of leaking. First reason wins.
+		aborted := false
+		abort := func(reason string) {
+			if aborted {
+				return
+			}
+			aborted = true
+			finishReason = reason
+			resp.Body.Close()
+			go func() {
+				for range sseDone {
+				}
+			}()
+		}
+
+		// started flips once the first chunk arrives. The stall watchdog
+		// only guards the gap BETWEEN chunks, never the initial wait — a
+		// hybrid-attention model (Qwen3.6 etc.) re-prefills the whole
+		// prompt each turn and at a high context fill that prefill can run
+		// far longer than StallTimeout while emitting nothing. Arming
+		// before the first token would kill those healthy turns. Prefill
+		// can take as long as it takes; once we're decoding, a long
+		// silence genuinely means hung. Rate-independent: keys off
+		// inter-token silence, not throughput.
+		started := false
+	stream:
+		for {
+			var raw []byte
+			var ok bool
+			if c.StallTimeout > 0 && started {
+				timer := time.NewTimer(c.StallTimeout)
+				select {
+				case raw, ok = <-sseDone:
+					timer.Stop()
+				case <-timer.C:
+					abort(FinishStall)
+					break stream
+				}
+			} else {
+				raw, ok = <-sseDone
+			}
+			if !ok {
+				break
+			}
+			started = true
+
 			fmt.Fprintf(debugLog(), "sse: %s\n", string(raw))
 			var chunk ChatCompletionChunk
 			if err := json.Unmarshal(raw, &chunk); err != nil {
@@ -287,12 +379,23 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			}
 
 			for _, ch := range chunk.Choices {
+				if ch.FinishReason != "" {
+					finishReason = ch.FinishReason
+				}
 				delta := ch.Delta
 				if delta.ReasoningContent != "" {
 					eventCh <- Event{Type: EventReasoningDelta, Text: delta.ReasoningContent}
+					if detector != nil && detector.add(delta.ReasoningContent) {
+						abort(FinishRepetition)
+						break stream
+					}
 				}
 				if delta.Content != "" {
 					eventCh <- Event{Type: EventTextDelta, Text: delta.Content}
+					if detector != nil && detector.add(delta.Content) {
+						abort(FinishRepetition)
+						break stream
+					}
 				}
 				if len(delta.ToolCalls) > 0 {
 					if err := acc.Merge(delta); err != nil {
@@ -312,6 +415,9 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 
 		if calls := acc.Finalize(); len(calls) > 0 {
 			eventCh <- Event{Type: EventToolCallComplete, ToolCalls: calls}
+			if finishReason == "" {
+				finishReason = "tool_calls"
+			}
 		}
 
 		if lastUsage != nil {
@@ -330,7 +436,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			eventCh <- Event{Type: EventUsage, Usage: usage}
 		}
 
-		eventCh <- Event{Type: EventDone}
+		eventCh <- Event{Type: EventDone, FinishReason: finishReason}
 	}()
 
 	return eventCh, nil
