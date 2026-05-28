@@ -5,6 +5,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -44,6 +45,16 @@ func TestClassifyTransportError(t *testing.T) {
 			name: "timeout via url.Error",
 			err:  &url.Error{Op: "Post", URL: "http://x", Err: timeoutErr{}},
 			want: "timed out",
+		},
+		{
+			name: "eof via url.Error (keep-alive race)",
+			err:  &url.Error{Op: "Post", URL: "http://x", Err: io.EOF},
+			want: "connection closed",
+		},
+		{
+			name: "unexpected eof",
+			err:  io.ErrUnexpectedEOF,
+			want: "connection closed",
 		},
 		{
 			name: "unknown",
