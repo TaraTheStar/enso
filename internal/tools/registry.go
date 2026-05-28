@@ -11,6 +11,12 @@ import (
 // Registry holds the available tools.
 type Registry struct {
 	tools map[string]Tool
+
+	// defsCache memoizes the sorted ToolDefs slice. Nil means
+	// "stale, recompute on next call." Cleared by Register.
+	// Filter/Without build fresh registries so their caches start
+	// stale naturally.
+	defsCache []llm.ToolDef
 }
 
 // NewRegistry creates an empty registry.
@@ -21,6 +27,7 @@ func NewRegistry() *Registry {
 // Register adds a tool to the registry.
 func (r *Registry) Register(t Tool) {
 	r.tools[t.Name()] = t
+	r.defsCache = nil
 }
 
 // Get returns a tool by name, or nil if not found.
@@ -90,7 +97,14 @@ func (r *Registry) Without(names []string) *Registry {
 // Sorted by name so the serialized prompt prefix is byte-stable across turns —
 // otherwise Go's randomized map iteration shuffles the tools array each call
 // and busts the llama.cpp prompt-prefix cache, forcing a full re-prefill.
+//
+// Memoized: registries are effectively immutable after BuildDefault /
+// Filter / Without finish wiring them up, so the sort + alloc only
+// runs once per registry. Register invalidates the cache.
 func (r *Registry) ToolDefs() []llm.ToolDef {
+	if r.defsCache != nil {
+		return r.defsCache
+	}
 	names := make([]string, 0, len(r.tools))
 	for name := range r.tools {
 		names = append(names, name)
@@ -108,5 +122,6 @@ func (r *Registry) ToolDefs() []llm.ToolDef {
 			},
 		})
 	}
+	r.defsCache = defs
 	return defs
 }
