@@ -16,8 +16,11 @@ import (
 )
 
 // compactionThreshold is the fraction of the context window above which
-// auto-compaction kicks in.
-const compactionThreshold = 0.60
+// auto-compaction kicks in. Set at 0.75 to use more of a big context
+// window before summarizing — on a 131K box that's ~98K used / ~33K
+// headroom, which comfortably absorbs a large tool result landing at the
+// threshold while compacting far less often than a lower trigger would.
+const compactionThreshold = 0.75
 
 // tailTurnsForBudget returns how many recent user-bounded turns can be
 // pinned verbatim within `budget` tokens, walking backward from the

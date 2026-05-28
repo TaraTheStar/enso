@@ -11,6 +11,11 @@ model = "qwen3.6-35b-a3b"
 context_window = 32768
 concurrency = 1
 api_key = ""
+# Output-token cap for a single generation (max_tokens / n_predict). The
+# hard backstop against runaway / repetition loops. 0 = derive a safe
+# default: min(16384, context_window/2). Set explicitly to exploit a big
+# context window (e.g. on a large-memory box) or to tighten further.
+max_tokens = 0
 
 [providers.local.sampler]
 temperature = 0.6
@@ -18,6 +23,24 @@ top_k = 20
 top_p = 0.95
 min_p = 0.0
 presence_penalty = 1.5
+
+# Per-turn generation guards + auto-recovery. Defaults are safe; this
+# block only needs editing to tune. By design these are hardware-
+# independent (token counts and stall-on-silence, not wall-clock budgets),
+# so the same values work whether the box is GPU-fast or big-and-slow.
+[providers.local.generation]
+# Abort a stream that emits no token for this long (Go duration). Fires on
+# silence, not slowness — tolerates prompt-processing pauses and MTP/
+# speculative bursts. "0s" disables. Default 60s.
+stall_timeout = "60s"
+# On a length-truncation, tripped loop guard, or stall: discard/continue
+# and retry with a nudge instead of dropping the turn. Default true.
+auto_recover = true
+# Max automatic retries per turn before giving up. Default 2.
+max_recover_attempts = 2
+# Mid-stream repetition detection — abort a degeneration loop before it
+# even reaches the max_tokens cap. Default true.
+loop_guard = true
 
 # --- cloud providers (uncomment to enable) ----------------------------
 #

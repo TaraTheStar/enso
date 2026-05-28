@@ -50,6 +50,12 @@ type Agent struct {
 	MaxTurns  int
 	Hooks     *hooks.Hooks // optional; on_session_end fires from Run's defer
 
+	// recoverAttempts counts consecutive auto-recovery retries (truncation
+	// / repetition / stall) so a pathological turn can't loop forever. Per
+	// the active provider's MaxRecoverAttempts; reset on any healthy
+	// finish. Touched only from the single-threaded turn loop.
+	recoverAttempts int
+
 	mu        sync.Mutex
 	curCancel context.CancelFunc
 
@@ -993,6 +999,7 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	var reasoning strings.Builder
 	var toolCalls []llm.ToolCall
 	var usage llm.MessageUsage
+	var finishReason string
 
 	for evt := range events {
 		switch evt.Type {
@@ -1014,7 +1021,7 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 			release()
 			return false, evt.Error
 		case llm.EventDone:
-			// finalize after the loop
+			finishReason = evt.FinishReason
 		}
 	}
 	release()
@@ -1046,6 +1053,18 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		asst.ToolCalls = toolCalls
 	}
 
+	// Belt-and-suspenders recovery: a turn that hit the output-length cap,
+	// tripped the loop guard, or stalled is rescued automatically — retry
+	// with a nudge, or continue a clean truncation — instead of surfacing
+	// a dead turn. Only on the no-tool-call path: a turn that produced tool
+	// calls is making progress and should run them (the budget is reset in
+	// that path below). maybeRecover resets the budget on a healthy finish.
+	if len(toolCalls) == 0 {
+		if handled, cont, rerr := a.maybeRecover(p, finishReason, contentStr, asst, usage); handled {
+			return cont, rerr
+		}
+	}
+
 	// Cumulative-spend tracking is driven by provider-reported usage
 	// below; nothing to do here.
 
@@ -1073,6 +1092,8 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		return false, nil
 	}
 
+	// Tool calls = healthy progress; clear any accumulated recovery budget.
+	a.recoverAttempts = 0
 	for _, tc := range toolCalls {
 		out, parts, meta := a.executeToolCall(ctx, registry, tc)
 		a.appendToolMessage(llm.Message{
@@ -1085,6 +1106,84 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	}
 
 	return true, nil
+}
+
+// maybeRecover decides what to do when a turn ended in truncation, a
+// tripped loop guard, or a stall. It returns handled=true when it took
+// over the turn's outcome — then (cont, err) are authoritative and the
+// caller returns them directly. handled=false means "proceed with normal
+// finalization" (and the retry budget has been reset for a healthy
+// finish). Retries are bounded by the provider's MaxRecoverAttempts so a
+// pathological prompt can't loop forever.
+func (a *Agent) maybeRecover(p *llm.Provider, finishReason, content string, asst llm.Message, usage llm.MessageUsage) (handled, cont bool, err error) {
+	if !p.AutoRecover {
+		return false, false, nil
+	}
+	switch finishReason {
+	case llm.FinishRepetition, llm.FinishStall:
+		// Degenerate or hung output: discard the partial (it would poison
+		// context) and retry with a corrective nudge.
+		if a.recoverAttempts >= p.MaxRecoverAttempts {
+			a.recoverAttempts = 0
+			a.Bus.Publish(bus.Event{
+				Type: bus.EventError,
+				Payload: fmt.Errorf(
+					"model kept %s after %d recovery attempt(s) — stopping; try rephrasing or a different model",
+					recoverWord(finishReason), p.MaxRecoverAttempts,
+				),
+			})
+			return true, false, nil
+		}
+		a.recoverAttempts++
+		a.appendUserMessage(recoveryNudge(finishReason))
+		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
+			a.AgentCtx.Logger.Warn("auto-recovering turn",
+				"reason", finishReason, "attempt", a.recoverAttempts, "max", p.MaxRecoverAttempts)
+		}
+		return true, true, nil
+
+	case llm.FinishLength:
+		// Clean length truncation: the partial is real work. Out of
+		// retries (or nothing to continue) → keep it via the normal path
+		// and stop cleanly.
+		if content == "" || a.recoverAttempts >= p.MaxRecoverAttempts {
+			a.recoverAttempts = 0
+			return false, false, nil
+		}
+		a.recoverAttempts++
+		a.appendMessage(asst)
+		a.stampUsage(len(a.History)-1, usage)
+		a.Bus.Publish(bus.Event{Type: bus.EventAssistantDone})
+		a.appendUserMessage(recoveryContinueNudge)
+		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
+			a.AgentCtx.Logger.Warn("auto-continuing truncated turn",
+				"attempt", a.recoverAttempts, "max", p.MaxRecoverAttempts)
+		}
+		return true, true, nil
+
+	default:
+		// "stop" / "tool_calls" / "" — a healthy finish. Reset the budget.
+		a.recoverAttempts = 0
+		return false, false, nil
+	}
+}
+
+const recoveryContinueNudge = "Your previous response was cut off at the output length limit. Continue exactly where you left off — do not repeat anything you already wrote."
+
+// recoveryNudge is the corrective injected before retrying a degenerate or
+// stalled turn.
+func recoveryNudge(finishReason string) string {
+	if finishReason == llm.FinishStall {
+		return "Your previous response stalled and was stopped before completing. Please answer the request directly and concisely."
+	}
+	return "Your previous response began repeating itself and was stopped. Stop repeating, take a different approach, and answer concisely."
+}
+
+func recoverWord(finishReason string) string {
+	if finishReason == llm.FinishStall {
+		return "stalling"
+	}
+	return "repeating"
 }
 
 // appendUserMessage appends a user-role message and bumps the
