@@ -101,11 +101,20 @@ enso config init           # write the default to the user path
 enso config init --wizard  # interactive: pick a provider preset, model, optional API key
 enso config init --print   # dump the default to stdout
 enso config init --force   # overwrite an existing file
+enso config init --project # scaffold <cwd>/.enso/config.toml (backend env for this repo)
+enso config init --project --lang python --backend lima  # pin language / backend (auto-detected from go.mod, package.json, …)
 enso config show           # list the search paths and which exist
 enso trust                 # trust ./.enso/config.toml (records sha256 in ~/.local/state/enso/trust.json)
 enso trust --list          # show every trusted entry
 enso trust --revoke        # forget the entry for ./.enso/config.toml
 ```
+
+`--project` emits a starter `[backend.podman]` / `[backend.lima]` /
+`[backend.egress]` block tuned to the detected language (Go, Node,
+Python, Rust, or generic). `--wizard` is mutually exclusive with
+`--project` — `--wizard` generates **provider** config (user-scoped),
+`--project` generates **backend environment** (project-scoped). Both
+paths write the destination with `0700` parent dir / `0600` file.
 
 Key sections of the config:
 

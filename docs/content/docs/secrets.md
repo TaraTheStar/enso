@@ -94,13 +94,18 @@ provides the actual value.
 
 ## File permissions
 
-When ensō writes the user config (`enso config init`) it clamps the
-parent directory to `0700` and the file to `0600`. If you wrote your
-own config by hand, double-check:
+When ensō writes either the user config (`enso config init`) or a
+project config (`enso config init --project`), it clamps the parent
+directory to `0700` and the file to `0600` (with a `chmod` to tighten
+a pre-existing parent dir). If you wrote your own config by hand,
+double-check:
 
 ```bash
 chmod 700 ~/.config/enso
 chmod 600 ~/.config/enso/config.toml
+# and for project configs:
+chmod 700 ./.enso
+chmod 600 ./.enso/config.toml
 ```
 
 ## What is *not* in scope

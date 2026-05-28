@@ -4,6 +4,96 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.9.0] - 2026-05-28
+
+This release lands **end-to-end inference cancellation** (Ctrl-C now
+actually aborts the upstream HTTP call instead of waiting it out),
+adds **`enso config init --project`** for one-shot scaffolding of a
+language-tuned backend environment, and tightens the TUI's prompt /
+cancel UX with pinned status-line hints, an Enter-commits default,
+and a Ctrl-C chord that distinguishes "cancel turn" from "force quit".
+
+### Added
+
+- **`enso config init --project`** — scaffolds `<cwd>/.enso/config.toml`
+  with `[backend.podman]` / `[backend.lima]` / `[backend.egress]`
+  blocks tuned to the detected language. Flags: `--lang
+  go|node|python|rust|generic` (empty auto-detects from `go.mod`,
+  `package.json`, `pyproject.toml` / `requirements.txt`, `Cargo.toml`);
+  `--backend podman|lima` selects which backend block is emitted
+  uncommented (the other is included commented as a hint). Interactive
+  under a TTY, deterministic under pipes / CI. File modes match the
+  user-config path: `0700` parent dir, `0600` file.
+- **Pinned status-line hints for unresolved prompts.** While a
+  permission or egress prompt is awaiting an answer, the status line
+  above the input shows `▸ awaiting: <tool>(…)   [y/n/a/t]` (with the
+  auto-deny countdown when applicable), appended to the existing
+  spinner / model name. The full prompt still prints to scrollback;
+  the hint is the always-visible reminder when heavy streaming pushes
+  it off-screen.
+- **Enter = "yes" default** on permission and egress prompts. The
+  default choice is rendered with a `▸ ` cursor glyph; the other
+  choices are dimmed.
+- **Ctrl-C cancels in-flight turns**, with a force-quit escape hatch.
+  First Ctrl-C while a turn is busy sends the cancel and prints
+  `(cancelling turn — press Ctrl-C again to force quit)`. A second
+  Ctrl-C within ~500 ms force-quits even if the cancel itself wedged
+  (e.g. a provider not honouring `ctx`). Idle Ctrl-C still quits
+  immediately.
+
+### Changed
+
+- **`Registry.ToolDefs()` returns tools sorted by name**, memoized on
+  the registry. Go's randomized map iteration was reshuffling the
+  serialized tools array each turn and busting the prompt-prefix
+  cache (llama.cpp, Anthropic ephemeral cache) — sorting makes the
+  prefix byte-stable across turns.
+- **Permission / egress `[n]o` no longer rendered in red.** Deny is
+  the safe outcome, not the destructive one; red was misleading.
+  Dim (`noticeStyle`) for non-default choices, bold + cursor for the
+  default.
+
+### Fixed
+
+- **Inference cancellation race.** `agent.Cancel()` is now guaranteed
+  to abort the host-proxied provider HTTP call. Previously the worker
+  would emit `MsgInferenceCancel` and the host would look up the corr
+  in `s.infCancel` — but the per-corr canceller was registered inside
+  the `serveInference` goroutine, so a cancel arriving before that
+  goroutine scheduled would find an empty map and be silently dropped.
+  The canceller is now installed synchronously in the demux loop
+  before the goroutine is launched.
+- **Stale TUI prompt pin after a cancelled turn.** When a turn was
+  cancelled or errored mid-prompt, `m.perm` / `m.egress` were not
+  cleared, so the status line stayed pinned to `▸ awaiting: …` and
+  `handleKey` kept intercepting `y/n/a/t` for a dead resolver. Both
+  are now cleared on `EventCancelled` / `EventError`, with a
+  best-effort Deny sent in case the agent goroutine was still
+  blocked on `req.Respond`.
+- **Project config file modes.** `enso config init --project` used
+  to write `0o755` parent / `0o644` file; tightened to `0o700` /
+  `0o600` (with a `chmod` clamp on pre-existing dirs) to match the
+  user-config path. Project configs can carry project-scoped
+  provider overrides (api_key, endpoint creds).
+- **`os.Stat` error handling on config init pre-existence check.**
+  A non-`ErrNotExist` Stat error (`EACCES` on a parent dir, weird
+  ACLs) was treated as "file doesn't exist" and let `WriteFile`
+  proceed without `--force`. Now propagates as a clear `stat <path>:
+  <err>` failure. Fix applied to both the user-config and
+  `--project` paths.
+- **Silent flag coercions in `enso config init --project`.** An
+  invalid `--backend` value (e.g. `--backend docker`) used to be
+  silently coerced to `podman`; now returns an error listing valid
+  values. Passing both `--project` and `--wizard` used to silently
+  drop `--wizard`; now returns an explicit error explaining that
+  `--wizard` writes provider config (user-scoped) and `--project`
+  writes backend env (project-scoped).
+- **Spurious `MsgInferenceCancel` on the wire.** When a stream
+  completed cleanly at the same instant the caller's `ctx` was
+  cancelled, Go's randomized `select` could fire a cancel envelope
+  for an already-completed corr. The cancel-watch goroutine now
+  double-checks `entry.done` before sending.
+
 ## [v2.8.0] - 2026-05-23
 
 This release focuses on **context-management parity with state-of-the-art
@@ -817,6 +907,8 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
+[v2.9.0]: https://github.com/TaraTheStar/enso/compare/v2.8.0...v2.9.0
+[v2.8.0]: https://github.com/TaraTheStar/enso/compare/v2.7.0...v2.8.0
 [v2.7.0]: https://github.com/TaraTheStar/enso/compare/v2.6.0...v2.7.0
 [v2.6.0]: https://github.com/TaraTheStar/enso/compare/v2.5.1...v2.6.0
 [v2.5.1]: https://github.com/TaraTheStar/enso/compare/v2.5.0...v2.5.1
