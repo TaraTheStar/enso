@@ -603,10 +603,20 @@ type ProviderConfig struct {
 	InputPricePerMillion  float64 `toml:"input_price_per_million"`
 	OutputPricePerMillion float64 `toml:"output_price_per_million"`
 
-	// MaxTokens caps the model's response length. Optional for OpenAI
-	// (only sent when non-zero); required by Bedrock's Converse API,
-	// which defaults to 4096 when this field is zero.
+	// MaxTokens caps the model's response length. For OpenAI/llama.cpp it
+	// is sent as max_tokens (n_predict) when non-zero; when zero the local
+	// path derives a cap from ContextWindow (see Generation). Required by
+	// Bedrock's Converse API, which defaults to 4096 when this is zero.
 	MaxTokens int64 `toml:"max_tokens"`
+
+	// Generation tunes the per-turn generation guards for the
+	// OpenAI/llama.cpp path — stall detection and automatic recovery from
+	// truncation / repetition loops. All fields optional; safe defaults
+	// apply when unset. Hardware-independent by design (token counts and
+	// stall-on-silence, not wall-clock budgets) so one block works
+	// unchanged across a fast GPU and a big-memory APU. Ignored by the
+	// hosted vendor adapters, which carry their own limits.
+	Generation GenerationConfig `toml:"generation"`
 
 	// ExtendedThinking enables Claude's extended-thinking blocks on
 	// Bedrock — the model surfaces its reasoning through the same
@@ -699,6 +709,29 @@ type ProviderConfig struct {
 	// the response; the sidebar's token accounting doesn't consume
 	// them yet (separate observability patch).
 	PromptCaching bool `toml:"prompt_caching"`
+}
+
+// GenerationConfig holds the per-turn generation guards for the
+// OpenAI/llama.cpp path. Pointer bools distinguish "unset" (apply the
+// on-by-default behaviour) from an explicit `false`.
+type GenerationConfig struct {
+	// StallTimeout is a Go duration string ("60s"). A stream that emits no
+	// token for this long is aborted as hung and recovered. Empty = 60s;
+	// "0s" disables the watchdog.
+	StallTimeout string `toml:"stall_timeout"`
+
+	// AutoRecover toggles agent-side recovery: on a length-truncation or a
+	// tripped loop guard, discard/continue and retry with a nudge instead
+	// of surfacing a dead turn. nil/unset = enabled.
+	AutoRecover *bool `toml:"auto_recover"`
+
+	// MaxRecoverAttempts bounds those automatic retries per turn so a
+	// pathological prompt can't loop forever. Zero/unset = 2.
+	MaxRecoverAttempts int `toml:"max_recover_attempts"`
+
+	// LoopGuard toggles mid-stream repetition detection. nil/unset =
+	// enabled.
+	LoopGuard *bool `toml:"loop_guard"`
 }
 
 // SamplerConfig holds generation parameters.

@@ -283,15 +283,24 @@ type ToolCall struct {
 
 // ChatRequest is the OpenAI-compatible chat completion request body.
 type ChatRequest struct {
-	Model           string    `json:"model"`
-	Messages        []Message `json:"messages"`
-	Stream          bool      `json:"stream"`
-	Tools           []ToolDef `json:"tools,omitempty"`
-	Temperature     float64   `json:"temperature,omitempty"`
-	TopK            int       `json:"top_k,omitempty"`
-	TopP            float64   `json:"top_p,omitempty"`
-	MinP            float64   `json:"min_p,omitempty"`
-	PresencePenalty float64   `json:"presence_penalty,omitempty"`
+	Model    string    `json:"model"`
+	Messages []Message `json:"messages"`
+	Stream   bool      `json:"stream"`
+	Tools    []ToolDef `json:"tools,omitempty"`
+	// MaxTokens caps a single generation (llama.cpp's n_predict). The
+	// OpenAIClient sets it from resolved config; omitted on the wire when
+	// zero so servers without a cap keep their own default. This is the
+	// hard backstop against runaway / degeneration loops — a model that
+	// stops emitting EOS can't stream past this many output tokens.
+	MaxTokens int `json:"max_tokens,omitempty"`
+	// Stop is the optional list of stop strings. Empty on the local path
+	// today; reserved for callers that want server-side termination.
+	Stop            []string `json:"stop,omitempty"`
+	Temperature     float64  `json:"temperature,omitempty"`
+	TopK            int      `json:"top_k,omitempty"`
+	TopP            float64  `json:"top_p,omitempty"`
+	MinP            float64  `json:"min_p,omitempty"`
+	PresencePenalty float64  `json:"presence_penalty,omitempty"`
 }
 
 // ToolDef is the JSON Schema definition sent to the model.
