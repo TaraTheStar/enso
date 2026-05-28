@@ -79,6 +79,11 @@ explicit `-c` file). Put it in the user or system config and it is
 backend environment, so a user's `init` can never silently collide with
 a repo's.
 
+> **Quick start.** `enso config init --project` scaffolds a starter
+> `[backend.podman]` / `[backend.lima]` / `[backend.egress]` block in
+> `<cwd>/.enso/config.toml`, tuned to the detected language. See the
+> Configuration section of the README for the flag reference.
+
 With `type = "podman"`, `[backend.podman] runtime` chooses the
 container CLI: `"auto"` (default) prefers podman (rootless, no daemon)
 and falls back to docker; pin one with `"podman"` or `"docker"`.
