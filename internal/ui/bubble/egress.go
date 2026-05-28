@@ -24,6 +24,25 @@ func startEgressPrompt(req *permissions.EgressPrompt) tea.Cmd {
 	return tea.Println(renderEgressPrompt(req))
 }
 
+// egressPendingHint is the status-line analogue of permPendingHint:
+// a single pinned reminder shown while an egress prompt is unanswered,
+// in case the full Println'd prompt has scrolled out of view.
+func egressPendingHint(req *permissions.EgressPrompt) string {
+	if req == nil {
+		return ""
+	}
+	target := req.Target
+	const maxLen = 50
+	// Rune-aware (see permPendingHint): targets are usually ASCII
+	// host:port but an IDN punycode'd back into Unicode would otherwise
+	// risk a mid-rune cut.
+	if r := []rune(target); len(r) > maxLen {
+		target = string(r[:maxLen-1]) + "…"
+	}
+	return noticeStyle.Render("▸ awaiting egress: ") + target +
+		noticeStyle.Render("   [y/t/n]")
+}
+
 // renderEgressPrompt mirrors renderPermPrompt: a single notice line
 // naming the blocked target, the best-effort reason dimmed beneath it,
 // then the y/t/n choices. "this task" is the only durable scope (there
@@ -37,12 +56,16 @@ func renderEgressPrompt(req *permissions.EgressPrompt) string {
 		sb.WriteString(statusStyle.Render("  " + req.Reason))
 	}
 	sb.WriteByte('\n')
+	// [y]es is the default — Enter commits it. Same scheme as the
+	// perm prompt: bold + cursor on default, dim on the others, no
+	// red on [n]o (deny is safe, not destructive).
 	choices := []string{
-		userStyle.Render("[y]es once"),
-		userStyle.Render("[t] this task"),
-		errorStyle.Render("[n]o"),
+		userStyle.Render("▸ [y]es once"),
+		noticeStyle.Render("[t] this task"),
+		noticeStyle.Render("[n]o"),
 	}
 	sb.WriteString(statusStyle.Render("  ") + strings.Join(choices, statusStyle.Render("  ")))
+	sb.WriteString(statusStyle.Render("   · enter = yes"))
 	return sb.String()
 }
 
