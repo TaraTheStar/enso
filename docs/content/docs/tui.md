@@ -18,7 +18,8 @@ session inspector for at-a-glance state.
 | ---------------------------- | --------------------------------------------------------------------- |
 | `Enter`                      | Submit the current input (or run a `/`-prefixed command).             |
 | `Shift+Enter` / `Alt+Enter` / `Ctrl+J` | Insert a literal newline in the input. The input soft-wraps and scrolls up to three rows. |
-| `Ctrl+C` / `Ctrl+D`          | Quit. (`Ctrl+D` with non-empty input clears the line first; `Ctrl+C` quits unconditionally for now — turn-cancel is on the roadmap.) |
+| `Ctrl+C`                     | Cancel the in-flight turn while busy (prints `(cancelling turn — press Ctrl-C again to force quit)`); a second `Ctrl+C` within ~500 ms force-quits even if the cancel itself wedged. While idle, `Ctrl+C` quits immediately. |
+| `Ctrl+D`                     | Quit. With non-empty input, clears the line first. |
 | `Ctrl+Space` (= `Ctrl+@`)    | Open the alt-screen session inspector overlay; Esc returns.           |
 | `Ctrl+R`                     | Open the recent-sessions overlay; Enter switches to that session (re-execs with `--session <id>`). |
 | `←` / `→` / `Home` / `End`   | Cursor movement in the input.                                         |
