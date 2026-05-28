@@ -9,7 +9,7 @@ require (
 	github.com/adrg/frontmatter v0.2.0
 	github.com/anthropics/anthropic-sdk-go v1.45.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.18
-	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.51.0
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.52.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/google/uuid v1.6.0
