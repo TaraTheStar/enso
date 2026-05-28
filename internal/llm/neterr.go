@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/url"
 	"syscall"
@@ -84,6 +85,19 @@ func classifyTransportError(err error) string {
 		case syscall.ECONNRESET:
 			return "connection reset"
 		}
+	}
+
+	// Bare EOF / unexpected EOF: the server closed the connection before
+	// sending any response. The common cause in long-running sessions is a
+	// keep-alive race — the proxy (e.g. uvicorn's 5s --timeout-keep-alive)
+	// closed an idle pooled connection that we then wrote a request onto.
+	// Go's transport only auto-retries non-idempotent POSTs when *nothing*
+	// was written, so an EOF noticed after the request bytes go out lands
+	// here instead of being retried for us. Classify it as a transport
+	// error so doChatRequest re-issues on a fresh connection — an EOF from
+	// Do() means no response streamed, so the retry can't duplicate output.
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return "connection closed"
 	}
 
 	// Timeouts wrapped in net.OpError / url.Error.
