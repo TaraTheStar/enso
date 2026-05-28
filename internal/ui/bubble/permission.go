@@ -32,6 +32,36 @@ func startPermPrompt(req *permissions.PromptRequest) tea.Cmd {
 	return tea.Println(prompt)
 }
 
+// permPendingHint renders the single-line status-bar reminder shown
+// while a permission prompt is unresolved. The full prompt is in
+// scrollback (via tea.Println at request time), but heavy streaming
+// can push it off the top of the visible window; this hint stays
+// pinned to the status line so the user always sees that a decision
+// is owed and which tool is asking.
+func permPendingHint(req *permissions.PromptRequest) string {
+	if req == nil {
+		return ""
+	}
+	summary := req.ToolName
+	switch {
+	case req.ArgString != "":
+		summary += "(" + req.ArgString + ")"
+	case len(req.Args) > 0:
+		summary += "(" + summarizeArgs(req.Args) + ")"
+	default:
+		summary += "()"
+	}
+	const maxLen = 60
+	// Rune-aware: ArgString / summarizeArgs can contain non-ASCII
+	// (paths, prose) and byte-slicing at maxLen-1 could cut a rune in
+	// half and produce invalid UTF-8 in the status line.
+	if r := []rune(summary); len(r) > maxLen {
+		summary = string(r[:maxLen-1]) + "…"
+	}
+	return noticeStyle.Render("▸ awaiting: ") + summary +
+		noticeStyle.Render("   [y/n/a/t]")
+}
+
 // renderPermPrompt builds the inline prompt block. Diff (when present)
 // is shown indented and dim above the question line so the user can
 // scan the change before deciding.
@@ -64,13 +94,19 @@ func renderPermPrompt(req *permissions.PromptRequest) string {
 		}
 	}
 	sb.WriteByte('\n')
+	// [y]es is the default — Enter commits it. Mark it with a cursor
+	// glyph and bold (userStyle); other choices are dim (noticeStyle)
+	// so the default is visually unambiguous. Red on [n]o would falsely
+	// imply it's the destructive default; deny is the safe outcome so
+	// it doesn't warrant a warning colour.
 	choices := []string{
-		userStyle.Render("[y]es"),
-		errorStyle.Render("[n]o"),
-		userStyle.Render("[a]lways"),
-		userStyle.Render("[t]urn"),
+		userStyle.Render("▸ [y]es"),
+		noticeStyle.Render("[n]o"),
+		noticeStyle.Render("[a]lways"),
+		noticeStyle.Render("[t]urn"),
 	}
 	sb.WriteString(statusStyle.Render("  ") + strings.Join(choices, statusStyle.Render("  ")))
+	sb.WriteString(statusStyle.Render("   · enter = yes"))
 	return sb.String()
 }
 
