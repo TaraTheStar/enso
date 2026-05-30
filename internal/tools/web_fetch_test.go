@@ -170,6 +170,56 @@ func TestWebFetchTool_RequiresURL(t *testing.T) {
 	}
 }
 
+// In a sealed/proxied backend web_fetch must route through the egress
+// proxy and NOT resolve or pin the IP in-guest (the guest can't resolve —
+// that lookup is what the firewall rejects). The host below is
+// unresolvable, so the fetch can only succeed via the proxy. This also
+// confirms the in-guest SSRF pin is correctly skipped on the proxied path
+// (the host egress allowlist is the gate there, as it is for bash).
+func TestWebFetch_RoutesThroughProxyWhenSet(t *testing.T) {
+	var proxied bool
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Host == "fetch.invalid" {
+			proxied = true
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("proxied body"))
+	}))
+	defer proxy.Close()
+
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+
+	res, err := WebFetchTool{}.Run(context.Background(),
+		map[string]any{"url": "http://fetch.invalid/page"}, newToolAC(t.TempDir()))
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !proxied {
+		t.Fatal("web_fetch bypassed HTTP_PROXY — would dial directly and fail in a sealed guest")
+	}
+	if !strings.Contains(res.LLMOutput, "proxied body") {
+		t.Errorf("output = %q", res.LLMOutput)
+	}
+}
+
+// With no proxy configured (local backend), the in-guest SSRF guard must
+// still apply: a private/loopback literal is refused before any dial.
+func TestWebFetch_NoProxy_KeepsSSRFGuard(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+
+	res, err := WebFetchTool{}.Run(context.Background(),
+		map[string]any{"url": "http://169.254.169.254/latest/meta-data/"}, newToolAC(t.TempDir()))
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !strings.Contains(res.LLMOutput, "refused") {
+		t.Errorf("expected SSRF refusal without a proxy, got %q", res.LLMOutput)
+	}
+}
+
 func TestIsDeniedIP(t *testing.T) {
 	tests := []struct {
 		ip   string

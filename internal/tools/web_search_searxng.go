@@ -90,7 +90,17 @@ func searxngTransport(cfg config.SearXNGConfig) (*http.Transport, error) {
 		}
 		tlsCfg.RootCAs = pool
 	}
-	return &http.Transport{TLSClientConfig: tlsCfg}, nil
+	// Clone the default transport rather than building a bare one so the
+	// custom-TLS path keeps the default dial/idle timeouts, and route it
+	// through envProxyFunc so HTTPS_PROXY is honoured. Without a Proxy the
+	// HTTPS_PROXY injected by the sealed lima/podman backends is ignored,
+	// the worker dials the search host directly, and the in-guest DNS lookup
+	// is rejected by the egress firewall ("operation not permitted" on
+	// udp :53).
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = envProxyFunc
+	tr.TLSClientConfig = tlsCfg
+	return tr, nil
 }
 
 func (b *searxngBackend) Name() string { return "searxng" }
