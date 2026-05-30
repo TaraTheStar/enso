@@ -146,5 +146,5 @@ Full details in [Sandbox]({{< relref "docs/sandbox.md" >}}).
 - [TUI guide]({{< relref "docs/tui.md" >}}) — keybindings, slash commands, the status bar.
 - [Permissions]({{< relref "docs/permissions.md" >}}) — three-tier rules and per-tool patterns.
 - [Sessions]({{< relref "docs/sessions.md" >}}) — resume, fork, export, stats, worktree.
-- [Sandbox]({{< relref "docs/sandbox.md" >}}) — per-project container with podman or docker.
+- [Sandbox]({{< relref "docs/sandbox.md" >}}) — per-project isolation with podman or lima.
 - [LSP]({{< relref "docs/lsp.md" >}}) — language servers as agent tools.

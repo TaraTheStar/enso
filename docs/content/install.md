@@ -7,11 +7,12 @@ weight: 1
 
 ensō is a single static Go binary (named `enso`). No CGO, no runtime
 dependencies on the host beyond a POSIX shell (and optionally `podman`
-or `docker` if you turn the bash sandbox on).
+or `lima` if you run an isolated backend — see
+[`[backend]`]({{< relref "config/reference.md" >}})).
 
 ## Prerequisites
 
-- **Go 1.23+** (only if building from source).
+- **Go 1.26+** (only if building from source).
 - **An OpenAI-compatible chat endpoint** — `llama.cpp`'s `llama-server`
   is the reference target; vLLM, Ollama, OpenAI itself, anything that
   speaks Chat Completions with SSE streaming will work.
@@ -61,9 +62,9 @@ Any other backend works — set `endpoint` and `model` in
 point elsewhere. See the
 [config reference]({{< relref "config/reference.md" >}}) for the full list.
 
-## Optional: bash sandbox
+## Optional: isolated backend
 
-If you want the agent's shell to run inside a per-project container,
+If you want the agent to run inside a per-project container,
 install one of:
 
 - **[podman](https://podman.io/)** (rootless, no daemon) — recommended.
@@ -72,7 +73,8 @@ install one of:
 
 Then set `[backend] type = "podman"` in your config. ensō's container
 runtime defaults to auto-detect (podman, falling back to docker); pin
-one with `[backend] runtime = "podman"` or `"docker"`. Details in the
+one with `[backend.podman] runtime = "podman"` or `"docker"`. (For a VM
+backend instead, use `[backend] type = "lima"`.) Details in the
 [sandbox page]({{< relref "docs/sandbox.md" >}}).
 
 ## Optional: language servers

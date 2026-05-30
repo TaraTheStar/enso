@@ -143,8 +143,9 @@ something feels off:
   *content* vector (a docstring inside `node_modules/some-lib/`) is
   not gated. The same risk applies to `read` / `web_fetch` / `bash`
   output of attacker-controlled content — LSP isn't uniquely bad, it's
-  just an easy-to-forget surface. Mitigations today: keep
-  `bash.sandbox = "auto"` for hostile-code-review sessions, prefer
+  just an easy-to-forget surface. Mitigations today: run an isolated
+  backend (`[backend] type = "podman"` / `"lima"`) for hostile-code-review
+  sessions, prefer
   `read` (whose contents the user sees rendered) over `lsp_*` for
   security-sensitive inspection, and don't grant unsupervised tool
   access to subagents that handle untrusted code. Fence-wrapping
@@ -162,7 +163,8 @@ something feels off:
   because closing them properly needs a full shell parser
   (`mvdan.cc/sh`-class) that we've punted on. **Deny rules are
   guardrails, not walls.** For adversarial inputs (hostile model,
-  hostile dependency code being reviewed), `bash.sandbox = "auto"` is
+  hostile dependency code being reviewed), an isolated backend
+  (`[backend] type = "podman"` / `"lima"`) is
   the boundary — the documented residual bypass classes are caught
   there because the entire shell session runs inside a container.
 - **Workflow sibling parallelism** is goroutine-correct but not
