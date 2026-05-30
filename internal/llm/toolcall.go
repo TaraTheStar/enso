@@ -5,6 +5,7 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // ToolCallAccumulator merges streamed tool-call deltas into completed ToolCall records.
@@ -48,10 +49,23 @@ func (a *ToolCallAccumulator) Merge(delta ChatResponseDelta) error {
 	return nil
 }
 
-// Finalize returns all completed tool calls.
+// Finalize returns all completed tool calls, ordered by their streamed
+// delta index. The index order is deterministic and matches the order the
+// model generated the calls in — which is what the server tokenised and
+// cached. Returning in map-iteration order instead (Go randomises it)
+// reorders multi-call turns relative to the server's cached KV, so the
+// re-serialised assistant message diverges from the prompt cache at that
+// turn and forces a full prompt reprocess. Sorting by index keeps the
+// llama.cpp prefix cache intact across turns.
 func (a *ToolCallAccumulator) Finalize() []ToolCall {
+	idxs := make([]int, 0, len(a.calls))
+	for idx := range a.calls {
+		idxs = append(idxs, idx)
+	}
+	sort.Ints(idxs)
 	result := make([]ToolCall, 0, len(a.calls))
-	for _, call := range a.calls {
+	for _, idx := range idxs {
+		call := a.calls[idx]
 		if call.ID != "" && call.Function.Name != "" {
 			result = append(result, *call)
 		}

@@ -126,6 +126,37 @@ func TestAccumulator_ParallelCallsKeyedByIndex(t *testing.T) {
 	}
 }
 
+// TestAccumulator_FinalizeOrderedByIndex regression-tests llama.cpp
+// prefix-cache stability: Finalize must return multi-call turns in delta-
+// index order (= the order the model generated and the server cached them),
+// not Go's randomised map-iteration order. Reordering the calls makes the
+// re-serialised assistant message diverge from the server's cached KV at
+// that turn, forcing a full prompt reprocess. Deltas here arrive shuffled
+// (2,0,1) to prove ordering comes from the index, not arrival order; the
+// loop defeats a map-iteration order that might pass by luck on a single run.
+func TestAccumulator_FinalizeOrderedByIndex(t *testing.T) {
+	for iter := 0; iter < 64; iter++ {
+		acc := NewToolCallAccumulator()
+		mustMerge(t, acc, ChatResponseDelta{ToolCalls: []DTCall{
+			{Index: 2, ID: "c2", Function: dtFunction("read", `{"path":"c.txt"}`)},
+			{Index: 0, ID: "c0", Function: dtFunction("read", `{"path":"a.txt"}`)},
+			{Index: 1, ID: "c1", Function: dtFunction("read", `{"path":"b.txt"}`)},
+		}})
+
+		calls := acc.Finalize()
+		if len(calls) != 3 {
+			t.Fatalf("got %d calls, want 3", len(calls))
+		}
+		want := []string{"c0", "c1", "c2"}
+		for i, w := range want {
+			if calls[i].ID != w {
+				t.Fatalf("iter %d: calls[%d].ID = %q, want %q (full order %v)",
+					iter, i, calls[i].ID, w, idsOf(calls))
+			}
+		}
+	}
+}
+
 func TestAccumulator_FinalizeDropsIncomplete(t *testing.T) {
 	acc := NewToolCallAccumulator()
 	// Index 0: complete. Index 1: name only, no id. Index 2: id only, no name.
@@ -169,6 +200,14 @@ func TestCoerceArguments(t *testing.T) {
 }
 
 // helpers
+
+func idsOf(calls []ToolCall) []string {
+	out := make([]string, len(calls))
+	for i, c := range calls {
+		out[i] = c.ID
+	}
+	return out
+}
 
 func mustMerge(t *testing.T, acc *ToolCallAccumulator, d ChatResponseDelta) {
 	t.Helper()
