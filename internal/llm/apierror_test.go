@@ -127,3 +127,69 @@ func TestChat_ReturnsAPIErrorOn429(t *testing.T) {
 		t.Errorf("RetryAfter=%v, want 15s", apiErr.RetryAfter)
 	}
 }
+
+func TestAPIError_IsContextOverflow(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   bool
+	}{
+		{"litellm available context size", 400,
+			`{"error":{"message":"litellm.BadRequestError: OpenAIException - request (263074 tokens) exceeds the available context size (262144 tokens), try increasing it."}}`, true},
+		{"openai context_length_exceeded code", 400,
+			`{"error":{"message":"This model's maximum context length is 8192 tokens.","code":"context_length_exceeded"}}`, true},
+		{"vllm maximum context length", 400,
+			`{"object":"error","message":"This model's maximum context length is 262144 tokens. However, you requested 263074 tokens."}`, true},
+		{"413 entity too large with context", 413,
+			`request exceeds the available context size`, true},
+		{"unrelated 400 is not overflow", 400,
+			`{"error":{"message":"invalid 'temperature': must be <= 2"}}`, false},
+		{"429 is never overflow", 429,
+			`exceeds the available context size`, false},
+		{"500 is never overflow", 500,
+			`maximum context length`, false},
+		{"nil", 0, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var e *APIError
+			if tc.name != "nil" {
+				e = &APIError{StatusCode: tc.status, Body: tc.body}
+			}
+			if got := e.IsContextOverflow(); got != tc.want {
+				t.Errorf("IsContextOverflow()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAPIError_ContextLimit(t *testing.T) {
+	cases := []struct {
+		name   string
+		body   string
+		want   int
+		wantOK bool
+	}{
+		{"litellm picks the limit not the request",
+			`request (263074 tokens) exceeds the available context size (262144 tokens), try increasing it.`, 262144, true},
+		{"vllm maximum context length is N",
+			`This model's maximum context length is 262144 tokens. However, you requested 263074 tokens.`, 262144, true},
+		{"context window of N",
+			`prompt is too long for the context window of 32768 tokens`, 32768, true},
+		{"comma-grouped number",
+			`exceeds the available context size (131,072 tokens)`, 131072, true},
+		{"no number present",
+			`context_length_exceeded`, 0, false},
+		{"empty", ``, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &APIError{StatusCode: 400, Body: tc.body}
+			got, ok := e.ContextLimit()
+			if ok != tc.wantOK || got != tc.want {
+				t.Errorf("ContextLimit()=(%d,%v), want (%d,%v)", got, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}

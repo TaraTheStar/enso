@@ -560,7 +560,11 @@ func runWorkflow(name string, argParts []string) error {
 		GitAttribution:     cfg.Git.Attribution,
 		GitAttributionName: cfg.Git.AttributionName,
 		WebFetchAllowHosts: cfg.WebFetch.AllowHosts,
-		RestrictedRoots:    wfRestrictedRoots,
+		ToolTimeouts: tools.ToolTimeouts{
+			BashDefault: cfg.Bash.ResolveTimeout(),
+			BashMax:     cfg.Bash.ResolveTimeoutMax(),
+		},
+		RestrictedRoots: wfRestrictedRoots,
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
