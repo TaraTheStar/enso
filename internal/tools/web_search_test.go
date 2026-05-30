@@ -244,6 +244,73 @@ func TestWebSearch_SearXNG_TLS_BadCACertFallsBack(t *testing.T) {
 	}
 }
 
+// Regression for the sealed-VM DNS failure: when SearXNG has custom TLS
+// (ca_cert / insecure_skip_verify) configured, searxngTransport built a
+// bare http.Transport with no Proxy, so the HTTPS_PROXY injected by the
+// lima/podman backends was dropped — the worker dialed the search host
+// directly, the in-guest DNS lookup hit the egress firewall, and the call
+// failed with "operation not permitted" on udp :53. The custom transport
+// must keep a Proxy func.
+func TestSearXNGTransport_KeepsProxy(t *testing.T) {
+	tr, err := searxngTransport(config.SearXNGConfig{InsecureSkipVerify: true})
+	if err != nil {
+		t.Fatalf("searxngTransport: %v", err)
+	}
+	if tr == nil {
+		t.Fatal("expected a custom transport when InsecureSkipVerify is set")
+	}
+	if tr.Proxy == nil {
+		t.Fatal("custom transport dropped Proxy — HTTPS_PROXY would be ignored in a sealed worker")
+	}
+	// No TLS config → nil, meaning "use http.DefaultTransport", which
+	// already carries a Proxy func. Nothing to fix on that path.
+	tr2, err := searxngTransport(config.SearXNGConfig{})
+	if err != nil {
+		t.Fatalf("searxngTransport (no tls): %v", err)
+	}
+	if tr2 != nil {
+		t.Fatalf("expected nil transport (use default) when no TLS config, got %#v", tr2)
+	}
+}
+
+// End-to-end: with custom TLS configured AND an HTTP_PROXY set (as a sealed
+// worker has), the search request must travel through the proxy rather than
+// being dialed directly. The endpoint host is unresolvable, so the call can
+// only succeed via the proxy — proving the proxy is honoured.
+func TestWebSearch_SearXNG_RoutesThroughProxy(t *testing.T) {
+	var proxied bool
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A plain-HTTP forward proxy receives the absolute request URI.
+		if r.URL.Host == "searxng.invalid" && strings.HasPrefix(r.URL.Path, "/search") {
+			proxied = true
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"results": []map[string]any{{"title": "viaproxy", "url": "https://e/1", "content": "c"}},
+		})
+	}))
+	defer proxy.Close()
+
+	t.Setenv("HTTP_PROXY", proxy.URL)
+	t.Setenv("NO_PROXY", "")
+
+	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{
+		Endpoint:           "http://searxng.invalid",
+		InsecureSkipVerify: true, // forces the custom-transport path (the bug site)
+	}}
+	r := NewRegistry()
+	RegisterSearch(r, cfg)
+	res, err := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !proxied {
+		t.Fatal("searxng request bypassed HTTP_PROXY — custom transport dropped the proxy")
+	}
+	if !strings.Contains(res.LLMOutput, "viaproxy") {
+		t.Errorf("expected proxied result, got %q", res.LLMOutput)
+	}
+}
+
 func TestWebSearch_QueryRequired(t *testing.T) {
 	r := NewRegistry()
 	RegisterSearch(r, config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{Endpoint: "http://unused"}})

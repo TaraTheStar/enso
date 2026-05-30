@@ -53,16 +53,38 @@ func (t WebFetchTool) Run(ctx context.Context, args map[string]interface{}, ac *
 		return Result{}, fmt.Errorf("web_fetch: url required")
 	}
 
-	allow := normaliseAllowHosts(ac.WebFetchAllowHosts)
-	pinned, err := validateAndResolve(ctx, raw, allow)
+	u, err := url.Parse(raw)
 	if err != nil {
+		return Result{LLMOutput: "refused: malformed url"}, nil
+	}
+	if err := checkURL(u); err != nil {
 		return Result{LLMOutput: fmt.Sprintf("refused: %v", err)}, nil
 	}
+
+	allow := normaliseAllowHosts(ac.WebFetchAllowHosts)
 
 	ctx, cancel := context.WithTimeout(ctx, webFetchTimeout)
 	defer cancel()
 
-	client := newGuardedClient(pinned, allow)
+	// Pick the dial strategy. When an egress proxy applies to this URL the
+	// worker is sealed (podman/lima): it cannot resolve DNS or dial directly
+	// — the guest firewall allows only the proxy — so route through the
+	// proxy and let the host egress allowlist / interactive broker be the
+	// single egress gate (the same one that governs bash). The in-guest
+	// SSRF pin is the right model only for the local backend, where the
+	// worker shares the user's network and there is no proxy; there it must
+	// stay, to keep the agent off loopback / RFC1918 / cloud metadata.
+	var client *http.Client
+	if egressProxyForURL(u) != nil {
+		client = newProxiedClient()
+	} else {
+		pinned, err := validateAndResolve(ctx, raw, allow)
+		if err != nil {
+			return Result{LLMOutput: fmt.Sprintf("refused: %v", err)}, nil
+		}
+		client = newGuardedClient(pinned, allow)
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
 	if err != nil {
 		return Result{}, fmt.Errorf("web_fetch: %w", err)
@@ -175,27 +197,39 @@ type pinnedHost struct {
 	ips  []net.IP
 }
 
-// validateAndResolve parses raw, enforces scheme + credential + host
-// rules, resolves the host, and returns the pinned destination if every
-// resolved IP is allowed (or the host:port is in allow). Returns an
-// error suitable for surfacing to the model.
+// checkURL enforces the scheme / credential / host rules that hold no
+// matter how the request is dialed — direct (in-guest, with the SSRF pin
+// below) or through the egress proxy. Returns an error suitable for
+// surfacing to the model.
+func checkURL(u *url.URL) error {
+	switch strings.ToLower(u.Scheme) {
+	case "http", "https":
+	default:
+		return fmt.Errorf("unsupported scheme %q (only http/https)", u.Scheme)
+	}
+	if u.User != nil {
+		return fmt.Errorf("embedded credentials are not allowed in url")
+	}
+	if u.Hostname() == "" {
+		return fmt.Errorf("url is missing host")
+	}
+	return nil
+}
+
+// validateAndResolve parses raw, enforces the static URL rules, resolves
+// the host, and returns the pinned destination if every resolved IP is
+// allowed (or the host:port is in allow). This is the DIRECT-dial path
+// (local backend); the proxied path skips resolution entirely since the
+// guest cannot resolve and the host egress proxy is the egress gate.
 func validateAndResolve(ctx context.Context, raw string, allow map[string]bool) (*pinnedHost, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("malformed url")
 	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-	default:
-		return nil, fmt.Errorf("unsupported scheme %q (only http/https)", u.Scheme)
-	}
-	if u.User != nil {
-		return nil, fmt.Errorf("embedded credentials are not allowed in url")
+	if err := checkURL(u); err != nil {
+		return nil, err
 	}
 	host := u.Hostname()
-	if host == "" {
-		return nil, fmt.Errorf("url is missing host")
-	}
 	port := u.Port()
 	if port == "" {
 		if strings.EqualFold(u.Scheme, "https") {
@@ -325,6 +359,30 @@ func newGuardedClient(pinned *pinnedHost, allow map[string]bool) *http.Client {
 			}
 			// Swap dialer onto the new pinned host for the next hop.
 			tr.DialContext = pinnedDialContext(next)
+			return nil
+		},
+	}
+}
+
+// newProxiedClient builds the client for the sealed/proxied backend. It
+// keeps the default transport (timeouts, HTTP/2) but routes through
+// envProxyFunc so HTTPS_PROXY is honoured, and does NOT resolve or pin IPs
+// in-guest — the guest cannot resolve, and the host egress proxy's
+// allowlist / interactive broker is the egress gate. It still caps
+// redirects and re-runs the static URL checks on each hop; per-hop proxy
+// selection is handled by the transport's Proxy func.
+func newProxiedClient() *http.Client {
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = envProxyFunc
+	return &http.Client{
+		Transport: tr,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= webFetchMaxRedirs {
+				return fmt.Errorf("stopped after %d redirects", webFetchMaxRedirs)
+			}
+			if err := checkURL(req.URL); err != nil {
+				return fmt.Errorf("redirect to %s refused: %w", req.URL.Host, err)
+			}
 			return nil
 		},
 	}
