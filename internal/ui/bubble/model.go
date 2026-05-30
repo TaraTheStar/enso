@@ -506,6 +506,15 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "right":
 		m.input.right()
 		return m, nil
+	case "up":
+		// Move the cursor up one visual row through the soft-wrapped /
+		// multi-line buffer. (Overlays — picker, sessions — intercept
+		// up/down earlier, so this only fires for the live input.)
+		m.input.up()
+		return m, nil
+	case "down":
+		m.input.down()
+		return m, nil
 	case "home", "ctrl+a":
 		// Readline-style move-to-start-of-line. Ctrl-A is reachable
 		// here now that the session-inspector overlay binding moved to
