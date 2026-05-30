@@ -227,13 +227,14 @@ func (m *Manager) Close() {
 // transports we try Streamable-HTTP first and fall back to SSE — older
 // servers (and a handful of niche ones) only speak the SSE path.
 func dial(ctx context.Context, name string, cfg config.MCPConfig) (*Server, error) {
+	callTimeout := cfg.ResolveCallTimeout()
 	switch {
 	case cfg.Command != "":
 		cli, err := openStdio(cfg)
 		if err != nil {
 			return nil, err
 		}
-		return finishDial(ctx, name, cli)
+		return finishDial(ctx, name, cli, callTimeout)
 
 	case cfg.URL != "":
 		headers := expandHeaders(cfg.Headers)
@@ -243,7 +244,7 @@ func dial(ctx context.Context, name string, cfg config.MCPConfig) (*Server, erro
 			streamOpts = append(streamOpts, mcptransport.WithHTTPHeaders(headers))
 		}
 		if cli, err := mcpclient.NewStreamableHttpClient(cfg.URL, streamOpts...); err == nil {
-			if srv, ferr := finishDial(ctx, name, cli); ferr == nil {
+			if srv, ferr := finishDial(ctx, name, cli, callTimeout); ferr == nil {
 				return srv, nil
 			} else {
 				slog.Debug("mcp: streamable-http failed, trying SSE",
@@ -258,7 +259,7 @@ func dial(ctx context.Context, name string, cfg config.MCPConfig) (*Server, erro
 		if err != nil {
 			return nil, fmt.Errorf("sse %s: %w", cfg.URL, err)
 		}
-		return finishDial(ctx, name, cli)
+		return finishDial(ctx, name, cli, callTimeout)
 
 	default:
 		return nil, fmt.Errorf("must set either `command` (stdio) or `url` (http)")
@@ -286,7 +287,7 @@ func expandHeaders(in map[string]string) map[string]string {
 // and wraps the result as a Server. On any failure the client is closed
 // before returning the error so callers don't leak the underlying
 // transport connection.
-func finishDial(ctx context.Context, name string, cli *mcpclient.Client) (*Server, error) {
+func finishDial(ctx context.Context, name string, cli *mcpclient.Client, callTimeout time.Duration) (*Server, error) {
 	if err := cli.Start(ctx); err != nil {
 		_ = cli.Close()
 		return nil, fmt.Errorf("start: %w", err)
@@ -312,7 +313,7 @@ func finishDial(ctx context.Context, name string, cli *mcpclient.Client) (*Serve
 		// (Start does that injection); finishDial doesn't see the
 		// manager itself, which keeps this function unit-testable
 		// without a Manager.
-		t := adaptTool(name, cli, mt, nil)
+		t := adaptTool(name, cli, mt, callTimeout, nil)
 		if t == nil {
 			slog.Warn("mcp: skipping tool with invalid name", "server", name, "tool", mt.Name)
 			continue

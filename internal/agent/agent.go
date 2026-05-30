@@ -5,6 +5,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -55,6 +56,16 @@ type Agent struct {
 	// the active provider's MaxRecoverAttempts; reset on any healthy
 	// finish. Touched only from the single-threaded turn loop.
 	recoverAttempts int
+
+	// learnedCtx maps provider name → the real context window in tokens,
+	// discovered from a server's context-overflow rejection (which reports
+	// the true limit). Used as the effective window when the configured
+	// context_window is missing or wrong, so compaction targets reality.
+	// Keyed by provider so a /model swap doesn't carry one model's limit
+	// onto another. Guarded because the event-hook goroutine isn't the
+	// only reader.
+	learnedCtxMu sync.Mutex
+	learnedCtx   map[string]int
 
 	mu        sync.Mutex
 	curCancel context.CancelFunc
@@ -350,6 +361,45 @@ func (a *Agent) refreshEstimate() {
 	a.estTokens.Store(int64(a.estimateTokens()))
 }
 
+// maxOverflowRetries bounds how many times a single turn will
+// compact-and-resend after a context-overflow rejection before giving up,
+// so a prompt that can't be shrunk below the model's window (e.g. a single
+// oversized pinned turn) still fails cleanly instead of looping.
+const maxOverflowRetries = 2
+
+// learnContextLimit records the real context window a server reported in a
+// context-overflow error, keyed by provider. Adopted by
+// effectiveContextWindow so subsequent turns compact against the true
+// limit even when the configured context_window is missing or too large.
+func (a *Agent) learnContextLimit(providerName string, tokens int) {
+	if tokens <= 0 {
+		return
+	}
+	a.learnedCtxMu.Lock()
+	if a.learnedCtx == nil {
+		a.learnedCtx = map[string]int{}
+	}
+	a.learnedCtx[providerName] = tokens
+	a.learnedCtxMu.Unlock()
+}
+
+// effectiveContextWindow is the context window the agent should plan
+// against for provider p: the limit learned from a server rejection when
+// we have one, else the configured value. Lets compaction work correctly
+// when context_window is unset (0) or doesn't match the backend's reality.
+func (a *Agent) effectiveContextWindow(p *llm.Provider) int {
+	if p == nil {
+		return 0
+	}
+	a.learnedCtxMu.Lock()
+	learned := a.learnedCtx[p.Name]
+	a.learnedCtxMu.Unlock()
+	if learned > 0 {
+		return learned
+	}
+	return p.ContextWindow
+}
+
 // estimateTokens returns the best available token count for the current
 // History. Prefers provider-reported usage from the most recent
 // assistant turn (real numbers); falls back to llm.Estimate when no
@@ -509,6 +559,12 @@ type Config struct {
 	// past the loopback/private-IP block. Empty = strict default.
 	WebFetchAllowHosts []string
 
+	// ToolTimeouts bounds bash command execution (foreground per-call
+	// budget + the ceiling on a model-requested override). Resolved from
+	// config.Bash by the host; the zero value falls back to the built-in
+	// defaults inside the tools layer. Inherited by spawned sub-agents.
+	ToolTimeouts tools.ToolTimeouts
+
 	// PruneCfg controls the context-pruning subsystem (stale tool
 	// stubbing, dedup, post-edit invalidation, compaction pinning).
 	// Zero value = defaults via config.ContextPruneConfig.Resolve().
@@ -650,7 +706,9 @@ func New(cfg Config) (*Agent, error) {
 			MaxBytes:      pruneCfg.OutputMaxBytes,
 			MaxLineLength: pruneCfg.OutputMaxLineLength,
 		},
-		Spill: makeSpillWriter(cfg.SessionID),
+		ToolTimeouts: cfg.ToolTimeouts,
+		BashJobs:     tools.NewBashJobs(),
+		Spill:        makeSpillWriter(cfg.SessionID),
 	}
 
 	// Seed messageUsage from resume state when available so the first
@@ -777,6 +835,10 @@ func (a *Agent) ResolveOnRead(absPath string) string {
 // Used by the spawn_agent tool to drive a child agent. The supplied ctx is
 // honoured as the turn context — cancelling it interrupts the run.
 func (a *Agent) RunOneShot(ctx context.Context, prompt string) (string, error) {
+	// Reap any background bash jobs this sub-agent leaves running so a
+	// local-backend child can't orphan a server past its own lifetime.
+	defer a.AgentCtx.BashJobs.KillAll()
+
 	a.appendUserMessage(prompt)
 	a.AgentCtx.TurnCount = 0
 
@@ -837,6 +899,9 @@ func (a *Agent) Run(ctx context.Context, inputCh <-chan string) error {
 			a.Hooks.OnSessionEnd(a.AgentCtx.Cwd, a.AgentCtx.SessionID)
 		}
 	}()
+	// Reap any background bash jobs still running when the top-level loop
+	// exits so local-backend jobs don't outlive the session.
+	defer a.AgentCtx.BashJobs.KillAll()
 
 	for {
 		select {
@@ -951,47 +1016,82 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	// what makes mid-stream /model swaps safe: the in-flight turn keeps
 	// using the provider it started with even if SetProvider runs.
 	p := a.Provider()
-	release, err := p.Pool.Acquire(ctx)
-	if err != nil {
-		return false, fmt.Errorf("acquire pool: %w", err)
-	}
-
-	req := llm.ChatRequest{
-		Messages:        a.History,
-		Tools:           registry.ToolDefs(),
-		Temperature:     p.Sampler.Temperature,
-		TopK:            p.Sampler.TopK,
-		TopP:            p.Sampler.TopP,
-		MinP:            p.Sampler.MinP,
-		PresencePenalty: p.Sampler.PresencePenalty,
-	}
 
 	// Cumulative-spend tracking is now driven by provider-reported
 	// usage (EventUsage) post-stream. Backends that don't report usage
 	// leave cumIn/cumOut unchanged for the affected turn — acceptable
 	// trade-off vs. double-counting against real numbers.
 
-	// D2: log a per-turn prefix-size breakdown so the user (and
-	// /prune debugging) can see exactly how much each category is
-	// contributing to the total prompt. Goes through slog at debug
-	// level — lands in $XDG_STATE_HOME/enso/debug.log when --debug is
-	// on, no-ops otherwise.
-	if a.AgentCtx.Logger != nil {
-		bd := a.PrefixBreakdown()
-		a.AgentCtx.Logger.Debug("prefix breakdown",
-			"total", bd.Total,
-			"system", bd.System,
-			"pinned", bd.Pinned,
-			"tool_active", bd.ToolActive,
-			"tool_stubbed", bd.ToolStubbed,
-			"conversation", bd.Conversation,
-			"messages", len(req.Messages),
-		)
-	}
+	// Send the completion, recovering from a context-window overflow by
+	// compacting and retrying. The pre-send MaybeCompact aims to keep us
+	// under the window, but an unset/wrong context_window (or a tokenizer
+	// mismatch right at the boundary) can still produce a request the
+	// server rejects with a 400. Rather than dead-end the turn, learn the
+	// real limit the server reports, compact against it, and resend —
+	// bounded by maxOverflowRetries.
+	var (
+		events  <-chan llm.Event
+		release func()
+	)
+	for attempt := 0; ; attempt++ {
+		var err error
+		release, err = p.Pool.Acquire(ctx)
+		if err != nil {
+			return false, fmt.Errorf("acquire pool: %w", err)
+		}
 
-	events, err := p.Client.Chat(ctx, req)
-	if err != nil {
+		req := llm.ChatRequest{
+			Messages:        a.History,
+			Tools:           registry.ToolDefs(),
+			Temperature:     p.Sampler.Temperature,
+			TopK:            p.Sampler.TopK,
+			TopP:            p.Sampler.TopP,
+			MinP:            p.Sampler.MinP,
+			PresencePenalty: p.Sampler.PresencePenalty,
+		}
+
+		// D2: log a per-turn prefix-size breakdown so the user (and
+		// /prune debugging) can see exactly how much each category is
+		// contributing to the total prompt. Goes through slog at debug
+		// level — lands in $XDG_STATE_HOME/enso/debug.log when --debug is
+		// on, no-ops otherwise.
+		if a.AgentCtx.Logger != nil {
+			bd := a.PrefixBreakdown()
+			a.AgentCtx.Logger.Debug("prefix breakdown",
+				"total", bd.Total,
+				"system", bd.System,
+				"pinned", bd.Pinned,
+				"tool_active", bd.ToolActive,
+				"tool_stubbed", bd.ToolStubbed,
+				"conversation", bd.Conversation,
+				"messages", len(req.Messages),
+			)
+		}
+
+		events, err = p.Client.Chat(ctx, req)
+		if err == nil {
+			break
+		}
 		release()
+
+		var apiErr *llm.APIError
+		if attempt < maxOverflowRetries && errors.As(err, &apiErr) && apiErr.IsContextOverflow() {
+			if lim, ok := apiErr.ContextLimit(); ok {
+				a.learnContextLimit(p.Name, lim)
+				a.AgentCtx.Logger.Warn("context window exceeded; learned real limit, compacting and retrying",
+					"provider", p.Name, "limit", lim, "attempt", attempt+1)
+			} else {
+				a.AgentCtx.Logger.Warn("context window exceeded; compacting and retrying",
+					"provider", p.Name, "attempt", attempt+1)
+			}
+			// forceCompact publishes EventCompacted, so the TUI shows the
+			// recovery. If it can't shrink the history (or itself errors),
+			// surface the original overflow with that context.
+			if _, cerr := a.forceCompact(ctx, "context-overflow"); cerr != nil {
+				return false, fmt.Errorf("chat: %w (compaction after overflow failed: %v)", err, cerr)
+			}
+			continue
+		}
 		return false, fmt.Errorf("chat: %w", err)
 	}
 

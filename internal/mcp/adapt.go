@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpproto "github.com/mark3labs/mcp-go/mcp"
@@ -71,7 +72,7 @@ func validateName(s string, maxLen int) error {
 // Tool-level errors come back as res.IsError with a successful Go
 // return and don't trigger this path. May be nil if the caller
 // doesn't care to track per-server health.
-func adaptTool(serverName string, cli *mcpclient.Client, mt mcpproto.Tool, onTransportError func(error)) tools.Tool {
+func adaptTool(serverName string, cli *mcpclient.Client, mt mcpproto.Tool, callTimeout time.Duration, onTransportError func(error)) tools.Tool {
 	if err := validateName(mt.Name, maxToolNameLen); err != nil {
 		return nil
 	}
@@ -81,16 +82,21 @@ func adaptTool(serverName string, cli *mcpclient.Client, mt mcpproto.Tool, onTra
 		description:      mt.Description,
 		parameters:       schemaToMap(mt.InputSchema),
 		client:           cli,
+		callTimeout:      callTimeout,
 		onTransportError: onTransportError,
 	}
 }
 
 type mcpTool struct {
-	fullName         string
-	remoteName       string
-	description      string
-	parameters       map[string]interface{}
-	client           *mcpclient.Client
+	fullName    string
+	remoteName  string
+	description string
+	parameters  map[string]interface{}
+	client      *mcpclient.Client
+	// callTimeout bounds a single CallTool invocation. <= 0 disables the
+	// bound (the call runs until the server replies or the turn is
+	// cancelled). Set per-server from MCPConfig.call_timeout.
+	callTimeout      time.Duration
 	onTransportError func(error)
 }
 
@@ -103,8 +109,25 @@ func (t *mcpTool) Run(ctx context.Context, args map[string]interface{}, _ *tools
 	req.Params.Name = t.remoteName
 	req.Params.Arguments = args
 
-	res, err := t.client.CallTool(ctx, req)
+	callCtx := ctx
+	if t.callTimeout > 0 {
+		var cancel context.CancelFunc
+		callCtx, cancel = context.WithTimeout(ctx, t.callTimeout)
+		defer cancel()
+	}
+
+	res, err := t.client.CallTool(callCtx, req)
 	if err != nil {
+		// Our own timeout fired (not a user Ctrl-C, which cancels the
+		// parent ctx). Return a normal Result with a hint so the turn
+		// continues, and don't badge the server as failed — a slow tool
+		// isn't a broken transport.
+		if t.callTimeout > 0 && callCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+			return tools.Result{
+				LLMOutput: fmt.Sprintf("mcp %s timed out after %ds and was abandoned.",
+					t.fullName, int(t.callTimeout/time.Second)),
+			}, nil
+		}
 		// User-cancellation isn't a transport failure — preserve the
 		// canonical sentinels so the agent loop's cancel handling
 		// still matches, and don't smear the sidebar with a "server

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/llm"
@@ -162,6 +163,18 @@ type AgentContext struct {
 	// itself falls back to 2000 for backward compatibility.
 	OutputCaps DefaultOutputCaps
 
+	// ToolTimeouts bounds how long a single bash command may run before
+	// it is killed. Zero values fall back to the built-in defaults via the
+	// accessor methods, so a nil-ish AgentContext still gets guarded bash.
+	ToolTimeouts ToolTimeouts
+
+	// BashJobs is the registry of background commands started via the
+	// bash tool's run_in_background mode. Each agent (top-level and every
+	// sub-agent) gets its own so bash_output/bash_kill only see this
+	// agent's jobs and KillAll on teardown can't touch a sibling's.
+	// nil disables background mode (the tools report it unavailable).
+	BashJobs *BashJobs
+
 	// RecentUserHint is the most recent user message text — used by
 	// RelevantTruncate (B2) as a relevance signal when an output
 	// exceeds its cap. Empty disables relevance truncation.
@@ -287,6 +300,62 @@ func (c DefaultOutputCaps) LineLengthFor(toolName string) int {
 		return c.MaxLineLength
 	}
 	return DefaultMaxLineLength
+}
+
+// Default tool timeouts, used when AgentContext.ToolTimeouts leaves a field
+// zero. Mirror config.DefaultBashCommandTimeout* — duplicated here (rather
+// than imported) so the tools package stays free of a config dependency on
+// this hot path and tests get guarded bash without wiring.
+const (
+	defaultBashTimeout    = 120 * time.Second
+	defaultBashTimeoutMax = time.Hour
+)
+
+// ToolTimeouts bounds bash command execution. The zero value still guards:
+// an unspecified call gets the default budget, and an explicit `timeout` is
+// honoured verbatim up to the (generous) ceiling.
+type ToolTimeouts struct {
+	// BashDefault is the wall-clock budget applied to a foreground bash
+	// command when the call doesn't supply its own `timeout`. A value < 0
+	// means "disabled" (no timeout); 0 means "use the default".
+	BashDefault time.Duration
+	// BashMax is the hard ceiling on a model-supplied `timeout` — a runaway
+	// backstop set generously (1h default) so it never bites a legitimate
+	// slow-but-finite job (a big test suite, a long build) but still bounds
+	// a hallucinated absurd value. 0 → default ceiling. Set it via
+	// [bash] command_timeout_max to widen or tighten the cap.
+	BashMax time.Duration
+}
+
+// bashMax returns the effective ceiling for a model-supplied timeout.
+func (t ToolTimeouts) bashMax() time.Duration {
+	if t.BashMax > 0 {
+		return t.BashMax
+	}
+	return defaultBashTimeoutMax
+}
+
+// EffectiveBash returns the wall-clock timeout to apply to a foreground
+// bash command. requestedSecs is the model's `timeout` arg in seconds (0 =
+// unset). An explicit value is honoured verbatim up to the bashMax ceiling;
+// when unset the configured default applies. A returned 0 means "no
+// timeout".
+func (t ToolTimeouts) EffectiveBash(requestedSecs int) time.Duration {
+	if requestedSecs > 0 {
+		d := time.Duration(requestedSecs) * time.Second
+		if max := t.bashMax(); d > max {
+			d = max
+		}
+		return d
+	}
+	switch {
+	case t.BashDefault < 0:
+		return 0 // explicitly disabled by config ("0s")
+	case t.BashDefault == 0:
+		return defaultBashTimeout
+	default:
+		return t.BashDefault
+	}
 }
 
 // FileEditHook is the slice of internal/hooks.Hooks the edit/write

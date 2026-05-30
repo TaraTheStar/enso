@@ -438,6 +438,10 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 			Env:          s.cfg.Hooks.Env,
 		}),
 		WebFetchAllowHosts: s.cfg.WebFetch.AllowHosts,
+		ToolTimeouts: tools.ToolTimeouts{
+			BashDefault: s.cfg.Bash.ResolveTimeout(),
+			BashMax:     s.cfg.Bash.ResolveTimeoutMax(),
+		},
 		RestrictedRoots:    restrictedRoots,
 		PruneCfg:           s.cfg.Context.Resolve(),
 		CompactionProvider: s.cfg.Compaction.Provider,
