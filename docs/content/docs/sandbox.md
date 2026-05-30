@@ -150,10 +150,10 @@ init  = ["apt-get update && apt-get install -y --no-install-recommends git make"
 
 ## Path confinement of file tools
 
-When the sandbox is enabled, `read`, `write`, `edit`, `grep`, and
+When an isolated backend is enabled, `read`, `write`, `edit`, `grep`, and
 `glob` are also restricted: they refuse paths that don't resolve
 under cwd or one of `[permissions] additional_directories`. This
-mirrors the bash sandbox at the host-tool level so the model can't
+mirrors the backend isolation at the host-tool level so the model can't
 bypass it via path arguments.
 
 Symbolic links are *not* followed for the confinement check — a
@@ -402,6 +402,14 @@ precedence:
    egress through the same injected proxy. The box stays structurally
    sealed throughout — a grant just opens that one target on the host
    proxy; all traffic remains observable there.
+
+   The sealed guest performs **no DNS of its own and never dials
+   destinations directly** — the firewall permits only the host egress
+   proxy, so name resolution and the outbound connection both happen
+   host-side at the proxy. (`web_fetch`'s in-process SSRF guard, which
+   pins resolved IPs and blocks loopback / RFC1918 / cloud-metadata
+   addresses, therefore applies only to the `local` backend, where tools
+   share your network and there is no proxy to mediate.)
 
 3. **`--yolo`** — lifts the gate entirely: the proxy runs allow-all, so
    every destination is permitted with no prompts. The box is still

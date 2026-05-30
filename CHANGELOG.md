@@ -4,6 +4,52 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.10.1] - 2026-05-30
+
+### Added
+
+- **Up / Down arrow navigation in the input.** `↑` / `↓` now move the
+  cursor a visual row at a time through soft-wrapped and multi-line
+  input, keeping the display column (clamping into shorter rows). On the
+  top row `↑` jumps to the buffer start; on the bottom row `↓` jumps to
+  the end. Complements the existing `←`/`→`/`Home`/`End`/`Ctrl+←`/`Ctrl+→`
+  horizontal motions.
+- **Foreground-polling nudge for `bash`.** Extending the v2.10.0
+  hang-prevention check, a foreground command that only *waits* — a
+  leading `sleep` of 10s or more, or a `while`/`until` loop that sleeps
+  (the "chain shorter sleeps to poll" pattern) — is no longer run as-is;
+  `bash` returns immediately with a nudge to run the real work in the
+  background and poll it with `bash_output` instead of blocking the turn.
+  Short startup waits (`sleep 2 && curl …`), trailing/keep-alive sleeps,
+  backgrounded `sleep &`, finite `for` loops, and any command already
+  bounded by a `timeout` wrapper are left alone; an explicit `timeout`
+  arg bypasses the check.
+
+### Fixed
+
+- **Web tools now honour the egress proxy in sealed backends.** In a
+  sealed backend (podman/lima) the guest's firewall permits only the
+  host egress proxy, and name resolution is meant to happen host-side
+  through it. Two paths bypassed that and dialed directly, which the
+  firewall then rejected with `operation not permitted` on udp :53 (an
+  iptables EPERM that *looked* like a DNS failure): (1) `web_search`
+  built a custom HTTP transport whenever a SearXNG `ca_cert` /
+  `insecure_skip_verify` was configured and dropped `HTTPS_PROXY` in the
+  process; (2) `web_fetch` always resolved and pinned the target IP
+  in-guest for its SSRF guard — a model that can't work when the guest
+  can't resolve. Both now route through the injected proxy when one is
+  set (the host allowlist / interactive broker is the single egress
+  gate, exactly as for `bash`'s `curl`/`git`); `web_fetch`'s in-guest
+  IP-pinning SSRF guard is retained for the `local` backend only, where
+  tools share your network and there is no proxy.
+- **TUI input no longer panics when the cursor sits on a newline.**
+  Moving the cursor onto a `\n` in multi-line input could trip a
+  `slice bounds out of range` panic and tear down the program: a newline
+  byte belongs to no soft-wrap row, so the cursor's row fell through to
+  the last row and the renderer sliced a backwards range. The cursor is
+  now attributed to the line the newline terminates and drawn as an
+  end-of-line cell.
+
 ## [v2.10.0] - 2026-05-29
 
 ### Added
@@ -989,6 +1035,7 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
+[v2.10.1]: https://github.com/TaraTheStar/enso/compare/v2.10.0...v2.10.1
 [v2.10.0]: https://github.com/TaraTheStar/enso/compare/v2.9.0...v2.10.0
 [v2.9.0]: https://github.com/TaraTheStar/enso/compare/v2.8.0...v2.9.0
 [v2.8.0]: https://github.com/TaraTheStar/enso/compare/v2.7.0...v2.8.0

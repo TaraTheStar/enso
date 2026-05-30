@@ -22,7 +22,8 @@ session inspector for at-a-glance state.
 | `Ctrl+D`                     | Quit. With non-empty input, clears the line first. |
 | `Ctrl+Space` (= `Ctrl+@`)    | Open the alt-screen session inspector overlay; Esc returns.           |
 | `Ctrl+R`                     | Open the recent-sessions overlay; Enter switches to that session (re-execs with `--session <id>`). |
-| `←` / `→` / `Home` / `End`   | Cursor movement in the input.                                         |
+| `←` / `→` / `Home` / `End`   | Horizontal cursor movement in the input.                              |
+| `↑` / `↓`                    | Move the cursor up / down a visual row through multi-line / soft-wrapped input, keeping the column. On the top row `↑` jumps to the buffer start; on the bottom row `↓` jumps to the end. |
 | `Ctrl+A` / `Ctrl+E`          | Move to start / end of the input line (readline-style).               |
 | `Ctrl+←` / `Ctrl+→`          | Word back / forward.                                                  |
 | `@` (at token start)         | Open the file picker — type to filter, Enter inserts the path.        |
