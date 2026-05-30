@@ -75,6 +75,18 @@ func (t BashTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 				Meta: ResultMeta{CacheKey: bashCacheKey(cmdStr)},
 			}, nil
 		}
+		// A foreground sleep / poll-loop only burns the turn budget waiting.
+		// Steer the model to run the real work in the background and poll
+		// THAT, rather than sleeping in the foreground.
+		if reason, ok := looksLikePolling(cmdStr); ok {
+			return Result{
+				LLMOutput: fmt.Sprintf("not run — %s. "+
+					"If you're waiting on a background job, poll it with bash_output (and stop it with bash_kill) instead of sleeping; "+
+					"if you're waiting on an external state change, run a single bounded check rather than chaining sleeps. "+
+					"To run the sleep anyway, pass an explicit `timeout`.", reason),
+				Meta: ResultMeta{CacheKey: bashCacheKey(cmdStr)},
+			}, nil
+		}
 	}
 
 	return runBashHost(ctx, cmdStr, timeout, ac)

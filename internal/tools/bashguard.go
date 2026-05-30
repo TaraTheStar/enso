@@ -2,7 +2,11 @@
 
 package tools
 
-import "regexp"
+import (
+	"fmt"
+	"regexp"
+	"strconv"
+)
 
 // looksNonTerminating reports whether a foreground bash command, by its
 // nature, won't return on its own — so running it in the foreground would
@@ -67,4 +71,71 @@ var (
 
 func alreadyBounded(cmd string) bool {
 	return wrapperBoundedRe.MatchString(cmd) || backgroundedRe.MatchString(cmd)
+}
+
+// foregroundSleepThreshold is the delay (seconds) at or above which a
+// leading foreground `sleep` is treated as a wait worth flagging. Short
+// waits — `sleep 2 && curl localhost` to let a service come up — stay
+// below it and run untouched.
+const foregroundSleepThreshold = 10.0
+
+var (
+	// leadingSleepRe matches a command that BEGINS with `sleep <dur>`,
+	// capturing the number and an optional s/m/h/d suffix. A trailing
+	// `sleep` (keep-alive after real work) is intentionally not matched —
+	// only a command whose first action is to wait.
+	leadingSleepRe = regexp.MustCompile(`(?i)^\s*sleep\s+([0-9]*\.?[0-9]+)\s*([smhd]?)\b`)
+	// pollLoopRe matches a `while`/`until` loop body that sleeps — the
+	// "chain shorter sleeps to poll" pattern. `for` loops are left alone:
+	// they're usually finite iteration (rate-limited batch work), not
+	// open-ended polling.
+	pollLoopRe = regexp.MustCompile(`(?i)\b(while|until)\b[\s\S]*\bsleep\b`)
+)
+
+// leadingSleepSeconds parses a command beginning with `sleep <dur>` and
+// returns the delay in seconds. Honours s/m/h/d suffixes (bare number =
+// seconds, GNU coreutils default). ok=false when the command does not lead
+// with a sleep.
+func leadingSleepSeconds(cmd string) (float64, bool) {
+	m := leadingSleepRe.FindStringSubmatch(cmd)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.ParseFloat(m[1], 64)
+	if err != nil {
+		return 0, false
+	}
+	switch m[2] {
+	case "m", "M":
+		n *= 60
+	case "h", "H":
+		n *= 3600
+	case "d", "D":
+		n *= 86400
+	}
+	return n, true
+}
+
+// looksLikePolling reports whether a foreground bash command would only
+// block while waiting — a long leading `sleep`, or a `while`/`until` poll
+// loop that sleeps. BashTool.Run uses it to steer the model toward
+// run_in_background + bash_output (you can poll a real job) instead of
+// spending turns asleep at the wheel.
+//
+// Same conservative bias as looksNonTerminating: commands the model already
+// bounded or detached (a `timeout` wrapper, a trailing `&`) are left alone,
+// and an explicit `timeout` arg bypasses the check entirely (handled in
+// BashTool.Run). A false positive costs one re-run; the timeout backstop
+// still covers anything missed.
+func looksLikePolling(cmd string) (reason string, ok bool) {
+	if alreadyBounded(cmd) {
+		return "", false
+	}
+	if pollLoopRe.MatchString(cmd) {
+		return "a `while`/`until` loop with `sleep` polls in the foreground", true
+	}
+	if secs, isSleep := leadingSleepSeconds(cmd); isSleep && secs >= foregroundSleepThreshold {
+		return fmt.Sprintf("a foreground `sleep` of %ss just blocks the agent while it waits", strconv.FormatFloat(secs, 'f', -1, 64)), true
+	}
+	return "", false
 }
