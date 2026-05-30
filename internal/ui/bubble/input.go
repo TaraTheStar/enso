@@ -22,6 +22,7 @@ type inputState struct {
 	cursor    int    // byte offset into buf; 0..len(buf) inclusive
 	vim       bool   // vim mode enabled at all
 	vimNormal bool   // true = normal mode, false = insert mode (only meaningful when vim=true)
+	lastAvail int    // available text columns from the last render; used by up/down to wrap consistently
 }
 
 // reset clears the buffer + cursor; vim mode and normal/insert state
@@ -188,49 +189,22 @@ func (s *inputState) render(width int) string {
 	if avail < 8 {
 		avail = 8 // degenerate-narrow guard; still bounded
 	}
+	// Remember the geometry so up/down can wrap the buffer the same way
+	// render does, without the model having to re-derive promptW.
+	s.lastAvail = avail
 
-	// Soft-wrap the raw buffer into byte ranges, each <= avail display
-	// columns. Done by hand (not ansi.Hardwrap) so the column geometry
-	// is exact: no leading-space trimming to desync the cursor row, and
-	// explicit newlines force a break.
-	type seg struct{ start, end int }
-	var segs []seg
-	lineStart, col := 0, 0
-	for i := 0; i < len(s.buf); {
-		r, size := utf8.DecodeRuneInString(s.buf[i:])
-		if r == '\n' {
-			segs = append(segs, seg{lineStart, i})
-			i += size
-			lineStart, col = i, 0
-			continue
-		}
-		w := ansi.StringWidth(string(r))
-		if col+w > avail {
-			segs = append(segs, seg{lineStart, i})
-			lineStart, col = i, 0
-		}
-		col += w
-		i += size
-	}
-	segs = append(segs, seg{lineStart, len(s.buf)})
-	// Cursor at end of a row that's exactly full: the cursor cell
-	// spills onto a fresh row.
+	segs := s.wrap(avail)
+	// Cursor at end of a row that's exactly full: the cursor cell spills
+	// onto a fresh row.
 	cursorAtEnd := s.cursor >= len(s.buf)
-	if cursorAtEnd && col == avail && len(s.buf) > 0 {
-		segs = append(segs, seg{len(s.buf), len(s.buf)})
-	}
-
-	// Locate the cursor's row: the segment that actually contains the
-	// cursor byte (so a cursor sitting on a wrap boundary shows on the
-	// next row, where the rune it points at lives); fall back to the
-	// last row when the cursor is past end.
-	cursorLine := len(segs) - 1
-	for idx, sg := range segs {
-		if s.cursor >= sg.start && s.cursor < sg.end {
-			cursorLine = idx
-			break
+	if cursorAtEnd && len(s.buf) > 0 {
+		last := segs[len(segs)-1]
+		if dispWidth(s.buf, last.start, last.end) == avail {
+			segs = append(segs, inputSeg{len(s.buf), len(s.buf)})
 		}
 	}
+
+	cursorLine, cursorOnNewline := locateRow(s.buf, s.cursor, segs)
 
 	// Vertical window: keep the cursor row visible. Stateless and
 	// jump-scrolling, mirroring how the old horizontal window worked.
@@ -253,7 +227,11 @@ func (s *inputState) render(width int) string {
 		sg := segs[idx]
 		line := s.buf[sg.start:sg.end]
 		if idx == cursorLine {
-			if cursorAtEnd {
+			if cursorAtEnd || cursorOnNewline {
+				// Cursor past the buffer, or sitting on the newline that
+				// terminates this line: show it as a trailing cell — the
+				// rune at s.cursor is either absent or the '\n' itself, so
+				// it can't be sliced into the line body.
 				line += cursor.Render(" ")
 			} else {
 				r, size := utf8.DecodeRuneInString(s.buf[s.cursor:])
@@ -267,6 +245,126 @@ func (s *inputState) render(width int) string {
 		out = append(out, prefix+line)
 	}
 	return strings.Join(out, "\n")
+}
+
+// inputSeg is a half-open byte range [start,end) of s.buf occupying one
+// visual row after soft-wrapping.
+type inputSeg struct{ start, end int }
+
+// wrap soft-wraps the buffer into byte ranges, each <= avail display
+// columns, breaking on explicit newlines. Done by hand (not ansi.Hardwrap)
+// so the column geometry is exact — no leading-space trimming to desync the
+// cursor row — and so render and up/down agree on row boundaries.
+func (s *inputState) wrap(avail int) []inputSeg {
+	if avail < 1 {
+		avail = 1
+	}
+	var segs []inputSeg
+	lineStart, col := 0, 0
+	for i := 0; i < len(s.buf); {
+		r, size := utf8.DecodeRuneInString(s.buf[i:])
+		if r == '\n' {
+			segs = append(segs, inputSeg{lineStart, i})
+			i += size
+			lineStart, col = i, 0
+			continue
+		}
+		w := ansi.StringWidth(string(r))
+		if col+w > avail {
+			segs = append(segs, inputSeg{lineStart, i})
+			lineStart, col = i, 0
+		}
+		col += w
+		i += size
+	}
+	segs = append(segs, inputSeg{lineStart, len(s.buf)})
+	return segs
+}
+
+// locateRow returns the index of the wrap segment the cursor sits on, and
+// whether it sits exactly on the '\n' that terminates that line. A cursor
+// on a wrap boundary shows on the next row (where the rune it points at
+// lives). A '\n' byte belongs to no segment — the line it terminates ends
+// at that byte (exclusive) and the next starts after it — so it is
+// attributed to the line it terminates; without this the cursor row would
+// fall through to the last row and render would slice buf[start:cursor]
+// with start > cursor and panic.
+func locateRow(buf string, cursor int, segs []inputSeg) (row int, onNewline bool) {
+	for idx, sg := range segs {
+		if cursor >= sg.start && cursor < sg.end {
+			return idx, false
+		}
+		if cursor == sg.end && sg.end < len(buf) && buf[sg.end] == '\n' {
+			return idx, true
+		}
+	}
+	return len(segs) - 1, false
+}
+
+// dispWidth is the display-column width of buf[start:end].
+func dispWidth(buf string, start, end int) int {
+	w := 0
+	for i := start; i < end; {
+		r, size := utf8.DecodeRuneInString(buf[i:])
+		w += ansi.StringWidth(string(r))
+		i += size
+	}
+	return w
+}
+
+// offsetAtCol returns the byte offset within [sg.start, sg.end] whose
+// display column is the largest not exceeding targetCol — i.e. where a
+// cursor lands when moving vertically into this row while keeping its
+// column. Always a rune boundary.
+func offsetAtCol(buf string, sg inputSeg, targetCol int) int {
+	col, i := 0, sg.start
+	for i < sg.end {
+		r, size := utf8.DecodeRuneInString(buf[i:])
+		w := ansi.StringWidth(string(r))
+		if col+w > targetCol {
+			break
+		}
+		col += w
+		i += size
+	}
+	return i
+}
+
+// availForNav returns the wrap width to use for vertical motion: the last
+// rendered width, or an 80-col fallback before the first render.
+func (s *inputState) availForNav() int {
+	if s.lastAvail > 0 {
+		return s.lastAvail
+	}
+	return 80 - 2 // minus the "› " prompt
+}
+
+// up moves the cursor to the row visually above, keeping the display column
+// as close as possible (cursor stays on a rune boundary). On the top row it
+// goes to the buffer start. Uses the geometry from the last render so the
+// motion matches what the user sees.
+func (s *inputState) up() {
+	segs := s.wrap(s.availForNav())
+	row, _ := locateRow(s.buf, s.cursor, segs)
+	if row <= 0 {
+		s.cursor = 0
+		return
+	}
+	col := dispWidth(s.buf, segs[row].start, s.cursor)
+	s.cursor = offsetAtCol(s.buf, segs[row-1], col)
+}
+
+// down moves the cursor to the row visually below, keeping the display
+// column. On the bottom row it goes to the buffer end.
+func (s *inputState) down() {
+	segs := s.wrap(s.availForNav())
+	row, _ := locateRow(s.buf, s.cursor, segs)
+	if row >= len(segs)-1 {
+		s.cursor = len(s.buf)
+		return
+	}
+	col := dispWidth(s.buf, segs[row].start, s.cursor)
+	s.cursor = offsetAtCol(s.buf, segs[row+1], col)
 }
 
 // atIsTokenStart reports whether inserting `@` at the current cursor
