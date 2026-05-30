@@ -144,6 +144,7 @@ func (SpawnTool) Run(ctx context.Context, args map[string]interface{}, ac *tools
 		Transcripts:        ac.Transcripts,
 		Writer:             childWriter,
 		WebFetchAllowHosts: ac.WebFetchAllowHosts,
+		ToolTimeouts:       ac.ToolTimeouts, // inherit the parent's bash budget
 		RestrictedRoots:    ac.RestrictedRoots,
 		Capabilities:       ac.Capabilities, // sealed children can still broker
 		IsolationNote:      ac.IsolationNote,

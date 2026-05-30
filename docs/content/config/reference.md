@@ -73,7 +73,7 @@ presence_penalty = 1.5
 | `endpoint`       | required (openai)           | OpenAI-compatible base URL (e.g. `http://localhost:8080/v1`). Not used by `type = "bedrock"` or `type = "vertex"` — the AWS/GCP SDKs pick the regional URL. |
 | `model`          | required                    | Model id sent to the endpoint. For Bedrock, this is the Bedrock model id (`anthropic.claude-3-5-sonnet-20241022-v2:0`, `amazon.nova-pro-v1:0`) or an inference-profile ARN — distinct from `api.anthropic.com` names. For Vertex, this is the Gemini model id (`gemini-2.5-pro`, `gemini-2.5-flash`). |
 | `description`    | `""`                        | Short capability hint. When ≥2 providers are configured it's rendered into the auto "## Available models" prompt section so the model can route across endpoints (see `[instructions]`). |
-| `context_window` | 32768                       | Used for compaction triggers and the status-bar tokens display.            |
+| `context_window` | 32768                       | Used for compaction triggers and the status-bar tokens display. Set it to the model's real limit so auto-compaction engages in time (when unset, compaction can't size itself). If a request still overflows — a wrong value, or a proxy like litellm that hides the real limit — enso parses the server's "exceeds the available context size (N tokens)" rejection, adopts N as the effective window, compacts, and retries, so it self-corrects after the first overflow. |
 | `concurrency`    | 1                           | Max in-flight chat completions when this provider is alone in its pool. Ignored once it shares a pool — set `[pools.<name>].concurrency` instead. |
 | `pool`           | auto (by endpoint)          | Pool this provider belongs to. Unset = auto-grouped with every provider sharing its `endpoint`. See `[pools.<name>]`. |
 | `api_key`        | `""`                        | Sent as `Authorization: Bearer <key>` if non-empty. Supports `$ENSO_FOO` / `${ENSO_FOO}` env-var indirection — see [Secrets]({{< relref "../docs/secrets.md" >}}). Not used by `type = "bedrock"` or `type = "vertex"`. |
@@ -330,6 +330,47 @@ for that host; with a port the port must match. The DNS-rebind
 defence stays on regardless: the resolved IP is pinned for the actual
 TCP dial.
 
+## `[bash]`
+
+```toml
+[bash]
+command_timeout     = "120s"   # budget for a foreground command that didn't set its own `timeout`
+command_timeout_max = "1h"     # ceiling on an explicit `timeout` (runaway backstop)
+```
+
+A foreground `bash` command that runs longer than `command_timeout` is
+killed (its whole process group, so pipeline children don't orphan) and
+the tool returns the partial output plus a hint — the turn continues
+instead of hanging until an operator steps in.
+
+There are two ways to run something long. A command that **finishes on
+its own but is slow** (a big test suite, a long build) runs in the
+foreground with the tool's `timeout` arg raised; the value the model
+passes is **honoured as given, up to `command_timeout_max`** (default
+`1h`). The ceiling is a runaway backstop set generously enough to never
+bite a real job — a 25-minute test can ask for `timeout: 1500` — while
+still bounding a hallucinated absurd value; raise it for a repo with a
+longer suite. A command that **never returns on its own** (a dev server,
+a watcher) belongs in `run_in_background` instead — see below.
+
+Set `command_timeout = "0s"` to disable the default timeout entirely
+(commands then run until they exit or the turn is cancelled — the legacy
+behaviour). For a command that legitimately needs to keep running (a dev
+server, a file watcher, a long build), the model should instead pass
+`run_in_background: true`: the command starts detached and the call
+returns immediately with a job id. Use the `bash_output` tool to read its
+output incrementally and `bash_kill` to stop it; any still-running
+background jobs are killed when the session (or sub-agent) ends.
+
+As a faster guard than the timeout, `bash` also recognises a handful of
+commands that can't return on their own — `tail -f`, `watch`,
+`journalctl -f`, `logs --follow`, common dev servers — and, when one is
+issued in the foreground, returns immediately with a nudge to use
+`run_in_background` rather than running it and waiting out the timeout.
+Commands that already bound or detach themselves (a `timeout` wrapper,
+`&`, `nohup`, a pipe into `head`) are left alone, and passing an explicit
+`timeout` runs the command time-bounded without the nudge.
+
 ## `[search]` and `[search.searxng]`
 
 ```toml
@@ -537,12 +578,17 @@ command = "gitea-mcp-server"
 args    = ["--token", "$TOKEN"]   # $VAR expansion at startup
 
 [mcp.notion]
-url     = "https://mcp.notion.com/v1"
-headers = { Authorization = "Bearer $NOTION_TOKEN" }   # HTTP-only; $VAR expanded
+url          = "https://mcp.notion.com/v1"
+headers      = { Authorization = "Bearer $NOTION_TOKEN" }   # HTTP-only; $VAR expanded
+call_timeout = "120s"   # max time for a single tool invocation; "0s" disables
 ```
 
 See [MCP servers]({{< relref "../docs/mcp.md" >}}). `command` and
-`url` are mutually exclusive; `headers` is HTTP-only.
+`url` are mutually exclusive; `headers` is HTTP-only. `call_timeout`
+bounds a single tool invocation against the server (default `120s`); on
+expiry the call is abandoned and the model gets a timeout notice so the
+turn keeps moving rather than hanging on an unresponsive server. Set
+`"0s"` to disable. The connection/handshake budget is separate and fixed.
 
 ## `[lsp.<name>]`
 

@@ -42,6 +42,20 @@ self-describing in the tool list).
 - `bash` — shell commands. May run inside a container or VM if the
   user has set `[backend] type` to `podman` or `lima`. Capture and
   truncate long output; don't paste megabytes of build logs.
+  - **Two kinds of long-running command, two mechanisms.** If a command
+    *finishes on its own* but is slow (a big test suite, a long build),
+    run it in the foreground and raise the `timeout` arg — don't
+    background it, you want the result. If a command *never returns on
+    its own* (a dev server, a file watcher, `tail -f`, `watch`,
+    `journalctl -f`, a `logs --follow`), pass `run_in_background: true`,
+    then read it with `bash_output` and stop it with `bash_kill`. A
+    foreground command is killed when it exceeds its timeout; to peek at
+    a log use `tail -n`, not `-f`.
+  - **Don't `sleep` to wait** for something to come up — start it in
+    the background and poll `bash_output` instead of guessing a delay.
+  - **Run non-interactively** (`--yes`, `--no-pager`, `-y`); there is no
+    TTY to answer a prompt, so an interactive command just hangs until
+    the timeout.
 
 **Web**
 - `web_fetch` — pull a URL and read its content. Use sparingly; cite

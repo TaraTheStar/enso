@@ -51,6 +51,85 @@ type Config struct {
 	Instructions        InstructionsConfig    `toml:"instructions"`
 	Pools               map[string]PoolConfig `toml:"pools"`
 	Compaction          CompactionConfig      `toml:"compaction"`
+	Bash                BashConfig            `toml:"bash"`
+}
+
+// Default tool-call timeouts. Bash foreground commands get a generous
+// wall-clock budget so ordinary builds/tests finish, with a hard ceiling
+// on what a model may request via the per-call `timeout` arg; anything
+// that legitimately needs to outlive the budget uses run_in_background.
+// MCP tool calls get the same default budget.
+const (
+	DefaultBashCommandTimeout    = 120 * time.Second
+	DefaultBashCommandTimeoutMax = time.Hour
+	DefaultMCPCallTimeout        = 120 * time.Second
+
+	// DisabledTimeout is the sentinel ResolveTimeout returns when the
+	// user sets "0s" to opt out of the bash timeout. It's negative so the
+	// tools-layer ToolTimeouts zero value (an unset struct) still resolves
+	// to the default rather than being mistaken for "disabled".
+	DisabledTimeout = -1 * time.Second
+)
+
+// BashConfig tunes the bash tool's execution guards.
+//
+//	[bash]
+//	command_timeout     = "120s"   # budget for a call that didn't set its own `timeout`
+//	command_timeout_max = "1h"     # ceiling on an explicit `timeout` (runaway backstop)
+type BashConfig struct {
+	// CommandTimeout is the wall-clock budget for a foreground bash command
+	// that doesn't supply its own `timeout` (Go duration string). Empty →
+	// DefaultBashCommandTimeout. "0s" disables the timeout (the command
+	// runs until it exits or the turn is cancelled) — the legacy behaviour.
+	CommandTimeout string `toml:"command_timeout"`
+	// CommandTimeoutMax is the hard ceiling on a model-supplied `timeout`
+	// arg — a runaway backstop set generously (1h default) so it never
+	// bites a legitimate slow-but-finite job but still bounds a hallucinated
+	// absurd value. Empty/zero/malformed → DefaultBashCommandTimeoutMax;
+	// raise it for a repo with a longer-running suite.
+	CommandTimeoutMax string `toml:"command_timeout_max"`
+}
+
+// ResolveTimeout returns the default foreground bash timeout. Empty →
+// default; "0s" → DisabledTimeout (negative sentinel so the tools-layer
+// zero value can still mean "use default"); malformed/negative → default.
+func (b BashConfig) ResolveTimeout() time.Duration {
+	if b.CommandTimeout == "" {
+		return DefaultBashCommandTimeout
+	}
+	d, err := time.ParseDuration(b.CommandTimeout)
+	if err != nil || d < 0 {
+		return DefaultBashCommandTimeout
+	}
+	if d == 0 {
+		return DisabledTimeout
+	}
+	return d
+}
+
+// ResolveTimeoutMax returns the hard ceiling on a model-supplied `timeout`
+// — a runaway backstop. Empty/zero/malformed → default (1h). A positive
+// duration widens or tightens it.
+func (b BashConfig) ResolveTimeoutMax() time.Duration {
+	return resolveDuration(b.CommandTimeoutMax, DefaultBashCommandTimeoutMax, false)
+}
+
+// resolveDuration parses a Go duration string with the stall-timeout
+// idiom: empty → def, malformed/negative → def. When allowZero is true an
+// explicit "0s" is honoured (used to disable a guard); otherwise zero
+// falls back to def.
+func resolveDuration(s string, def time.Duration, allowZero bool) time.Duration {
+	if s == "" {
+		return def
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil || d < 0 {
+		return def
+	}
+	if d == 0 && !allowZero {
+		return def
+	}
+	return d
 }
 
 // CompactionConfig configures the summarisation pass that runs when
@@ -754,6 +833,17 @@ type MCPConfig struct {
 	Args    []string          `toml:"args"`
 	URL     string            `toml:"url"`
 	Headers map[string]string `toml:"headers"`
+	// CallTimeout bounds a single tool invocation against this server (Go
+	// duration string). Empty → DefaultMCPCallTimeout; "0s" disables the
+	// per-call timeout (the call runs until the server replies or the turn
+	// is cancelled). The dial/handshake budget is separate (dialTimeout).
+	CallTimeout string `toml:"call_timeout"`
+}
+
+// ResolveCallTimeout returns the per-call timeout for this server. Empty →
+// default; "0s" → 0 (disabled); malformed/negative → default.
+func (c MCPConfig) ResolveCallTimeout() time.Duration {
+	return resolveDuration(c.CallTimeout, DefaultMCPCallTimeout, true)
 }
 
 // PermConfig holds permission settings. Three rule lists evaluate in

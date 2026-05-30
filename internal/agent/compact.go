@@ -15,12 +15,36 @@ import (
 	"github.com/TaraTheStar/enso/internal/llm"
 )
 
-// compactionThreshold is the fraction of the context window above which
-// auto-compaction kicks in. Set at 0.75 to use more of a big context
-// window before summarizing — on a 131K box that's ~98K used / ~33K
-// headroom, which comfortably absorbs a large tool result landing at the
-// threshold while compacting far less often than a lower trigger would.
-const compactionThreshold = 0.75
+// inputBudget is the largest prompt (input) token count allowed before
+// auto-compaction triggers. The context window is shared by input AND the
+// model's reply, so it's window − the output reservation (max_tokens) − a
+// safety margin. The margin absorbs estimate error on messages appended
+// since the last provider-reported usage (the live count is real for the
+// prior turn but the newest messages are still heuristic).
+//
+// This replaces an earlier flat 0.75×window trigger, which ignored the
+// output reservation: with a large max_tokens (e.g. 64K on a 256K window)
+// the 25% "headroom" was entirely consumed by the reply, so a prompt at
+// the threshold plus max_tokens overflowed the real ceiling.
+func (a *Agent) inputBudget(p *llm.Provider, window int) int {
+	reserve := 0
+	if p != nil {
+		reserve = p.MaxTokens
+	}
+	margin := window / 16
+	if margin < 2048 {
+		margin = 2048
+	}
+	budget := window - reserve - margin
+	// Guard against an over-large max_tokens (relative to the window)
+	// collapsing the budget to near-zero and compacting every turn. Keep
+	// at least a quarter of the window for input; the 400-overflow
+	// auto-recovery backstops the pathological case.
+	if floor := window / 4; budget < floor {
+		budget = floor
+	}
+	return budget
+}
 
 // tailTurnsForBudget returns how many recent user-bounded turns can be
 // pinned verbatim within `budget` tokens, walking backward from the
@@ -72,10 +96,11 @@ func tailTurnsForBudget(history []llm.Message, budget int) int {
 // (e.g. an OpenAI-compat endpoint that advertises none).
 func (a *Agent) recentTurnBudget() int {
 	p := a.Provider()
-	if p == nil || p.ContextWindow <= 0 {
+	window := a.effectiveContextWindow(p)
+	if p == nil || window <= 0 {
 		return recentTurnsToPin
 	}
-	budget := p.ContextWindow / 4
+	budget := window / 4
 	if budget < 2000 {
 		budget = 2000
 	}
@@ -193,12 +218,12 @@ func (a *Agent) MaybeCompact(ctx context.Context) (bool, error) {
 	}
 
 	p := a.Provider()
-	if p == nil || p.ContextWindow <= 0 {
+	window := a.effectiveContextWindow(p)
+	if p == nil || window <= 0 {
 		return false, nil
 	}
 	used := a.estimateTokens()
-	threshold := int(float64(p.ContextWindow) * compactionThreshold)
-	if used < threshold {
+	if used < a.inputBudget(p, window) {
 		return false, nil
 	}
 	return a.forceCompact(ctx, "auto")

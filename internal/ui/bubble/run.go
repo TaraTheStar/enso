@@ -398,7 +398,11 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		GitAttribution:     cfg.Git.Attribution,
 		GitAttributionName: cfg.Git.AttributionName,
 		WebFetchAllowHosts: cfg.WebFetch.AllowHosts,
-		RestrictedRoots:    restrictedRoots,
+		ToolTimeouts: tools.ToolTimeouts{
+			BashDefault: cfg.Bash.ResolveTimeout(),
+			BashMax:     cfg.Bash.ResolveTimeoutMax(),
+		},
+		RestrictedRoots: restrictedRoots,
 	}
 	registerBuiltins(slashReg, slashContext)
 

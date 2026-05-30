@@ -43,6 +43,7 @@ type RunDeps struct {
 	GitAttribution     string
 	GitAttributionName string
 	WebFetchAllowHosts []string
+	ToolTimeouts       tools.ToolTimeouts // bash execution budget, forwarded to each role agent
 	RestrictedRoots    []string
 }
 
@@ -226,6 +227,7 @@ func runRole(
 		GitAttribution:     deps.GitAttribution,
 		GitAttributionName: deps.GitAttributionName,
 		WebFetchAllowHosts: deps.WebFetchAllowHosts,
+		ToolTimeouts:       deps.ToolTimeouts,
 		RestrictedRoots:    deps.RestrictedRoots,
 	})
 	if err != nil {

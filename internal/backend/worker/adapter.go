@@ -238,6 +238,10 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 			Env:          cfg.Hooks.Env,
 		}),
 		WebFetchAllowHosts: cfg.WebFetch.AllowHosts,
+		ToolTimeouts: tools.ToolTimeouts{
+			BashDefault: cfg.Bash.ResolveTimeout(),
+			BashMax:     cfg.Bash.ResolveTimeoutMax(),
+		},
 		PruneCfg:           cfg.Context.Resolve(),
 		CompactionProvider: cfg.Compaction.Provider,
 		LSPNotifier:        lsp.NewNotifier(lspMgr, spec.Cwd, lsp.NotifierOptions{}),
