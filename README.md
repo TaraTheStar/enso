@@ -192,7 +192,7 @@ insecure_skip_verify = false  # disable TLS verification — last-resort escape 
 
 Patterns are `tool(arg-pattern)`. Per-tool matching:
 
-- `bash(git *)` — first-word match for single tokens, full-glob for multi-word (`bash(git push *)` properly scopes to `git push`). **Allow rules gate on shell metacharacters**: any of `;` `&` `|` `<` `>` `$` `` ` `` `(` `)` `\` newline present in the command must also appear in the pattern, so `bash(git *)` will NOT auto-allow `git status; rm -rf ~`. Opt in explicitly with patterns like `bash(git * | *)` if you need pipes. **Deny rules are segment-aware**: `bash(rm -rf *)` blocks chained variants like `do_evil; rm -rf /`, `cd / && rm -rf *`, and `ls | rm -rf *` by splitting on top-level shell separators. *Deny rules are guardrails, not walls* — they don't recurse into command substitution (`$(...)`, backticks) or `eval`. For real isolation against a hostile model or hostile codebase, set `bash.sandbox = "auto"`.
+- `bash(git *)` — first-word match for single tokens, full-glob for multi-word (`bash(git push *)` properly scopes to `git push`). **Allow rules gate on shell metacharacters**: any of `;` `&` `|` `<` `>` `$` `` ` `` `(` `)` `\` newline present in the command must also appear in the pattern, so `bash(git *)` will NOT auto-allow `git status; rm -rf ~`. Opt in explicitly with patterns like `bash(git * | *)` if you need pipes. **Deny rules are segment-aware**: `bash(rm -rf *)` blocks chained variants like `do_evil; rm -rf /`, `cd / && rm -rf *`, and `ls | rm -rf *` by splitting on top-level shell separators. *Deny rules are guardrails, not walls* — they don't recurse into command substitution (`$(...)`, backticks) or `eval`. For real isolation against a hostile model or hostile codebase, run an isolated backend with `[backend] type = "podman"` (or `"lima"`).
 - `read(**)` / `write(./src/**)` / `edit(./.env)` / `grep(...)` / `glob(...)` — strict doublestar path globs against the absolute path. **No basename fallback**: `read(*.md)` does NOT match `/anywhere/foo.md` (that would let a bare extension pattern exfiltrate any file with that suffix). Use `read(**/*.md)` for "any .md file" or `read(./**/*.md)` to scope it to the project.
 - `web_fetch(domain:example.com)` — match by URL host (subdomains included).
 - Anything else — generic doublestar match.
@@ -259,6 +259,8 @@ prompt). Run `/prompt` in the TUI to see the per-layer breakdown.
 | Ctrl-A / Home | Move to start of input line |
 | Ctrl-E / End | Move to end of input line |
 | Ctrl-Left / Ctrl-Right | Word back / word forward |
+| Left / Right | Move the cursor one character |
+| Up / Down | Move the cursor a visual row through multi-line / soft-wrapped input (top row Up → buffer start, bottom row Down → end) |
 | `@` (at token start) | Open file picker — type to filter, Enter inserts the path |
 | Permission prompt: `y` / `n` / `a` / `t` | Allow / Deny / Allow + Remember / Allow for this turn only |
 
@@ -356,8 +358,10 @@ See [`CHANGELOG.md`](CHANGELOG.md) for the per-release breakdown.
 Headline features:
 
 - Scrollback-native interactive TUI (Bubble Tea v2 + Lipgloss + Glamour for markdown), with streaming, tool-calling, and an alt-screen session-inspector overlay (Ctrl-Space).
-- Sessions + crash resume + auto-compaction at 60% of the context window.
+- Sessions + crash resume + auto-compaction that reserves the model's output budget (triggers near `context_window − max_tokens − margin`, and self-corrects if the server reports a smaller real limit).
 - Permission allowlist with prompt-on-miss (`y` / `n` / `a` / `t` decisions — turn-scoped grants land in `t`); `--yolo` for unattended runs. Bash deny rules are segment-aware so `bash(rm -rf *)` catches chained variants like `cd / && rm -rf *`.
+- Background `bash` jobs (`run_in_background` + `bash_output` / `bash_kill`) for dev servers, watchers, and long builds, plus foreground tool-call timeouts (`[bash] command_timeout` and `[mcp.<name>] call_timeout`, default 120s) so a runaway command can't hang the turn.
+- Generation guards for local models — a `max_tokens` runaway backstop, a mid-stream loop detector, and a stall watchdog, with turn-level auto-recovery (`[providers.<name>.generation]`).
 - `enso run` non-interactive mode (with `--detach` to submit to a daemon, `--format json` for streaming structured events).
 - `enso export <id>` to dump a session as markdown.
 - `enso stats [--days N]` for token / message / tool aggregates across sessions.

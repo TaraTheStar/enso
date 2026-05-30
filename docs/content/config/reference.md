@@ -77,9 +77,33 @@ presence_penalty = 1.5
 | `concurrency`    | 1                           | Max in-flight chat completions when this provider is alone in its pool. Ignored once it shares a pool — set `[pools.<name>].concurrency` instead. |
 | `pool`           | auto (by endpoint)          | Pool this provider belongs to. Unset = auto-grouped with every provider sharing its `endpoint`. See `[pools.<name>]`. |
 | `api_key`        | `""`                        | Sent as `Authorization: Bearer <key>` if non-empty. Supports `$ENSO_FOO` / `${ENSO_FOO}` env-var indirection — see [Secrets]({{< relref "../docs/secrets.md" >}}). Not used by `type = "bedrock"` or `type = "vertex"`. |
-| `max_tokens`     | `0`                         | Caps response length. Optional for OpenAI (only sent when non-zero); Bedrock applies a default of 4096 when zero; Vertex applies 8192. |
+| `max_tokens`     | `0`                         | Caps response length. On the OpenAI/llama.cpp path a `0` (unset) value derives a runaway backstop of `min(16384, context_window/2)` so a model that stops emitting EOS can't run to the context ceiling; set a positive value to cap explicitly. Bedrock applies a default of 4096 when zero; Vertex applies 8192. |
 | `prompt_caching` | `false`                     | Opts into vendor-side prompt caching. On Anthropic + `anthropic-bedrock` + `anthropic-vertex`, inserts `cache_control:ephemeral` markers on the last system block and the last tool — system + tool definitions become a single cacheable prefix; subsequent turns that reuse the prefix hit the cache. On Bedrock Converse, equivalent via `CachePoint` blocks. OpenAI and Vertex Gemini cache implicitly — flag is a no-op for them but accepted so configs stay symmetric. Cache writes are billed 1.25× input on Anthropic; cache reads at 0.1×. Break-even after roughly two reuses of the same system/tool prefix. No-op on local providers. |
 | `sampler.*`      | various                     | Sampler knobs. Sent in every completion request.                           |
+| `generation.*`   | (see below)                 | Generation guards + auto-recovery for the OpenAI/llama.cpp path. See [Generation guards](#generation-guards). |
+
+#### Generation guards
+
+Three hardware-independent guards keep a local model from wedging a turn,
+plus turn-level auto-recovery. They apply only to the OpenAI-compatible
+path; the hosted adapters (`bedrock`/`vertex`/`anthropic*`) ignore the
+block. Pair them with `max_tokens` (above), which is the hard backstop
+against a model that never emits EOS.
+
+```toml
+[providers.local.generation]
+stall_timeout        = "60s"   # abort a stream that emits no token for this long; "0s" disables
+loop_guard           = true    # detect mid-stream degeneration loops and abort early
+auto_recover         = true    # on length-truncation / tripped loop guard / stall, retry the turn with a nudge
+max_recover_attempts = 2       # cap auto-recovery retries per turn
+```
+
+| Field                  | Default | Description |
+| ---------------------- | ------- | ----------- |
+| `stall_timeout`        | `"60s"` | Aborts a stream that produces **no token** for the window — it fires on silence, not slowness, so prompt-processing pauses and speculative/MTP bursts are tolerated. `"0s"` disables the watchdog. |
+| `loop_guard`           | `true`  | Detects mid-stream degeneration loops — a short unit repeated back to back ("the the the", a duplicated line, a JSON fragment) — and aborts before the stream reaches the `max_tokens` cap. Cheap, rate-independent, tuned to ignore legitimately repetitive code. |
+| `auto_recover`         | `true`  | On a length-truncation, a tripped loop guard, or a stall, retries the turn with a nudge instead of dropping it. |
+| `max_recover_attempts` | `2`     | Upper bound on auto-recovery retries within a single turn. |
 
 #### Bedrock-only fields (`type = "bedrock"`)
 
@@ -304,7 +328,7 @@ disable_file_confinement = false                # see below
 When `disable_file_confinement = false` (default), file-touching tools
 (`read`, `write`, `edit`, `grep`, `glob`, and `lsp_*`) refuse any path
 that resolves outside `cwd + additional_directories`. This is the
-parallel guard that makes the bash sandbox meaningful — without it the
+parallel guard that makes the backend isolation meaningful — without it the
 agent could exfiltrate via `read`. Set `true` only if you genuinely
 want the model to roam the filesystem.
 
