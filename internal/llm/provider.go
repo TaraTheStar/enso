@@ -77,7 +77,12 @@ type Provider struct {
 	Client        ChatClient
 	Model         string
 	ContextWindow int
-	Sampler       config.SamplerConfig
+	// MaxTokens is the resolved per-request output cap (what the adapter
+	// sends as max_tokens). Surfaced on the Provider so the agent's
+	// compaction can reserve it: input + output must share the context
+	// window, so the input budget is ContextWindow − MaxTokens − margin.
+	MaxTokens int
+	Sampler   config.SamplerConfig
 	// Pool bounds concurrency across every provider sharing it. The
 	// same *Pool pointer is handed to every co-pooled provider (see
 	// BuildProviders) so a /model swap between co-pooled members still
@@ -174,6 +179,7 @@ func NewProvider(name string, cfg config.ProviderConfig, pool *Pool, poolName st
 		Client:             client,
 		Model:              cfg.Model,
 		ContextWindow:      cfg.ContextWindow,
+		MaxTokens:          resolveMaxTokens(cfg),
 		Sampler:            cfg.Sampler,
 		Pool:               pool,
 		PoolName:           poolName,

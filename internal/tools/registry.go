@@ -51,6 +51,8 @@ func BuildDefault() *Registry {
 	r.Register(WriteTool{})
 	r.Register(EditTool{})
 	r.Register(BashTool{})
+	r.Register(BashOutputTool{})
+	r.Register(BashKillTool{})
 	r.Register(GrepTool{})
 	r.Register(GlobTool{})
 	r.Register(WebFetchTool{})

@@ -5,6 +5,7 @@ package llm
 import (
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -46,6 +47,69 @@ func (e *APIError) IsRateLimited() bool {
 // can resubmit, but the underlying issue is upstream.
 func (e *APIError) IsServerError() bool {
 	return e != nil && e.StatusCode >= 500 && e.StatusCode < 600
+}
+
+// IsContextOverflow reports whether this is a "prompt is larger than the
+// model's context window" rejection — the recoverable case where the
+// agent should compact and retry rather than dead-end the turn. Servers
+// phrase it many ways (OpenAI's `context_length_exceeded` code, vLLM's
+// "maximum context length is N tokens", litellm's "exceeds the available
+// context size (N tokens)", llama.cpp's "exceeds the available context
+// size"), so we match a small set of stable markers under a 400/413.
+func (e *APIError) IsContextOverflow() bool {
+	if e == nil {
+		return false
+	}
+	if e.StatusCode != http.StatusBadRequest && e.StatusCode != http.StatusRequestEntityTooLarge {
+		return false
+	}
+	b := strings.ToLower(e.Body)
+	if strings.Contains(b, "context_length_exceeded") {
+		return true
+	}
+	if !strings.Contains(b, "context") {
+		return false
+	}
+	for _, marker := range []string{
+		"exceeds the available context",
+		"exceed the available context",
+		"maximum context length",
+		"context length",
+		"context size",
+		"context window",
+	} {
+		if strings.Contains(b, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// ctxLimitRe extracts the server-reported context window from an overflow
+// error body. Anchored on the phrase that precedes the *limit* (not the
+// requested count): "available context size (262144 tokens)", "maximum
+// context length is 262144 tokens", "context window of 262144". The
+// `\D{0,24}?` lazily skips punctuation/words like " (" or " is " between
+// the phrase and the number.
+var ctxLimitRe = regexp.MustCompile(`(?i)(?:available context size|maximum context length|context (?:length|size|window))\D{0,24}?(\d[\d,]*)\s*tokens`)
+
+// ContextLimit returns the model's real context window in tokens, parsed
+// from an overflow error body, when the server reported it. The agent
+// adopts this as the effective window so future turns compact against the
+// true limit instead of a missing or wrong configured value.
+func (e *APIError) ContextLimit() (int, bool) {
+	if e == nil {
+		return 0, false
+	}
+	m := ctxLimitRe.FindStringSubmatch(e.Body)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(strings.ReplaceAll(m[1], ",", ""))
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // parseRetryAfter reads the Retry-After header per RFC 7231 §7.1.3.

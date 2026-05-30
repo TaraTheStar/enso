@@ -4,6 +4,88 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.10.0] - 2026-05-29
+
+### Added
+
+- **Agentic generation guards + auto-recovery.** Three hardware-
+  independent guards keep a local model from wedging a turn, all tunable
+  under a new `[providers.<name>.generation]` block. (1) A **max-tokens
+  cap** (`max_tokens`, default `0` → `min(16384, context_window/2)`) is
+  the hard backstop against a model that stops emitting EOS and runs to
+  the context ceiling. (2) A **mid-stream loop guard** (`loop_guard`,
+  default on) detects degeneration loops — a short unit repeated back to
+  back ("the the the", a duplicated line, a JSON fragment) — and aborts
+  before the stream even reaches the cap; the scan is cheap and
+  rate-independent (inspects a bounded rune tail, only every N runes) and
+  tuned to ignore legitimately repetitive code. (3) A **stall watchdog**
+  (`stall_timeout`, default `60s`, `"0s"` disables) aborts a stream that
+  emits no token for the window — it fires on *silence*, not slowness, so
+  prompt-processing pauses and speculative/MTP bursts are tolerated. On a
+  length-truncation, tripped loop guard, or stall, **auto-recovery**
+  (`auto_recover`, default on; `max_recover_attempts`, default `2`)
+  retries the turn with a nudge instead of dropping it. By design these
+  are token-count / stall-on-silence based rather than wall-clock, so the
+  same defaults hold whether the box is GPU-fast or big-and-slow.
+- **Explicit tool-call timeouts.** A foreground `bash` command now runs
+  under a wall-clock budget (default `120s`, configurable via
+  `[bash] command_timeout`); on expiry its whole process group is killed
+  and the tool returns the partial output plus a hint, so a runaway
+  test/server no longer hangs the agent until an operator intervenes. A
+  command that finishes on its own but is slow (a big test suite) is run
+  in the foreground with the tool's `timeout` arg raised — the value is
+  honoured as given, up to the `[bash] command_timeout_max` runaway
+  backstop (default `1h`). MCP tool calls get the same treatment via
+  `[mcp.<name>] call_timeout` (default `120s`). Set `command_timeout` to
+  `"0s"` to opt out of the bash timeout entirely.
+- **Background bash mode.** `bash` accepts `run_in_background: true` to
+  start a command detached and return immediately with a job id — for dev
+  servers, file watchers, and long builds that shouldn't block the turn.
+  Two new tools, **`bash_output`** (read new output + status since the
+  last read) and **`bash_kill`** (SIGKILL the job's process group),
+  manage the job. Still-running background jobs are reaped when the
+  session or sub-agent ends.
+- **Hang-prevention for foreground commands.** A new system-prompt rule
+  steers the model away from commands that can't return on their own, and
+  a mechanical pre-run check catches the common offenders (`tail -f`,
+  `watch`, `journalctl -f`, `logs --follow`, dev servers) — instead of
+  running them and waiting out the timeout, `bash` returns immediately
+  with a nudge to use `run_in_background`. Commands that already bound or
+  detach themselves (a `timeout` wrapper, `&`, `nohup`, a pipe into
+  `head`) are left alone, and an explicit `timeout` arg bypasses the
+  check.
+
+### Fixed
+
+- **Context-window overflow: compaction now reserves the output budget.**
+  Auto-compaction triggered at a flat `0.75 × context_window`, which
+  ignored that the model's reply (`max_tokens`) has to fit in the *same*
+  window. With a large `max_tokens` (e.g. 64K on a 256K window) the reply
+  consumed the entire 25% headroom, so a prompt near the threshold plus
+  the reply overflowed the real ceiling and the server rejected the turn.
+  The trigger is now `context_window − max_tokens − margin`, so input and
+  output are guaranteed to share the window.
+- **Context-window overflow now self-corrects instead of dead-ending.** As
+  a backstop, when a request still exceeds the window the server's `400`
+  ("exceeds the available context size (N tokens)") used to surface as a
+  hard error. enso now detects that rejection, parses the real limit `N`
+  the server reports, adopts it as the effective context window for that
+  provider, force-compacts against it, and retries the turn (bounded).
+  This recovers automatically when `context_window` is unset or wrong —
+  common behind a litellm/proxy that hides the model group's true limit.
+  Detection covers the litellm, OpenAI (`context_length_exceeded`), vLLM,
+  and llama.cpp phrasings.
+- **Keep-alive race no longer surfaces as a dead turn.** A bare `EOF` /
+  `unexpected EOF` from the provider HTTP call is now classified as a
+  transport-level "connection closed" so `doChatRequest` re-issues on a
+  fresh connection. The common trigger in long-running sessions is a
+  keep-alive race — a proxy (e.g. uvicorn's 5s `--timeout-keep-alive`)
+  closes an idle pooled connection that enso then writes a request onto.
+  Go's transport only auto-retries non-idempotent POSTs when *nothing*
+  was written, so an EOF noticed after the request bytes go out wasn't
+  retried for us. Safe because an EOF from `Do()` means no response
+  streamed, so the retry can't duplicate output.
+
 ## [v2.9.0] - 2026-05-28
 
 This release lands **end-to-end inference cancellation** (Ctrl-C now
@@ -907,6 +989,7 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
+[v2.10.0]: https://github.com/TaraTheStar/enso/compare/v2.9.0...v2.10.0
 [v2.9.0]: https://github.com/TaraTheStar/enso/compare/v2.8.0...v2.9.0
 [v2.8.0]: https://github.com/TaraTheStar/enso/compare/v2.7.0...v2.8.0
 [v2.7.0]: https://github.com/TaraTheStar/enso/compare/v2.6.0...v2.7.0
