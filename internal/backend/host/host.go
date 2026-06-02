@@ -492,6 +492,14 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 	readyOnce := sync.Once{}
 	signalReady := func(err error) { readyOnce.Do(func() { ready <- err }) }
 
+	// lastSeqByAgent remembers the DB seq of the most recently applied
+	// message per agent so a following MsgPersistMessageUsage attaches to
+	// the right row. The worker ships message then usage in order and this
+	// loop is the sole applier, so the map is always current. Keyed per
+	// agent (not a single cursor) so interleaved sub-agent appends — if
+	// they ever happen — still attribute correctly.
+	lastSeqByAgent := map[string]int{}
+
 	for {
 		env, err := s.ch.Recv()
 		if err != nil {
@@ -520,19 +528,20 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 			if s.writer != nil {
 				var pm wire.PersistMessage
 				if json.Unmarshal(env.Body, &pm) == nil {
-					_ = s.writer.AppendMessage(pm.Msg, pm.AgentID)
+					if seq, err := s.writer.AppendMessage(pm.Msg, pm.AgentID); err == nil {
+						lastSeqByAgent[pm.AgentID] = seq
+					}
 				}
 			}
 
 		case backend.MsgPersistMessageUsage:
 			// Worker reports the usage immediately after its
-			// MsgPersistMessage, so the host writer's seq still points
-			// at the just-inserted message — same invariant as the
-			// in-process call site.
+			// MsgPersistMessage; attribute it to that agent's
+			// last-applied message seq.
 			if s.writer != nil {
 				var pu wire.PersistMessageUsage
 				if json.Unmarshal(env.Body, &pu) == nil {
-					_ = s.writer.AppendMessageUsage(pu.Usage, pu.AgentID)
+					_ = s.writer.AppendMessageUsage(lastSeqByAgent[pu.AgentID], pu.Usage, pu.AgentID)
 				}
 			}
 
@@ -722,6 +731,24 @@ func (s *Session) SetNextTurnTools(ctx context.Context, names []string) error {
 // and the overlay reflect it without a round-trip.
 func (s *Session) SetYolo(ctx context.Context, on bool) error {
 	_, err := s.control(ctx, wire.CtrlSetYolo, wire.ControlBool{Value: on})
+	return err
+}
+
+// AddAllow appends a persistent allow pattern to the worker's REAL
+// enforcing checker so subsequent calls in this session don't re-prompt.
+// Mirrors SetYolo: the TUI persists the rule to project config separately
+// (for future sessions) and mirrors it onto the host display checker.
+// A bad pattern is reported via the control response Error.
+func (s *Session) AddAllow(ctx context.Context, pattern string) error {
+	_, err := s.control(ctx, wire.CtrlAddAllow, wire.ControlName{Name: pattern})
+	return err
+}
+
+// AddTurnAllow appends a turn-scoped allow pattern to the worker's REAL
+// enforcing checker. The grant clears at the next user message (the
+// worker agent loop calls ResetTurnAllows); it is never persisted.
+func (s *Session) AddTurnAllow(ctx context.Context, pattern string) error {
+	_, err := s.control(ctx, wire.CtrlAddTurnAllow, wire.ControlName{Name: pattern})
 	return err
 }
 

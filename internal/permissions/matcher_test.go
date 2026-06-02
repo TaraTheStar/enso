@@ -45,6 +45,11 @@ func TestMatchPath(t *testing.T) {
 		{"/repo/**/*.md", "/etc/README.md", false},
 		// Single-segment patterns still work for single-segment paths.
 		{"*.go", "x.go", true},
+		// S8: `..` traversal is cleaned before matching, so a scoped
+		// pattern can't be escaped lexically.
+		{"/repo/**", "/repo/../etc/passwd", false},
+		{"/repo/**", "/repo/sub/../x.go", true}, // cleans to /repo/x.go — still inside
+		{"/repo/**", "/repo/./internal/x.go", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.pattern+"/"+tc.path, func(t *testing.T) {

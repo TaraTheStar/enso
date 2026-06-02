@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/TaraTheStar/enso/internal/netsec"
 )
 
 // WebFetchTool fetches a URL and returns text content. It refuses to
@@ -263,32 +265,10 @@ func validateAndResolve(ctx context.Context, raw string, allow map[string]bool) 
 var denyHostFn = isDeniedIP
 
 // isDeniedIP returns true for any address class the SSRF guard refuses.
-// Covered: loopback, RFC1918 + RFC4193 ULA (IsPrivate), link-local
-// (169.254/16 incl. EC2/Azure metadata, fe80::/10), CGNAT 100.64/10,
-// 0.0.0.0/8, broadcast, multicast, unspecified.
-func isDeniedIP(ip net.IP) bool {
-	if ip == nil {
-		return true
-	}
-	if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() || ip.IsUnspecified() {
-		return true
-	}
-	if v4 := ip.To4(); v4 != nil {
-		// CGNAT 100.64.0.0/10
-		if v4[0] == 100 && v4[1] >= 64 && v4[1] <= 127 {
-			return true
-		}
-		// "this network" 0.0.0.0/8 (IsUnspecified only catches the
-		// single 0.0.0.0 address)
-		if v4[0] == 0 {
-			return true
-		}
-		if v4.Equal(net.IPv4bcast) {
-			return true
-		}
-	}
-	return false
-}
+// The classification lives in internal/netsec so the host-side egress
+// proxy denies the same ranges from one source of truth; see that
+// package for the covered classes.
+func isDeniedIP(ip net.IP) bool { return netsec.IsDeniedIP(ip) }
 
 // normaliseAllowHosts lowercases hosts and produces a map keyed by the
 // canonical form so allowedHostPort can do O(1) lookups. Entries without

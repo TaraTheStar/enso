@@ -63,10 +63,10 @@ func TestNewSessionAndAppend_Roundtrip(t *testing.T) {
 	}
 
 	// Append a couple of messages.
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "hi"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "hi"}, ""); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "assistant", Content: "hello"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "assistant", Content: "hello"}, ""); err != nil {
 		t.Fatalf("append asst: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestAttachWriter_SeedsSeqFromMaxes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for i := 0; i < 3; i++ {
-		_ = w1.AppendMessage(llm.Message{Role: "user", Content: "msg"}, "")
+		_, _ = w1.AppendMessage(llm.Message{Role: "user", Content: "msg"}, "")
 	}
 	_ = w1.AppendToolCall("c1", "read", nil, "ok", "ok", "ok")
 	_ = w1.AppendEvent("UserMessage", nil)
@@ -136,7 +136,7 @@ func TestAttachWriter_SeedsSeqFromMaxes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if err := w2.AppendMessage(llm.Message{Role: "user", Content: "after attach"}, ""); err != nil {
+	if _, err := w2.AppendMessage(llm.Message{Role: "user", Content: "after attach"}, ""); err != nil {
 		t.Errorf("append after attach: %v", err)
 	}
 	if err := w2.AppendToolCall("c2", "read", nil, "ok", "ok", "ok"); err != nil {
@@ -161,19 +161,19 @@ func TestSubAgentMessagesPersistAndAreFiltered(t *testing.T) {
 	}
 
 	// Top-level user message + assistant.
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "do thing"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "do thing"}, ""); err != nil {
 		t.Fatalf("top user: %v", err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "assistant", Content: "ok"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "assistant", Content: "ok"}, ""); err != nil {
 		t.Fatalf("top asst: %v", err)
 	}
 
 	// Sub-agent transcript with its own AgentID.
 	const subID = "sub-abc12345"
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "sub prompt"}, subID); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "sub prompt"}, subID); err != nil {
 		t.Fatalf("sub user: %v", err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "assistant", Content: "sub answer"}, subID); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "assistant", Content: "sub answer"}, subID); err != nil {
 		t.Fatalf("sub asst: %v", err)
 	}
 

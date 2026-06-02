@@ -312,7 +312,8 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 
 		acc := NewToolCallAccumulator()
 		sseDone := make(chan []byte)
-		go ParseSSE(resp.Body, sseDone)
+		var sseErr error
+		go ParseSSE(resp.Body, sseDone, &sseErr)
 
 		var detector *repetitionDetector
 		if c.LoopGuard {
@@ -411,6 +412,17 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			if chunk.Usage != nil {
 				lastUsage = chunk.Usage
 			}
+		}
+
+		// A scan/read error (truncated body, or a line past maxSSELineBytes)
+		// must NOT masquerade as a clean finish — otherwise a partial
+		// assistant message gets persisted as final. Skip when we tore the
+		// stream down ourselves (abort closes resp.Body, which surfaces as a
+		// read error that's expected, not a fault). The channel close
+		// happens-after ParseSSE's write to sseErr, so reading it here is safe.
+		if !aborted && sseErr != nil {
+			eventCh <- Event{Type: EventError, Error: fmt.Errorf("sse stream: %w", sseErr)}
+			return
 		}
 
 		if calls := acc.Finalize(); len(calls) > 0 {

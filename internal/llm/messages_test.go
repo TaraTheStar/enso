@@ -189,3 +189,47 @@ func TestNewHelpers(t *testing.T) {
 		t.Fatal("document part type")
 	}
 }
+
+// TestEffectiveInputTokens_PerProvider guards C3: the prompt-side token
+// count must be normalized across providers' divergent cache accounting so
+// the OpenAI/Gemini "InputTokens already includes cached reads" shape isn't
+// double-counted (which prematurely triggers compaction on warm caches).
+func TestEffectiveInputTokens_PerProvider(t *testing.T) {
+	cases := []struct {
+		name string
+		u    MessageUsage
+		want int
+	}{
+		{
+			// OpenAI: prompt_tokens(1000) includes cached(800); total = prompt+completion.
+			name: "openai_cached_not_additive",
+			u:    MessageUsage{InputTokens: 1000, OutputTokens: 200, CacheReadTokens: 800, TotalTokens: 1200},
+			want: 1000, // NOT 1800
+		},
+		{
+			// Gemini: same shape as OpenAI (cached is a sub-line of prompt).
+			name: "gemini_cached_not_additive",
+			u:    MessageUsage{InputTokens: 500, OutputTokens: 50, CacheReadTokens: 400, TotalTokens: 550},
+			want: 500,
+		},
+		{
+			// Anthropic: input is fresh-only; total = in+out+cacheR+cacheW.
+			name: "anthropic_fresh_only",
+			u:    MessageUsage{InputTokens: 100, OutputTokens: 60, CacheReadTokens: 900, CacheWriteTokens: 40, TotalTokens: 1100},
+			want: 1040, // in + cacheR + cacheW = 100+900+40
+		},
+		{
+			// No TotalTokens (some llama.cpp builds): fall back to summing.
+			name: "no_total_fallback",
+			u:    MessageUsage{InputTokens: 300, OutputTokens: 30, CacheReadTokens: 0},
+			want: 300,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.u.EffectiveInputTokens(); got != tc.want {
+				t.Errorf("EffectiveInputTokens() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

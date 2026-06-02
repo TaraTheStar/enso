@@ -35,6 +35,7 @@ import (
 
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/exestage"
+	"github.com/TaraTheStar/enso/internal/backend/seal"
 	"github.com/TaraTheStar/enso/internal/paths"
 )
 
@@ -326,29 +327,83 @@ func (b *Backend) buildRunArgs(name, taskID, exe, cwd, ociRuntime string) []stri
 			// Never proxy the in-container loopback / the gateway itself.
 			"-e", "NO_PROXY=127.0.0.1,localhost,"+slirpGatewayIP,
 			"-e", "no_proxy=127.0.0.1,localhost,"+slirpGatewayIP,
+			// The HTTPS_PROXY env is only advisory — a model can unset it
+			// and dial slirp's NAT (full internet) or the host loopback at
+			// the gateway directly. NET_ADMIN lets the entrypoint install a
+			// packet-layer default-deny in the container netns so the proxy
+			// is the ONLY route out at L3, not by convention. See the seal
+			// in the entrypoint below.
+			"--cap-add", "NET_ADMIN",
 		)
 	}
 	for _, e := range b.Env { // explicit opt-in only; never host env
 		args = append(args, "-e", e)
 	}
-	if len(b.Init) > 0 {
+	if entry := b.entrypointScript(); entry != "" {
 		// No persistent container to exec into — the container IS the
-		// worker. Wrap: run init (stderr-redirected so it can't corrupt
-		// the framed Channel on stdout; `set -e` so a failure aborts
-		// before the worker), then exec the worker as the container's
-		// process so signals/teardown still target it directly.
-		var s strings.Builder
-		s.WriteString("set -e\n{\n")
-		for _, ln := range b.Init {
-			s.WriteString(ln)
-			s.WriteString("\n")
-		}
-		s.WriteString("} 1>&2\nexec /usr/local/bin/enso __worker\n")
-		args = append(args, b.Image, "sh", "-c", s.String())
+		// worker. Wrap the prep (stderr-redirected so it can't corrupt the
+		// framed Channel on stdout; `set -e` so a failure aborts before the
+		// worker), then exec the worker as the container's process so
+		// signals/teardown still target it directly.
+		args = append(args, b.Image, "sh", "-c", entry)
 	} else {
 		args = append(args, b.Image, "/usr/local/bin/enso", "__worker")
 	}
 	return args
+}
+
+// entrypointScript builds the `sh -c` program run before the worker, or
+// "" when neither egress sealing nor user init is needed (the worker is
+// then exec'd directly). Ordering is deliberate and security-critical:
+//
+//		set -e
+//		{ <ensure ip[6]tables> ; <user init> ; <apply seal> } 1>&2
+//		exec enso __worker
+//
+//	  - tooling-install and user init run FIRST, while slirp still has full
+//	    egress, so package fetches work; both are operator-controlled (image
+//	    + config), the same trust level as the allowlist itself;
+//	  - the seal is applied LAST, immediately before exec — so the ONLY
+//	    thing that ever runs with the box sealed is the untrusted worker;
+//	  - `set -e` makes the seal fail-closed: if NET_ADMIN is missing, the
+//	    image has no iptables, or a rule fails, the script aborts and the
+//	    worker never starts (a visible failure, never a silent open box).
+//
+// The seal needs root (uid 0) in the container to program netfilter;
+// rootless podman's default container user IS root, so the common path
+// works. A non-root [backend.podman] uid in egress mode trips the
+// fail-closed abort rather than running unsealed.
+func (b *Backend) entrypointScript() string {
+	sealHostport := ""
+	if b.EgressProxy != "" {
+		if u, err := url.Parse(containerProxyURL(b.EgressProxy)); err == nil {
+			sealHostport = u.Host
+		}
+	}
+	if sealHostport == "" && len(b.Init) == 0 {
+		return "" // nothing to do — direct exec
+	}
+
+	var s strings.Builder
+	s.WriteString("set -e\n{\n")
+	if sealHostport != "" {
+		// Ensure the firewall tooling exists before sealing. Best-effort
+		// apk (Alpine base) only when absent, so an image that bakes it in
+		// skips the per-task fetch; if it is genuinely missing, the seal
+		// commands below fail under `set -e` → fail-closed.
+		s.WriteString("command -v iptables >/dev/null 2>&1 && command -v ip6tables >/dev/null 2>&1 || apk add --no-cache iptables ip6tables\n")
+	}
+	for _, ln := range b.Init {
+		s.WriteString(ln)
+		s.WriteString("\n")
+	}
+	if sealHostport != "" {
+		// Applied AFTER init so init keeps its egress; the worker (next
+		// line) is the only thing that runs sealed.
+		s.WriteString(seal.Rules(sealHostport))
+	}
+	s.WriteString("} 1>&2\nexec /usr/local/bin/enso __worker\n")
+	return s.String()
 }
 
 type pipePair struct{ stdin, stdout io.Closer }

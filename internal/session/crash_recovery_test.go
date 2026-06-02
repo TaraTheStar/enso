@@ -37,13 +37,13 @@ func TestCrashMidToolCall_ResumeProducesValidHistory(t *testing.T) {
 
 	// Up to but NOT including the tool reply — exactly the on-disk
 	// state if the process died mid-bash.
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "list files"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "list files"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	asst := mkAsstWithCalls("running ls", "call_abc")
 	asst.ToolCalls[0].Function.Name = "bash"
 	asst.ToolCalls[0].Function.Arguments = `{"cmd":"ls"}`
-	if err := w.AppendMessage(asst, ""); err != nil {
+	if _, err := w.AppendMessage(asst, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -92,15 +92,15 @@ func TestCrashMidToolCall_PartialReplies(t *testing.T) {
 	}
 	id := w.SessionID()
 
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "do two things"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "do two things"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	asst := mkAsstWithCalls("running both", "call_bash", "call_read")
-	if err := w.AppendMessage(asst, ""); err != nil {
+	if _, err := w.AppendMessage(asst, ""); err != nil {
 		t.Fatal(err)
 	}
 	// Only the bash reply made it to disk before the crash.
-	if err := w.AppendMessage(mkTool("call_bash", "main.go run.go"), ""); err != nil {
+	if _, err := w.AppendMessage(mkTool("call_bash", "main.go run.go"), ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -150,11 +150,11 @@ func TestCrashMidToolCall_RestartCanContinue(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := w.SessionID()
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "first"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "first"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	asst := mkAsstWithCalls("running", "call_xyz")
-	if err := w.AppendMessage(asst, ""); err != nil {
+	if _, err := w.AppendMessage(asst, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -168,7 +168,7 @@ func TestCrashMidToolCall_RestartCanContinue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("attach: %v", err)
 	}
-	if err := w2.AppendMessage(llm.Message{Role: "user", Content: "second"}, ""); err != nil {
+	if _, err := w2.AppendMessage(llm.Message{Role: "user", Content: "second"}, ""); err != nil {
 		t.Fatalf("append after backfill: %v", err)
 	}
 

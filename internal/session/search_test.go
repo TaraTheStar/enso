@@ -15,10 +15,10 @@ func TestSearch_CwdFilterDefault(t *testing.T) {
 	s := openTestStore(t)
 
 	wA, _ := NewSession(s, "m", "p", "/proj/a")
-	_ = wA.AppendMessage(llm.Message{Role: "user", Content: "talking about widgets here"}, "")
+	_, _ = wA.AppendMessage(llm.Message{Role: "user", Content: "talking about widgets here"}, "")
 
 	wB, _ := NewSession(s, "m", "p", "/proj/b")
-	_ = wB.AppendMessage(llm.Message{Role: "user", Content: "also widgets but in B"}, "")
+	_, _ = wB.AppendMessage(llm.Message{Role: "user", Content: "also widgets but in B"}, "")
 
 	hits, err := Search(s, "widgets", "/proj/a", 50)
 	if err != nil {
@@ -36,9 +36,9 @@ func TestSearch_AllCwdsWhenEmpty(t *testing.T) {
 	s := openTestStore(t)
 
 	wA, _ := NewSession(s, "m", "p", "/proj/a")
-	_ = wA.AppendMessage(llm.Message{Role: "user", Content: "hello widgets"}, "")
+	_, _ = wA.AppendMessage(llm.Message{Role: "user", Content: "hello widgets"}, "")
 	wB, _ := NewSession(s, "m", "p", "/proj/b")
-	_ = wB.AppendMessage(llm.Message{Role: "user", Content: "more widgets"}, "")
+	_, _ = wB.AppendMessage(llm.Message{Role: "user", Content: "more widgets"}, "")
 
 	hits, err := Search(s, "widgets", "", 50)
 	if err != nil {
@@ -53,8 +53,8 @@ func TestSearch_ExcludesSubAgentRows(t *testing.T) {
 	s := openTestStore(t)
 
 	w, _ := NewSession(s, "m", "p", "/proj/x")
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "top-level mentions widgets"}, "")
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "sub mentions widgets"}, "sub-1")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "top-level mentions widgets"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "sub mentions widgets"}, "sub-1")
 
 	hits, err := Search(s, "widgets", "", 50)
 	if err != nil {
@@ -72,14 +72,14 @@ func TestSearch_OrderByUpdatedAtDesc(t *testing.T) {
 	s := openTestStore(t)
 
 	wOld, _ := NewSession(s, "m", "p", "/proj/x")
-	_ = wOld.AppendMessage(llm.Message{Role: "user", Content: "first widgets"}, "")
+	_, _ = wOld.AppendMessage(llm.Message{Role: "user", Content: "first widgets"}, "")
 	// Backdate the older session.
 	if _, err := s.DB.Exec(`UPDATE sessions SET updated_at = 100 WHERE id = ?`, wOld.SessionID()); err != nil {
 		t.Fatal(err)
 	}
 
 	wNew, _ := NewSession(s, "m", "p", "/proj/x")
-	_ = wNew.AppendMessage(llm.Message{Role: "user", Content: "second widgets"}, "")
+	_, _ = wNew.AppendMessage(llm.Message{Role: "user", Content: "second widgets"}, "")
 	if _, err := s.DB.Exec(`UPDATE sessions SET updated_at = 200 WHERE id = ?`, wNew.SessionID()); err != nil {
 		t.Fatal(err)
 	}
@@ -99,7 +99,7 @@ func TestSearch_OrderByUpdatedAtDesc(t *testing.T) {
 func TestSearch_CaseInsensitive(t *testing.T) {
 	s := openTestStore(t)
 	w, _ := NewSession(s, "m", "p", "/proj/x")
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "Hello WIDGETS world"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "Hello WIDGETS world"}, "")
 
 	hits, err := Search(s, "widgets", "", 10)
 	if err != nil {
@@ -113,8 +113,8 @@ func TestSearch_CaseInsensitive(t *testing.T) {
 func TestSearch_LikeWildcardsTreatedLiterally(t *testing.T) {
 	s := openTestStore(t)
 	w, _ := NewSession(s, "m", "p", "/proj/x")
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "literal % sign here"}, "")
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "no percent"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "literal % sign here"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "no percent"}, "")
 
 	hits, err := Search(s, "%", "", 10)
 	if err != nil {
@@ -152,11 +152,11 @@ func TestSearchRegex_BasicAndCwdFilter(t *testing.T) {
 	s := openTestStore(t)
 
 	wA, _ := NewSession(s, "m", "p", "/proj/a")
-	_ = wA.AppendMessage(llm.Message{Role: "user", Content: "error code 4221 fired"}, "")
-	_ = wA.AppendMessage(llm.Message{Role: "user", Content: "no number here"}, "")
+	_, _ = wA.AppendMessage(llm.Message{Role: "user", Content: "error code 4221 fired"}, "")
+	_, _ = wA.AppendMessage(llm.Message{Role: "user", Content: "no number here"}, "")
 
 	wB, _ := NewSession(s, "m", "p", "/proj/b")
-	_ = wB.AppendMessage(llm.Message{Role: "user", Content: "error code 9001 fired"}, "")
+	_, _ = wB.AppendMessage(llm.Message{Role: "user", Content: "error code 9001 fired"}, "")
 
 	re := regexp.MustCompile(`error code \d+`)
 	hits, err := SearchRegex(s, re, "/proj/a", 50)
@@ -182,8 +182,8 @@ func TestSearchRegex_BasicAndCwdFilter(t *testing.T) {
 func TestSearchRegex_ExcludesSubAgentRows(t *testing.T) {
 	s := openTestStore(t)
 	w, _ := NewSession(s, "m", "p", "/proj/x")
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "top alpha-1"}, "")
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "sub alpha-2"}, "sub-1")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "top alpha-1"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "sub alpha-2"}, "sub-1")
 
 	hits, err := SearchRegex(s, regexp.MustCompile(`alpha-\d`), "", 10)
 	if err != nil {
@@ -198,7 +198,7 @@ func TestSearchRegex_LimitRespected(t *testing.T) {
 	s := openTestStore(t)
 	w, _ := NewSession(s, "m", "p", "/proj/x")
 	for i := 0; i < 10; i++ {
-		_ = w.AppendMessage(llm.Message{Role: "user", Content: "match"}, "")
+		_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "match"}, "")
 	}
 	hits, err := SearchRegex(s, regexp.MustCompile(`match`), "", 3)
 	if err != nil {
@@ -229,7 +229,7 @@ func TestSearchRegex_TruncatesLargeContent(t *testing.T) {
 	tailMatch := "TAIL-MATCH-ZZZ"
 	filler := strings.Repeat("x", regexScanCap)
 	body := headMatch + filler + tailMatch
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: body}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: body}, ""); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,7 +257,7 @@ func TestSearchRegex_TruncatesLargeContent(t *testing.T) {
 func TestSearchRegex_TruncatedFalseOnSmall(t *testing.T) {
 	s := openTestStore(t)
 	w, _ := NewSession(s, "m", "p", "/proj/small")
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "find SMALLMARKER here"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "find SMALLMARKER here"}, "")
 
 	hits, err := SearchRegex(s, regexp.MustCompile("SMALLMARKER"), "", 10)
 	if err != nil {
@@ -275,9 +275,9 @@ func TestListRecentWithStats_CountsAndTokens(t *testing.T) {
 	s := openTestStore(t)
 
 	w, _ := NewSession(s, "m", "p", "/proj/x")
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: strings.Repeat("a", 40)}, "")      // 10 tok
-	_ = w.AppendMessage(llm.Message{Role: "assistant", Content: strings.Repeat("b", 40)}, "") // 10 tok
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "sub-agent talk"}, "sub-1")        // excluded
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: strings.Repeat("a", 40)}, "")      // 10 tok
+	_, _ = w.AppendMessage(llm.Message{Role: "assistant", Content: strings.Repeat("b", 40)}, "") // 10 tok
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "sub-agent talk"}, "sub-1")        // excluded
 
 	got, err := ListRecentWithStats(s, 10)
 	if err != nil {
@@ -315,8 +315,8 @@ func TestListRecentWithStats_OrderedDescByUpdatedAt(t *testing.T) {
 	wA, _ := NewSession(s, "m", "p", "/a")
 	wB, _ := NewSession(s, "m", "p", "/b")
 	// Both need at least one message to clear the empty-session filter.
-	_ = wA.AppendMessage(llm.Message{Role: "user", Content: "hi from A"}, "")
-	_ = wB.AppendMessage(llm.Message{Role: "user", Content: "hi from B"}, "")
+	_, _ = wA.AppendMessage(llm.Message{Role: "user", Content: "hi from A"}, "")
+	_, _ = wB.AppendMessage(llm.Message{Role: "user", Content: "hi from B"}, "")
 	if _, err := s.DB.Exec(`UPDATE sessions SET updated_at = 100 WHERE id = ?`, wA.SessionID()); err != nil {
 		t.Fatal(err)
 	}

@@ -396,9 +396,12 @@ func waitingIndicator(since time.Time) string {
 // in flight, in which case the caller falls back to the model name.
 //
 // The format mirrors claude-code's pattern: spinner + label + elapsed.
-// We deliberately don't include token counts or "esc to interrupt" —
-// the latter is misleading until turn-cancel is wired up (today only
-// ctrl+c works, and it quits the whole app).
+// Token counts and the "esc to interrupt" hint are deliberately kept
+// out of this string: the interrupt affordance is rendered separately
+// on the status line in View (it depends on input-buffer and pending-
+// prompt state this helper doesn't see), and live token counts live
+// behind /context. Turn-cancel itself works via double-Esc or Ctrl-C
+// (see handleKey) — it does not quit the app.
 func liveIndicator(b blocks.Block, started time.Time) string {
 	if b == nil {
 		return ""

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -110,6 +111,60 @@ func optIntArg(v interface{}) int {
 	}
 }
 
+// secretEnvSubstrings are the (upper-cased) name fragments that mark an
+// environment variable as a credential. Any var whose NAME contains one
+// is dropped from the bash child env. Matching on the name (not the
+// value) keeps it cheap and avoids false positives on innocent values
+// that happen to look key-ish.
+var secretEnvSubstrings = []string{
+	"API_KEY", "APIKEY", "SECRET", "TOKEN",
+	"PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE_KEY", "ACCESS_KEY",
+}
+
+// scrubbedBashEnv returns env (KEY=VALUE entries, e.g. from os.Environ)
+// with credential-shaped variables removed (S9). It drops:
+//
+//   - every ENSO_* var — these exist specifically to feed enso secrets
+//     via the `api_key = "$ENSO_OPENAI_KEY"` indirection, so the model
+//     should never see them; and
+//   - any var whose name contains a secretEnvSubstrings fragment
+//     (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY, GITHUB_TOKEN, …).
+//
+// This is a name-pattern denylist, not an allowlist, so the child shell
+// keeps PATH/HOME/LANG/toolchain vars a build legitimately needs.
+// Trade-off: it also hides genuine tokens like GITHUB_TOKEN from the
+// model — intended, since the bash tool is driven by an untrusted model;
+// legitimate auth should come from a credential helper or an isolated
+// backend, not an inherited secret. Documented in AGENTS.md.
+func scrubbedBashEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		name := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			name = kv[:i]
+		}
+		if isSecretEnvName(name) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
+}
+
+// isSecretEnvName reports whether an env var name should be scrubbed.
+func isSecretEnvName(name string) bool {
+	up := strings.ToUpper(name)
+	if strings.HasPrefix(up, "ENSO_") {
+		return true
+	}
+	for _, frag := range secretEnvSubstrings {
+		if strings.Contains(up, frag) {
+			return true
+		}
+	}
+	return false
+}
+
 // runBashHost runs `sh -c <cmd>` with cwd at the project root.
 // Isolation (container/VM) is the Backend the whole worker runs in —
 // there is no separate in-process sandbox path.
@@ -130,6 +185,13 @@ func runBashHost(ctx context.Context, cmdStr string, timeout time.Duration, ac *
 
 	cmd := exec.CommandContext(runCtx, "sh", "-c", cmdStr)
 	cmd.Dir = ac.Cwd
+	// Scrub secret-shaped vars from the child env (S9). On the local
+	// backend the worker IS the host enso process, so an unscrubbed
+	// child shell would let the model `echo $OPENAI_API_KEY` (or any
+	// provider key resolved from $ENSO_*) and exfiltrate it. On isolated
+	// backends the guest env shouldn't carry these anyway, so the scrub
+	// is a harmless defense-in-depth there.
+	cmd.Env = scrubbedBashEnv(os.Environ())
 	// Put the shell into its own process group so cancel kills the
 	// whole pipeline, not just `sh` (children like `long_thing | foo`
 	// would otherwise survive as orphans).

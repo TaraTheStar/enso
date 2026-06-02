@@ -336,7 +336,15 @@ func (o *Overlay) threeWay() (agent, drift, conflicts []string, err error) {
 func (o *Overlay) applyPaths(ctx context.Context, rels []string) error {
 	for _, rel := range rels {
 		src := filepath.Join(o.Copy, rel)
-		dst := filepath.Join(o.Project, rel)
+		// Containment check (S10): refuse any rel whose destination
+		// escapes the project root — lexically (`..`) OR through a host
+		// symlink in the parent chain (a repo shipping `docs -> ~/.ssh`
+		// would otherwise let `cp`/`RemoveAll` write/delete outside the
+		// project). Checked per path, immediately before the mutating op.
+		dst, err := o.containedDst(rel)
+		if err != nil {
+			return err
+		}
 		if _, err := os.Lstat(src); err == nil {
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 				return fmt.Errorf("workspace: apply %s: %w", rel, err)
@@ -355,6 +363,50 @@ func (o *Overlay) applyPaths(ctx context.Context, rels []string) error {
 		}
 	}
 	return nil
+}
+
+// containedDst returns the absolute destination for rel under the
+// project root, or an error if rel would escape it. Two layers:
+//
+//  1. Lexical: filepath.Rel(root, dst) must not start with "..", so a
+//     `rel` carrying `..` segments can't climb above the root.
+//  2. Symlink: the nearest EXISTING ancestor of dst, with symlinks
+//     resolved, must stay within the resolved root — so a symlink
+//     already present in the project tree (e.g. a hostile `docs ->
+//     /etc`) can't be used as a springboard to write/delete outside it.
+//     dst itself need not exist (we're often creating it); we walk up to
+//     the first ancestor that does.
+func (o *Overlay) containedDst(rel string) (string, error) {
+	dst := filepath.Join(o.Project, rel)
+
+	rl, err := filepath.Rel(o.Project, dst)
+	if err != nil || rl == ".." || strings.HasPrefix(rl, ".."+string(os.PathSeparator)) {
+		return "", fmt.Errorf("workspace: refusing path outside project: %s", rel)
+	}
+
+	rootResolved, err := filepath.EvalSymlinks(o.Project)
+	if err != nil {
+		return "", fmt.Errorf("workspace: resolve project root: %w", err)
+	}
+	anc := dst
+	for {
+		parent := filepath.Dir(anc)
+		resolved, err := filepath.EvalSymlinks(parent)
+		if err == nil {
+			rl, rerr := filepath.Rel(rootResolved, resolved)
+			if rerr != nil || rl == ".." || strings.HasPrefix(rl, ".."+string(os.PathSeparator)) {
+				return "", fmt.Errorf("workspace: refusing path that escapes project via symlink: %s", rel)
+			}
+			return dst, nil
+		}
+		// parent doesn't exist yet — climb to the next existing ancestor.
+		if parent == anc {
+			// Reached the filesystem root without finding an existing
+			// ancestor (shouldn't happen: o.Project exists), fail closed.
+			return "", fmt.Errorf("workspace: cannot resolve ancestor of %s", rel)
+		}
+		anc = parent
+	}
 }
 
 // pruneEmptyParents removes now-empty directories from leaf up to (not

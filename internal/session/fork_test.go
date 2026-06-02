@@ -26,7 +26,7 @@ func TestForkCopiesMessages(t *testing.T) {
 		{Role: "assistant", Content: "hi back"},
 		{Role: "user", Content: "what about X?"},
 	} {
-		if err := src.AppendMessage(m, ""); err != nil {
+		if _, err := src.AppendMessage(m, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -84,7 +84,7 @@ func TestForkAllowsResumeFromNewID(t *testing.T) {
 	defer s.Close()
 
 	src, _ := NewSession(s, "qwen", "local", "/proj")
-	_ = src.AppendMessage(llm.Message{Role: "user", Content: "hi"}, "")
+	_, _ = src.AppendMessage(llm.Message{Role: "user", Content: "hi"}, "")
 
 	newID, err := Fork(s, src.SessionID())
 	if err != nil {
@@ -97,7 +97,7 @@ func TestForkAllowsResumeFromNewID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "assistant", Content: "follow-up"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "assistant", Content: "follow-up"}, ""); err != nil {
 		t.Fatal(err)
 	}
 }
