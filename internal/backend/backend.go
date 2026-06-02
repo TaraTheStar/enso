@@ -334,8 +334,23 @@ type Envelope struct {
 }
 
 // InputBody is the payload for MsgInput.
+//
+// Images carries user-attached image bytes (resolved host-side from
+// `@path` mentions before crossing the seam — the worker, especially an
+// isolated one, can't read the host filesystem where the file lives).
+// Raw bytes + mime rather than llm.MessagePart because this package sits
+// at the bottom of the import graph and must not import llm; the worker
+// rebuilds llm parts on receipt.
 type InputBody struct {
-	Text string `json:"text"`
+	Text   string       `json:"text"`
+	Images []InputImage `json:"images,omitempty"`
+}
+
+// InputImage is one user-attached image: the IANA mime type and the raw
+// (un-encoded) bytes. JSON-marshals the bytes as base64.
+type InputImage struct {
+	MIME string `json:"mime"`
+	Data []byte `json:"data"`
 }
 
 // EventBody is the payload for MsgEvent: the daemon wire form of a bus

@@ -297,12 +297,22 @@ func resolveSessionFlags() error {
 			return fmt.Errorf("--continue: open session store: %w", err)
 		}
 		defer store.Close()
-		recent, err := session.ListRecent(store, 1)
+		// Scope to the current directory so --continue resumes the last
+		// session in THIS project, not whatever session was touched most
+		// recently anywhere. Fall back to "" (any directory) only if cwd
+		// can't be determined — and say so, since the result then silently
+		// widens to the global most-recent session.
+		cwd, err := os.Getwd()
+		if err != nil {
+			slog.Warn("--continue: could not determine cwd; resuming most recent session in any directory", "err", err)
+			cwd = ""
+		}
+		recent, err := session.ListRecent(store, cwd, 1)
 		if err != nil {
 			return fmt.Errorf("--continue: list sessions: %w", err)
 		}
 		if len(recent) == 0 {
-			return errors.New("--continue: no sessions to resume")
+			return errors.New("--continue: no sessions to resume in this directory")
 		}
 		flagSession = recent[0].ID
 	}

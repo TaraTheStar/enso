@@ -845,7 +845,7 @@ func (a *Agent) RunOneShot(ctx context.Context, prompt string) (string, error) {
 	// local-backend child can't orphan a server past its own lifetime.
 	defer a.AgentCtx.BashJobs.KillAll()
 
-	a.appendUserMessage(prompt)
+	a.appendUserMessage(prompt, nil)
 	a.AgentCtx.TurnCount = 0
 
 	a.runUntilQuiescent(ctx)
@@ -863,12 +863,21 @@ func (a *Agent) RunOneShot(ctx context.Context, prompt string) (string, error) {
 	return "", fmt.Errorf("agent produced no settled assistant reply")
 }
 
+// UserInput is one user turn delivered to Run: the typed text plus any
+// attachments (images resolved host-side from `@path` mentions). Parts
+// is nil for the common text-only turn. Replaces the bare `string` the
+// input channel used to carry so a user message can be multimodal.
+type UserInput struct {
+	Text  string
+	Parts []llm.MessagePart
+}
+
 // drainInputCh non-blockingly pulls every queued message from inputCh
 // and returns the count. Used after a cancelled turn so frustration-
 // retry submits don't get processed out of order on the next turn.
 // Safe because the caller (Run loop) is between turns and is the only
 // reader of the channel.
-func drainInputCh(inputCh <-chan string) int {
+func drainInputCh(inputCh <-chan UserInput) int {
 	n := 0
 	for {
 		select {
@@ -895,7 +904,7 @@ func (a *Agent) Cancel() {
 // gate and execute tool calls, then loop until the assistant has no more tool
 // calls. The parent ctx survives turn-level cancellations (Cancel()); only a
 // shutdown of ctx itself terminates Run.
-func (a *Agent) Run(ctx context.Context, inputCh <-chan string) error {
+func (a *Agent) Run(ctx context.Context, inputCh <-chan UserInput) error {
 	// Fire the on_session_end hook (if configured) when this top-level
 	// loop returns. RunOneShot deliberately does NOT fire — that path
 	// is used by subagents and workflow roles, where session-end would
@@ -937,10 +946,18 @@ func (a *Agent) Run(ctx context.Context, inputCh <-chan string) error {
 				a.Perms.ResetTurnAllows()
 			}
 
-			a.appendUserMessage(prompt)
-			a.Bus.Publish(bus.Event{Type: bus.EventUserMessage, Payload: prompt})
+			a.appendUserMessage(prompt.Text, prompt.Parts)
+			// Payload is intentionally the text only, NOT prompt.Parts:
+			// EventUserMessage is published worker-side and crosses the seam
+			// back to host observers, so embedding the (up to 10 MiB) image
+			// bytes here would re-ship what the host just sent down. The
+			// "image attached" UX is surfaced host-side instead, where the
+			// bytes already live (run.go's pump emits a 📎 EventNotice). A
+			// future consumer needing image awareness from this event should
+			// carry lightweight metadata (count/names), never the bytes.
+			a.Bus.Publish(bus.Event{Type: bus.EventUserMessage, Payload: prompt.Text})
 			a.AgentCtx.TurnCount = 0
-			a.AgentCtx.RecentUserHint = prompt
+			a.AgentCtx.RecentUserHint = prompt.Text
 
 			a.runUntilQuiescent(turnCtx)
 
@@ -1158,6 +1175,11 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	if len(toolCalls) > 0 {
 		asst.ToolCalls = toolCalls
 	}
+	// Persist the chain-of-thought for REPLAY only (Reasoning is `json:"-"`
+	// — never resent to the provider, so this doesn't reintroduce the
+	// context bloat the live-only path avoids). Lets a resumed session /
+	// /transcript show the thinking the user saw stream live.
+	asst.Reasoning = strings.TrimSpace(reasoning.String())
 
 	// Belt-and-suspenders recovery: a turn that hit the output-length cap,
 	// tripped the loop guard, or stalled is rescued automatically — retry
@@ -1241,7 +1263,7 @@ func (a *Agent) maybeRecover(p *llm.Provider, finishReason, content string, asst
 			return true, false, nil
 		}
 		a.recoverAttempts++
-		a.appendUserMessage(recoveryNudge(finishReason))
+		a.appendUserMessage(recoveryNudge(finishReason), nil)
 		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
 			a.AgentCtx.Logger.Warn("auto-recovering turn",
 				"reason", finishReason, "attempt", a.recoverAttempts, "max", p.MaxRecoverAttempts)
@@ -1260,7 +1282,7 @@ func (a *Agent) maybeRecover(p *llm.Provider, finishReason, content string, asst
 		seq := a.appendMessage(asst)
 		a.stampUsage(len(a.History)-1, seq, usage)
 		a.Bus.Publish(bus.Event{Type: bus.EventAssistantDone})
-		a.appendUserMessage(recoveryContinueNudge)
+		a.appendUserMessage(recoveryContinueNudge, nil)
 		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
 			a.AgentCtx.Logger.Warn("auto-continuing truncated turn",
 				"attempt", a.recoverAttempts, "max", p.MaxRecoverAttempts)
@@ -1296,9 +1318,9 @@ func recoverWord(finishReason string) string {
 // session-wide user-turn counter the prune subsystem keys off of.
 // All user messages should land here (not appendMessage directly) so
 // turn-age accounting stays consistent.
-func (a *Agent) appendUserMessage(content string) {
+func (a *Agent) appendUserMessage(content string, parts []llm.MessagePart) {
 	a.userTurnCounter++
-	a.appendMessage(llm.Message{Role: "user", Content: content})
+	a.appendMessage(llm.Message{Role: "user", Content: content, Parts: parts})
 }
 
 // appendMessage persists the message (if a Writer is configured) before

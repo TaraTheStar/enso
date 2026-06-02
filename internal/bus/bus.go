@@ -51,6 +51,15 @@ const (
 	// broker both run host-side, so this never crosses the worker
 	// Channel and is deliberately absent from WireForm/FromWire.
 	EventEgressRequest
+
+	// EventNotice is a neutral, informational inline message (Payload is
+	// a string) surfaced in scrollback — e.g. "📎 attached shot.png" when
+	// a user image attaches. Distinct from EventError (which renders as a
+	// failure): a notice is just FYI. HOST-LOCAL — published host-side and
+	// rendered by the TUI subscriber, so it never crosses the worker
+	// Channel (deliberately absent from WireForm/FromWire, like
+	// EventEgressRequest).
+	EventNotice
 )
 
 // Event is a typed message sent through the bus.

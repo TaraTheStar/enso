@@ -125,7 +125,7 @@ func TestPodmanRemoteSessionPersistence(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if err := sess.Submit("ping"); err != nil {
+	if err := sess.Submit("ping", nil); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	select {
@@ -153,7 +153,7 @@ func TestPodmanRemoteSessionPersistence(t *testing.T) {
 	}
 
 	// Picker symptom: ListRecentWithStats requires msg_count > 0.
-	stats, err := session.ListRecentWithStats(store, 10)
+	stats, err := session.ListRecentWithStats(store, "", 10)
 	if err != nil {
 		t.Fatalf("ListRecentWithStats: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestPodmanRemoteSessionPersistence(t *testing.T) {
 
 	// --continue symptom: ListRecent must surface it (use a window, not
 	// strictly [0] — the real DB may hold the user's other sessions).
-	recent, err := session.ListRecent(store, 50)
+	recent, err := session.ListRecent(store, "", 50)
 	if err != nil {
 		t.Fatalf("ListRecent: %v", err)
 	}
