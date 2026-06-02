@@ -59,10 +59,16 @@ Per-tool argument matching:
 - **Deny rules are segment-aware**: `bash(rm -rf *)` blocks chained
   variants like `do_evil; rm -rf /`, `cd / && rm -rf *`, and
   `ls | rm -rf *` by splitting the command on top-level shell
-  separators. Deny rules are *guardrails, not walls* — they don't
-  recurse into command substitution (`$(...)`, backticks) or `eval`.
-  For real isolation against a hostile model or hostile codebase,
-  set `[backend] type = "podman"` (or `"lima"`).
+  separators. Each segment is tested both raw and normalised —
+  collapsed whitespace (`rm  -rf`), path stripped to basename
+  (`/bin/rm`, `./rm` → `rm`), shell-escapes removed (`\rm`, `r\m`),
+  command word unquoted (`"rm"`), and command-substitution bodies
+  (`$(...)`, backticks, one level of nesting) re-split and re-tested —
+  so `$(rm -rf /)` and `/bin/\rm -rf /` are caught too. Deny rules are
+  still *guardrails, not walls* — they don't follow interpreter
+  indirection (`eval`, `sh -c`, `xargs`), process substitution, or
+  here-docs. For real isolation against a hostile model or hostile
+  codebase, set `[backend] type = "podman"` (or `"lima"`).
 
 **Path patterns** (read/write/edit/grep/glob) use doublestar globs.
 `./src/**` matches everything under `./src/` recursively.
@@ -125,7 +131,8 @@ pattern derivation:
 | Tool             | Generalisation                                       |
 | ---------------- | ---------------------------------------------------- |
 | `bash`           | First word + `*` (so `git status` becomes `bash(git *)`). |
-| `read`/`grep`    | `<tool>(**)` — read-only, broadly safe.              |
+| `read`/`grep`    | Project-scoped: a path inside cwd → `<tool>(<cwd>/**)`; a path outside cwd → that exact cleaned path. Remembering a read no longer grants whole-filesystem access. |
+| `glob`           | The exact pattern you ran: `glob(<pattern>)`.        |
 | `write`/`edit`   | Exact path: `write(src/x.go)` or `edit(.env)`.       |
 | `web_fetch`      | Exact URL.                                           |
 | anything else    | `<tool>(*)`.                                         |
@@ -161,5 +168,12 @@ highest precedence):
    "Allow + Remember" target.
 5. `-c <path>` on the command line — one-off override.
 
-Lists concatenate; one project remembering `bash(make *)` doesn't
-leak the rule to another project.
+The security lists (`permissions.allow`/`ask`/`deny` and
+`web_fetch.allow_hosts`) are **unioned** across tiers — deduped and
+grow-only — so a higher-priority layer can't wipe a more-trusted tier's
+deny list with `deny = []`, and deny always wins in matching. One
+project remembering `bash(make *)` doesn't leak the rule to another
+project. Both `<cwd>/.enso/config.toml` and `config.local.toml` are
+trust-gated: a project-supplied one you didn't author trips the trust
+prompt before it loads (enso's own "Allow + Remember" writes are
+auto-trusted).

@@ -395,6 +395,31 @@ Commands that already bound or detach themselves (a `timeout` wrapper,
 `&`, `nohup`, a pipe into `head`) are left alone, and passing an explicit
 `timeout` runs the command time-bounded without the nudge.
 
+## `[checkpoints]`
+
+```toml
+[checkpoints]
+disabled = false   # set true to turn per-turn snapshots off entirely
+retain   = 20      # recent checkpoints kept per session
+```
+
+Before every genuine user turn (auto-recovery nudges and sub-agent runs
+don't count), enso snapshots the project tree so `/rewind`
+can restore exact prior state. (`/rewind` is documented in the
+[TUI reference]({{< relref "../docs/tui.md" >}}#rewind).) Snapshots live under
+`$XDG_STATE_HOME/enso/checkpoints/<session>/<seq>/` and are taken with
+`cp -a --reflink=auto` — near-free on a copy-on-write filesystem, a real
+copy otherwise (the same cost the workspace overlay already pays).
+
+Checkpointing is **on by default**; set `disabled = true` to turn it off.
+`retain` bounds how many recent per-turn checkpoints are kept per session
+(default `20`); older snapshots' database rows and on-disk trees are
+pruned. On isolated (podman/lima) backends snapshots capture the
+overlay's host-side tree, so only conversation rewind is available when
+no overlay is in use. Discarding a session leaves its on-disk snapshot
+trees behind; reclaim them with `enso prune` (which honours
+`--older-than`).
+
 ## `[search]` and `[search.searxng]`
 
 ```toml
@@ -647,6 +672,7 @@ matching `XDG_*` env var first and falls back to the path shown.
 | `~/.local/state/enso/debug.log`                      | Raw SSE chunks and request bodies when `--debug`.             |
 | `~/.local/state/enso/trust.json`                     | Trust-store hashes for project `.enso/config.toml`.           |
 | `~/.local/state/enso/worktrees/`                     | Auto-created git worktrees from `--worktree`.                 |
+| `~/.local/state/enso/checkpoints/<session>/<seq>/`   | Per-turn workspace snapshots for `/rewind` (see `[checkpoints]`). |
 | `$XDG_RUNTIME_DIR/enso/daemon.sock` / `daemon.pid`   | Daemon socket and PID file (POSIX only).                      |
 | `<cwd>/.enso/config.toml`                            | Project-committed config.                                     |
 | `<cwd>/.enso/config.local.toml`                      | Project-local config (gitignored).                            |
