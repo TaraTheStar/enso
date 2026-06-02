@@ -28,11 +28,11 @@ func TestMessageFlags_RoundTrip(t *testing.T) {
 	id := w.SessionID()
 
 	// A real user turn (both flags false).
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "investigate the build"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "investigate the build"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	// A synthetic compaction-summary stand-in.
-	if err := w.AppendMessage(llm.Message{
+	if _, err := w.AppendMessage(llm.Message{
 		Role:      "assistant",
 		Content:   "[compacted summary of earlier conversation]\n\nGoals: X",
 		Synthetic: true,
@@ -40,7 +40,7 @@ func TestMessageFlags_RoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An ignored audit row that must NOT reach the model on next turn.
-	if err := w.AppendMessage(llm.Message{
+	if _, err := w.AppendMessage(llm.Message{
 		Role:    "user",
 		Content: "[operator note: skip this]",
 		Ignored: true,

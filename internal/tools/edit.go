@@ -37,6 +37,13 @@ func (t EditTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	newStr, _ := args["new_string"].(string)
 	replaceAll, _ := args["replace_all"].(bool)
 
+	// An empty old_string would make strings.Count return len+1 (every byte
+	// boundary "contains" ""), so it never trips the not-found guard and
+	// replace_all would splice new_string between every byte. Reject it.
+	if oldStr == "" {
+		return Result{LLMOutput: "edit: old_string must not be empty"}, nil
+	}
+
 	abs, err := resolveRestricted(path, ac)
 	if err != nil {
 		return Result{}, fmt.Errorf("edit: %w", err)

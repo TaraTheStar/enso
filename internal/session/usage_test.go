@@ -25,10 +25,11 @@ func TestAppendMessageUsage_RoundTrip(t *testing.T) {
 		t.Fatalf("new session: %v", err)
 	}
 
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "hi"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "hi"}, ""); err != nil {
 		t.Fatalf("append user: %v", err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "assistant", Content: "hello"}, ""); err != nil {
+	asstSeq, err := w.AppendMessage(llm.Message{Role: "assistant", Content: "hello"}, "")
+	if err != nil {
 		t.Fatalf("append asst: %v", err)
 	}
 
@@ -40,7 +41,7 @@ func TestAppendMessageUsage_RoundTrip(t *testing.T) {
 		ReasoningTokens:  10,
 		TotalTokens:      185,
 	}
-	if err := w.AppendMessageUsage(usage, ""); err != nil {
+	if err := w.AppendMessageUsage(asstSeq, usage, ""); err != nil {
 		t.Fatalf("append usage: %v", err)
 	}
 
@@ -84,16 +85,17 @@ func TestAppendMessageUsage_ReEmissionIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new session: %v", err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "assistant", Content: "x"}, ""); err != nil {
+	seq, err := w.AppendMessage(llm.Message{Role: "assistant", Content: "x"}, "")
+	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
 	first := llm.MessageUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
-	if err := w.AppendMessageUsage(first, ""); err != nil {
+	if err := w.AppendMessageUsage(seq, first, ""); err != nil {
 		t.Fatalf("first usage: %v", err)
 	}
 	second := llm.MessageUsage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}
-	if err := w.AppendMessageUsage(second, ""); err != nil {
+	if err := w.AppendMessageUsage(seq, second, ""); err != nil {
 		t.Fatalf("second usage: %v", err)
 	}
 
@@ -138,24 +140,26 @@ func TestLoad_RehydratesMessageUsage(t *testing.T) {
 	sid := w.SessionID()
 
 	// Three turns: user, asst (with usage), user, asst (with usage).
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "first"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "first"}, ""); err != nil {
 		t.Fatalf("u1: %v", err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "assistant", Content: "ack1"}, ""); err != nil {
+	a1Seq, err := w.AppendMessage(llm.Message{Role: "assistant", Content: "ack1"}, "")
+	if err != nil {
 		t.Fatalf("a1: %v", err)
 	}
 	u1 := llm.MessageUsage{InputTokens: 10, OutputTokens: 4, TotalTokens: 14}
-	if err := w.AppendMessageUsage(u1, ""); err != nil {
+	if err := w.AppendMessageUsage(a1Seq, u1, ""); err != nil {
 		t.Fatalf("usage1: %v", err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "second"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "second"}, ""); err != nil {
 		t.Fatalf("u2: %v", err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "assistant", Content: "ack2"}, ""); err != nil {
+	a2Seq, err := w.AppendMessage(llm.Message{Role: "assistant", Content: "ack2"}, "")
+	if err != nil {
 		t.Fatalf("a2: %v", err)
 	}
 	u2 := llm.MessageUsage{InputTokens: 20, OutputTokens: 8, TotalTokens: 28}
-	if err := w.AppendMessageUsage(u2, ""); err != nil {
+	if err := w.AppendMessageUsage(a2Seq, u2, ""); err != nil {
 		t.Fatalf("usage2: %v", err)
 	}
 
@@ -198,7 +202,7 @@ func TestLoad_NoUsageRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new session: %v", err)
 	}
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "x"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "x"}, ""); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 
@@ -215,8 +219,8 @@ func TestLoad_NoUsageRows(t *testing.T) {
 }
 
 // TestAppendMessageUsage_NoOpWithoutMessage ensures that calling
-// AppendMessageUsage on a fresh writer (no AppendMessage yet) is a
-// safe no-op — the documented contract on tools.SessionWriter.
+// AppendMessageUsage with seq 0 (no prior AppendMessage row to attach to)
+// is a safe no-op — the documented contract on tools.SessionWriter.
 func TestAppendMessageUsage_NoOpWithoutMessage(t *testing.T) {
 	tmp := t.TempDir()
 	s, err := OpenAt(filepath.Join(tmp, "u.db"))
@@ -230,8 +234,8 @@ func TestAppendMessageUsage_NoOpWithoutMessage(t *testing.T) {
 		t.Fatalf("new session: %v", err)
 	}
 
-	if err := w.AppendMessageUsage(llm.MessageUsage{InputTokens: 99}, ""); err != nil {
-		t.Errorf("AppendMessageUsage on fresh writer should be no-op, got: %v", err)
+	if err := w.AppendMessageUsage(0, llm.MessageUsage{InputTokens: 99}, ""); err != nil {
+		t.Errorf("AppendMessageUsage with seq 0 should be no-op, got: %v", err)
 	}
 
 	var n int

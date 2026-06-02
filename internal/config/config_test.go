@@ -61,10 +61,25 @@ model = "from-flag"
 	if p.Endpoint != "http://user:8080/v1" {
 		t.Errorf("endpoint = %q, want http://user:8080/v1", p.Endpoint)
 	}
-	// allow: project layer's value replaces user's (later wins on slice)
-	if len(cfg.Permissions.Allow) != 1 || cfg.Permissions.Allow[0] != "bash(git *)" {
-		t.Errorf("allow = %v, want [bash(git *)]", cfg.Permissions.Allow)
+	// allow: security arrays UNION across tiers (S7) — the user's
+	// read(*) survives the project layer adding bash(git *), lower-tier
+	// entries first. A higher tier can add rules but never wipe lower
+	// (more trusted) ones.
+	if got, want := cfg.Permissions.Allow, []string{"read(*)", "bash(git *)"}; !equalStrings(got, want) {
+		t.Errorf("allow = %v, want %v", got, want)
 	}
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestLoad_ExpandsEnsoEnvInProviderAPIKey(t *testing.T) {
@@ -107,6 +122,72 @@ api_key = "literal-token"
 	}
 	if got := cfg.Providers["literal"].APIKey; got != "literal-token" {
 		t.Errorf("literal: got %q, want literal-token", got)
+	}
+}
+
+// TestLoad_SecurityArraysUnionAcrossTiers is the S7 regression: the
+// security arrays union across config tiers instead of a higher tier
+// replacing (and thus wiping) a lower one. A project's
+// .enso/config.local.toml trying `deny = []` must NOT erase the user's
+// system-wide deny rules; it can only ADD.
+func TestLoad_SecurityArraysUnionAcrossTiers(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(tmp, "xdg"))
+	t.Setenv("HOME", filepath.Join(tmp, "home"))
+
+	// User tier: the trusted baseline guardrails.
+	xdg := filepath.Join(tmp, "xdg", "enso")
+	mustMkdir(t, xdg)
+	mustWrite(t, filepath.Join(xdg, "config.toml"), `
+[permissions]
+deny = ["bash(rm -rf *)", "read(/etc/**)"]
+allow = ["read(**)"]
+
+[web_fetch]
+allow_hosts = ["localhost"]
+`)
+
+	// Project tier (gitignored, higher priority): attempts to WIPE deny
+	// with a bare empty array, and re-declares an allow that's already in
+	// the user tier (must dedupe) plus a new one.
+	cwd := filepath.Join(tmp, "proj")
+	mustMkdir(t, filepath.Join(cwd, ".enso"))
+	mustWrite(t, filepath.Join(cwd, ".enso", "config.local.toml"), `
+[permissions]
+deny = []
+allow = ["read(**)", "bash(ls *)"]
+
+[web_fetch]
+allow_hosts = ["api.example.com"]
+`)
+
+	// Explicit -c tier (highest): legitimately ADDS a deny.
+	explicit := filepath.Join(tmp, "explicit.toml")
+	mustWrite(t, explicit, `
+[permissions]
+deny = ["bash(curl *)"]
+`)
+
+	cfg, err := Load(cwd, explicit)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	// deny: user's two rules survive the project's deny=[] wipe attempt,
+	// and the -c tier's rule is appended. Grow-only.
+	if got, want := cfg.Permissions.Deny,
+		[]string{"bash(rm -rf *)", "read(/etc/**)", "bash(curl *)"}; !equalStrings(got, want) {
+		t.Errorf("deny = %v, want %v", got, want)
+	}
+	// allow: union with dedup — read(**) declared in both tiers appears once.
+	if got, want := cfg.Permissions.Allow,
+		[]string{"read(**)", "bash(ls *)"}; !equalStrings(got, want) {
+		t.Errorf("allow = %v, want %v", got, want)
+	}
+	// allow_hosts: union, lower (more trusted) tier first.
+	if got, want := cfg.WebFetch.AllowHosts,
+		[]string{"localhost", "api.example.com"}; !equalStrings(got, want) {
+		t.Errorf("allow_hosts = %v, want %v", got, want)
 	}
 }
 

@@ -384,17 +384,19 @@ type LSPNotifier interface {
 // messages and tool calls. Defined here so the tools package doesn't
 // import session. Implemented by *session.Writer.
 //
+// AppendMessage returns the per-session sequence number assigned to the
+// row it wrote; pass that value to AppendMessageUsage to attribute usage
+// to that exact message. Threading the seq explicitly (rather than
+// relying on a writer-internal cursor) keeps attribution correct when the
+// writer is shared across concurrently-appending sub-agents.
+//
 // AppendMessageUsage records provider-reported token counts for the
-// most recently appended message in this writer's session. Must be
-// called immediately after AppendMessage (before any other Append*
-// call) so the writer's internal seq cursor still points at the
-// message the usage describes. No-op semantics are acceptable when
-// the writer can't apply (e.g. usage arrives without a prior
-// AppendMessage); implementations should not return an error in that
-// case but may log.
+// message at `seq`. No-op semantics are acceptable when seq is 0 / there
+// is nothing to attach to; implementations should not return an error in
+// that case but may log.
 type SessionWriter interface {
-	AppendMessage(msg llm.Message, agentID string) error
-	AppendMessageUsage(usage llm.MessageUsage, agentID string) error
+	AppendMessage(msg llm.Message, agentID string) (int, error)
+	AppendMessageUsage(seq int, usage llm.MessageUsage, agentID string) error
 	AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error
 	SessionID() string
 }

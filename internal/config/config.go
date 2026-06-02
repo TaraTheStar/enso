@@ -1227,7 +1227,23 @@ func AppendAllow(path, pattern string) error {
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	return os.WriteFile(path, out, 0o600)
+	if err := os.WriteFile(path, out, 0o600); err != nil {
+		return err
+	}
+	recordSelfTrust(path)
+	return nil
+}
+
+// recordSelfTrust marks a config file enso just wrote as trusted, so the
+// trust gate (which now covers config.local.toml — see trust.go) doesn't
+// re-prompt on enso's own "Allow + Remember" / rule-removal writes. Best
+// effort: a trust-store failure only costs a redundant prompt next launch,
+// so we log rather than fail the user's write.
+func recordSelfTrust(path string) {
+	if err := TrustFile(path); err != nil {
+		slog.Warn("config: could not record self-trust for written config",
+			"file", path, "err", err)
+	}
 }
 
 // LoadRules reads only the permissions allow/ask/deny lists from a
@@ -1321,6 +1337,7 @@ func RemoveRule(path, kind, pattern string) (bool, error) {
 	if err := os.WriteFile(path, out, 0o600); err != nil {
 		return false, fmt.Errorf("write %s: %w", path, err)
 	}
+	recordSelfTrust(path)
 	return true, nil
 }
 
@@ -1343,16 +1360,28 @@ func DefaultTOML() string { return defaultTOML }
 // layer, leaving the selection knobs ([backend] type / workspace)
 // intact. Returns the dotted names removed (for the warning); nil when
 // the layer had none. Mutates layer in place.
+//
+// Key matching is case-INSENSITIVE on purpose: go-toml decodes the
+// typed Config case-insensitively (so `[backend.Egress]` populates
+// Backend.Egress all the same), so a case-sensitive strip here would
+// leave `[Backend.Egress]` in the merged map and silently honor it from
+// a user/system layer — exactly the project-scope bypass this guards.
 func stripBackendEnv(layer map[string]any) []string {
-	b, ok := layer["backend"].(map[string]any)
-	if !ok {
-		return nil
-	}
 	var stripped []string
-	for _, k := range []string{"podman", "lima", "egress"} {
-		if _, present := b[k]; present {
-			delete(b, k)
-			stripped = append(stripped, "backend."+k)
+	for topKey, topVal := range layer {
+		if !strings.EqualFold(topKey, "backend") {
+			continue
+		}
+		b, ok := topVal.(map[string]any)
+		if !ok {
+			continue
+		}
+		for k := range b {
+			switch strings.ToLower(k) {
+			case "podman", "lima", "egress":
+				delete(b, k)
+				stripped = append(stripped, "backend."+k)
+			}
 		}
 	}
 	return stripped
@@ -1490,18 +1519,77 @@ func writeDefault() (string, error) {
 	return path, nil
 }
 
+// unionArrayPaths lists the dotted config paths whose array value must be
+// UNIONED across tiers rather than replaced. These are the security
+// arrays: a higher-priority layer must only ever be able to ADD a deny /
+// ask / allow / allowed-host, never silently wipe one a lower (more
+// trusted) tier set. Replacing them lets a project's
+// `.enso/config.local.toml` (or any higher layer) erase the user's or
+// system's `permissions.deny` with a bare `deny = []` — which compounds
+// S1 into a full guardrail bypass. Union makes deny/ask grow-only and
+// keeps allow/allow_hosts additive (deny still wins in Checker.Match, so
+// a unioned allow can never override a deny).
+var unionArrayPaths = map[string]bool{
+	"permissions.allow":     true,
+	"permissions.ask":       true,
+	"permissions.deny":      true,
+	"web_fetch.allow_hosts": true,
+}
+
 // mergeMaps does a recursive merge of src into dst. Nested maps are merged
-// key-by-key; everything else is replaced. Used for layering TOML files.
-func mergeMaps(dst, src map[string]any) {
+// key-by-key; the security arrays in unionArrayPaths are unioned (deduped,
+// lower-tier entries first); everything else is replaced. Used for
+// layering TOML files (lower → higher priority).
+func mergeMaps(dst, src map[string]any) { mergeMapsAt(dst, src, "") }
+
+func mergeMapsAt(dst, src map[string]any, prefix string) {
 	for k, v := range src {
+		path := k
+		if prefix != "" {
+			path = prefix + "." + k
+		}
 		if existing, ok := dst[k]; ok {
 			if dstMap, dok := existing.(map[string]any); dok {
 				if srcMap, sok := v.(map[string]any); sok {
-					mergeMaps(dstMap, srcMap)
+					mergeMapsAt(dstMap, srcMap, path)
+					continue
+				}
+			}
+			if unionArrayPaths[path] {
+				if merged, ok := unionStringArrays(existing, v); ok {
+					dst[k] = merged
 					continue
 				}
 			}
 		}
 		dst[k] = v
 	}
+}
+
+// unionStringArrays concatenates two TOML arrays (dst entries first, then
+// the new src entries), dropping duplicate string values so re-declaring a
+// rule in a higher tier doesn't double it. Returns ok=false if either
+// value isn't an array, so the caller falls back to plain replacement.
+func unionStringArrays(dstVal, srcVal any) ([]any, bool) {
+	dl, dok := dstVal.([]any)
+	sl, sok := srcVal.([]any)
+	if !dok || !sok {
+		return nil, false
+	}
+	out := make([]any, 0, len(dl)+len(sl))
+	seen := make(map[string]bool, len(dl)+len(sl))
+	add := func(list []any) {
+		for _, e := range list {
+			if s, ok := e.(string); ok {
+				if seen[s] {
+					continue
+				}
+				seen[s] = true
+			}
+			out = append(out, e)
+		}
+	}
+	add(dl)
+	add(sl)
+	return out, true
 }

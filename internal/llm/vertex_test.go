@@ -608,3 +608,24 @@ func TestVertexPart_MissingMIMEFails(t *testing.T) {
 		t.Fatal("want error: image data without mime_type")
 	}
 }
+
+// TestSynthVertexToolCallID is the regression for colliding Gemini
+// tool-call IDs: parallel calls to the same tool must get distinct IDs,
+// while an explicit id from the API is passed through untouched.
+func TestSynthVertexToolCallID(t *testing.T) {
+	// Explicit id wins verbatim (idx ignored).
+	if got := synthVertexToolCallID("call_real", "bash", 7); got != "call_real" {
+		t.Errorf("provided id: got %q, want call_real", got)
+	}
+
+	// Two parallel same-tool calls (empty ids, increasing idx) must
+	// differ — this is the collision the fix closes.
+	a := synthVertexToolCallID("", "bash", 0)
+	b := synthVertexToolCallID("", "bash", 1)
+	if a == b {
+		t.Fatalf("parallel same-tool calls collided: both %q", a)
+	}
+	if a != "call_bash_0" || b != "call_bash_1" {
+		t.Errorf("synthesised ids: got %q, %q; want call_bash_0, call_bash_1", a, b)
+	}
+}

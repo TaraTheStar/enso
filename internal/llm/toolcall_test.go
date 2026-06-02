@@ -157,9 +157,11 @@ func TestAccumulator_FinalizeOrderedByIndex(t *testing.T) {
 	}
 }
 
-func TestAccumulator_FinalizeDropsIncomplete(t *testing.T) {
+func TestAccumulator_FinalizeSynthesizesMissingID(t *testing.T) {
 	acc := NewToolCallAccumulator()
-	// Index 0: complete. Index 1: name only, no id. Index 2: id only, no name.
+	// Index 0: complete. Index 1: name only, no id (a server that omits
+	// ids — must be kept with a synthesised id, not dropped). Index 2:
+	// id only, no name (noise — dropped).
 	mustMerge(t, acc, ChatResponseDelta{ToolCalls: []DTCall{
 		{Index: 0, ID: "ok", Function: dtFunction("read", `{}`)},
 		{Index: 1, Function: dtFunction("read", `{}`)},
@@ -167,11 +169,19 @@ func TestAccumulator_FinalizeDropsIncomplete(t *testing.T) {
 	}})
 
 	calls := acc.Finalize()
-	if len(calls) != 1 {
-		t.Fatalf("got %d calls, want 1 (only the complete one)", len(calls))
+	if len(calls) != 2 {
+		t.Fatalf("got %d calls, want 2 (complete + id-synthesised)", len(calls))
 	}
 	if calls[0].ID != "ok" {
-		t.Errorf("survivor id = %q, want ok", calls[0].ID)
+		t.Errorf("calls[0].ID = %q, want ok", calls[0].ID)
+	}
+	// Named-but-id-less call survives with a deterministic index-derived
+	// id instead of vanishing.
+	if calls[1].ID != "call_1" {
+		t.Errorf("calls[1].ID = %q, want synthesised call_1", calls[1].ID)
+	}
+	if calls[1].Function.Name != "read" {
+		t.Errorf("calls[1].Name = %q, want read", calls[1].Function.Name)
 	}
 }
 

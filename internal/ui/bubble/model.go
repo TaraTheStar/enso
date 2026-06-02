@@ -8,6 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/permissions"
 	"github.com/TaraTheStar/enso/internal/slash"
@@ -114,6 +115,12 @@ type model struct {
 	sessionsOpen  bool
 	pendingSwitch string
 
+	// palette is the `/`-trigger slash-command palette (U2). Same
+	// alt-screen pattern as picker / sessions; opens when `/` is typed
+	// on an empty input line and reads the live command registry.
+	palette     *slashPaletteData
+	paletteOpen bool
+
 	// perm is the in-flight permission prompt, if any. While set, the
 	// agent is blocked on req.Respond and we route key input to the
 	// inline y/n/a/t resolver instead of the regular input handler.
@@ -124,11 +131,18 @@ type model struct {
 	// req.Respond until a y/t/n keystroke resolves it.
 	egress *egressPending
 
-	// permCheckerCwd carries the checker + cwd into permPending when a
-	// new request arrives. Set once at construction.
+	// permCheckerCwd carries the checker + cwd + worker session into
+	// permPending when a new request arrives. Set once at construction.
+	//
+	// checker is the host-side DISPLAY mirror (keeps /perms + /info in
+	// sync). sess is the seam to the worker's REAL enforcing checker:
+	// "always"/"turn" grants RPC through it (mirroring /yolo) so they
+	// actually gate future calls. Both nil only in true attach mode,
+	// where resolvePerm degrades a/t to allow-once.
 	permCheckerCwd struct {
 		checker *permissions.Checker
 		cwd     string
+		sess    *host.Session
 	}
 
 	statusLine string     // single-line status (tool name, etc.); empty when idle
@@ -204,7 +218,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// maxInputLines rows). Only \r\n and bare \r are normalised to
 		// \n so the buffer's line breaks are consistent regardless of
 		// the source platform's line endings.
-		if m.pickerOpen || m.sessionsOpen || m.perm != nil || m.egress != nil || m.overlayOpen {
+		if m.pickerOpen || m.sessionsOpen || m.paletteOpen || m.perm != nil || m.egress != nil || m.overlayOpen {
 			return m, nil
 		}
 		if m.input.vim && m.input.vimNormal {
@@ -289,6 +303,11 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Recent-sessions picker: same routing pattern.
 	if m.sessionsOpen {
 		return m.handleSessionsKey(msg)
+	}
+
+	// Slash-command palette: same routing pattern.
+	if m.paletteOpen {
+		return m.handlePaletteKey(msg)
 	}
 
 	// Permission prompt handling: while pending, agent is blocked on
@@ -536,6 +555,16 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// msg.Text (a string); control keys arrive as named strings handled
 	// above and have an empty Text field.
 	if msg.Text != "" {
+		// /-trigger: open the slash-command palette when `/` is typed on
+		// a completely empty input line (slash commands only run at line
+		// start — see the enter handler). The `/` is not inserted; Esc
+		// cancels cleanly and Enter inserts `/<name> ` for the pick,
+		// mirroring the @ picker's "insert text" mental model.
+		if msg.Text == "/" && m.input.buf == "" && m.palette != nil {
+			m.palette.reset()
+			m.paletteOpen = true
+			return m, nil
+		}
 		// @-trigger: open the file picker if @ would start a new
 		// token. Mid-token @s (emails, URLs) fall through to insertion.
 		if msg.Text[0] == '@' && m.input.atIsTokenStart() && m.picker != nil {
@@ -633,6 +662,69 @@ func (m *model) handlePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handlePaletteKey routes keys to the `/` slash-command palette. Filter
+// typing narrows the list, ↑/↓ move the selection, Enter (or Tab, or a
+// trailing space) inserts the picked `/<name> ` at the input cursor so
+// the user can add args or press Enter again to run, Esc cancels. The
+// implied leading `/` is removed on backspace-past-empty, closing the
+// palette so a stray `/` never gets stuck.
+func (m *model) handlePaletteKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	accept := func() (tea.Model, tea.Cmd) {
+		matches := m.palette.matches()
+		if len(matches) == 0 || m.palette.sel >= len(matches) {
+			m.paletteOpen = false
+			return m, nil
+		}
+		m.input.insertString("/" + matches[m.palette.sel].name + " ")
+		m.paletteOpen = false
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "esc":
+		m.paletteOpen = false
+		return m, nil
+
+	case "enter", "tab":
+		return accept()
+
+	case "up", "ctrl+p":
+		if m.palette.sel > 0 {
+			m.palette.sel--
+		}
+		return m, nil
+	case "down", "ctrl+n":
+		matches := m.palette.matches()
+		if m.palette.sel < len(matches)-1 {
+			m.palette.sel++
+		}
+		return m, nil
+
+	case "backspace":
+		// Backspace past the empty filter removes the implied `/` and
+		// dismisses the palette (the symmetric undo of the trigger).
+		if n := len(m.palette.filter); n > 0 {
+			r := []rune(m.palette.filter)
+			m.palette.filter = string(r[:len(r)-1])
+			m.palette.sel = 0
+			return m, nil
+		}
+		m.paletteOpen = false
+		return m, nil
+	}
+
+	// A trailing space is the natural "done naming the command" gesture
+	// (no command name contains a space), so accept the selection.
+	if msg.Text == " " {
+		return accept()
+	}
+	if msg.Text != "" {
+		m.palette.filter += msg.Text
+		m.palette.sel = 0
+	}
+	return m, nil
+}
+
 // handleBusEvent updates the status line for tool-call lifecycle events,
 // emits inline notices for cross-turn annotations (subagent lifecycle),
 // and delegates chat-block state mutation to the conversation. Any
@@ -699,13 +791,16 @@ func (m *model) handleBusEvent(ev bus.Event) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.perm == nil {
-			// Local mode requires a checker for "remember"/"turn"; in
-			// attach mode permCheckerCwd.checker is nil and resolvePerm
-			// degrades the a/t branches to a "once" allow with notice.
+			// "remember"/"turn" grants reach the worker's enforcing
+			// checker via sess (seam path) and mirror onto the host
+			// display checker; in true attach mode both are nil and
+			// resolvePerm degrades the a/t branches to a "once" allow
+			// with notice.
 			m.perm = &permPending{
 				req:     req,
 				checker: m.permCheckerCwd.checker,
 				cwd:     m.permCheckerCwd.cwd,
+				sess:    m.permCheckerCwd.sess,
 			}
 			print := startPermPrompt(req)
 			if !req.Deadline.IsZero() {
@@ -879,6 +974,11 @@ func (m *model) View() tea.View {
 		v.AltScreen = true
 		return v
 	}
+	if m.paletteOpen {
+		v := tea.NewView(renderSlashPalette(m.palette, m.width, m.height))
+		v.AltScreen = true
+		return v
+	}
 	var sb strings.Builder
 
 	if live := m.conv.Live(); live != nil {
@@ -933,15 +1033,26 @@ func (m *model) View() tea.View {
 	} else if m.egress != nil && m.egress.req != nil {
 		status += statusStyle.Render("  · ") + egressPendingHint(m.egress.req)
 	}
-	// Between the two Esc presses of the cancel chord, hint at what
-	// the second press will do. Naturally clears: the spin tick
-	// re-renders every spinFrameMs while busy/live, so once the
-	// double-Esc window expires the next frame drops this string;
-	// any non-Esc key zeroes lastEscAt at the top of handleKey and
-	// removes it immediately.
-	if !m.lastEscAt.IsZero() && m.input.buf == "" && (m.busy || m.conv.Live() != nil) &&
-		time.Since(m.lastEscAt) < escDoubleWindow {
-		status = status + statusStyle.Render("  · press esc again to stop")
+	// Surface the interrupt affordance whenever a turn is in flight and
+	// the input line is empty — that's exactly when Esc means
+	// "interrupt" (on a non-empty line it clears the buffer instead) and
+	// turn-cancel is available. A pending permission/egress prompt owns
+	// Esc (= deny), so suppress the hint there to avoid contradicting it.
+	// Two-stage: the bare "esc to interrupt" invites the first tap; once
+	// armed, "press esc again to stop" guides the follow-through. Both
+	// clear naturally — the spin tick re-renders every spinFrameMs while
+	// busy/live so the chord-window expiry drops the armed string on the
+	// next frame, and any non-Esc key zeroes lastEscAt at the top of
+	// handleKey, reverting to the bare hint immediately. (Ctrl-C also
+	// interrupts on the first press; Esc is the documented one here to
+	// keep the line short.)
+	if (m.busy || m.conv.Live() != nil) && m.input.buf == "" && m.cancelTurn != nil &&
+		m.perm == nil && m.egress == nil {
+		if !m.lastEscAt.IsZero() && time.Since(m.lastEscAt) < escDoubleWindow {
+			status += statusStyle.Render("  · press esc again to stop")
+		} else {
+			status += statusStyle.Render("  · esc to interrupt")
+		}
 	}
 	sb.WriteString(status)
 	// Blank line between the status indicator and the input prompt so

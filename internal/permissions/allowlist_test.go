@@ -44,6 +44,21 @@ func TestParsePattern(t *testing.T) {
 	}
 }
 
+// TestParsePattern_MissingCloseParen guards C2: a pattern with an opening
+// '(' but no ')' used to slice s[idx+1:-1] and panic. It must now return a
+// clean error instead.
+func TestParsePattern_MissingCloseParen(t *testing.T) {
+	for _, in := range []string{"bash(rm -rf", "read(*", "!edit(foo"} {
+		p, err := ParsePattern(in)
+		if err == nil {
+			t.Errorf("ParsePattern(%q): want error, got nil (p=%+v)", in, p)
+		}
+		if p != nil {
+			t.Errorf("ParsePattern(%q): want nil pattern on error, got %+v", in, p)
+		}
+	}
+}
+
 func TestAllowlist_RemoveAndPatterns(t *testing.T) {
 	al := NewAllowlist(
 		[]string{"bash(*)", "read(*)"},

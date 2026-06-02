@@ -405,6 +405,30 @@ type MessageUsage struct {
 	TotalTokens      int
 }
 
+// EffectiveInputTokens returns the prompt-side token count for this turn —
+// the tokens that count toward the context window and the cumulative input
+// spend — normalized across providers' divergent cache accounting.
+//
+// The trap: OpenAI/Gemini report InputTokens as the FULL prompt already
+// including cached reads (CacheReadTokens is a sub-line, not additive), so
+// summing InputTokens + CacheReadTokens double-counts the cache and can
+// roughly 2× the figure on a warm local cache. Anthropic/Bedrock instead
+// report InputTokens as fresh-only with cache reads/writes broken out, so
+// for them the prompt size genuinely is the sum.
+//
+// TotalTokens - OutputTokens collapses both shapes to the same answer
+// (prompt side only): Anthropic Total = in+out+cacheR+cacheW so the
+// subtraction yields in+cacheR+cacheW; OpenAI/Gemini Total = prompt+output
+// so it yields prompt. When TotalTokens is absent (some llama.cpp builds),
+// fall back to summing — correct for the Anthropic shape and the best
+// available without a total.
+func (u MessageUsage) EffectiveInputTokens() int {
+	if u.TotalTokens > 0 && u.TotalTokens >= u.OutputTokens {
+		return u.TotalTokens - u.OutputTokens
+	}
+	return u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
+}
+
 // Empty reports whether no field has been populated. Used as the
 // "fall back to heuristic" signal — a fully zero MessageUsage means
 // the provider didn't supply usage data for this turn.
