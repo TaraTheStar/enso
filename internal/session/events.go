@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -40,14 +41,18 @@ type SessionInfo struct {
 type Writer struct {
 	db        *sql.DB
 	sessionID string
-	seq       int // messages table per-session sequence
-	toolSeq   int // tool_calls table per-session sequence
-	eventSeq  int // events table per-session sequence
-	// hasMessages flips true on the first AppendMessage. The host
-	// reads it via HasMessages() to decide whether a freshly-created
-	// session should be discarded on TUI close (no point keeping a
-	// 0-message row that clutters the picker).
-	hasMessages bool
+	// mu guards the per-table sequence counters and hasMessages. A
+	// single Writer is shared across the top-level agent and every
+	// sub-agent (spawn forwards it verbatim) and is also touched by the
+	// bus-event persistence goroutine, so the counters must not be
+	// bumped racily: two unlocked `seq++` could hand out the same seq
+	// and collide on the (session_id, seq) primary key — a silently
+	// dropped message.
+	mu          sync.Mutex
+	seq         int  // messages table per-session sequence
+	toolSeq     int  // tool_calls table per-session sequence
+	eventSeq    int  // events table per-session sequence
+	hasMessages bool // flips true on the first AppendMessage; read via HasMessages()
 }
 
 // NewSession inserts a fresh session row and returns a Writer scoped to it.
@@ -110,40 +115,49 @@ func seedSeq(db *sql.DB, table, sessionID string, into *int) error {
 // SessionID returns this writer's session id.
 func (w *Writer) SessionID() string { return w.sessionID }
 
-// AppendMessage records one llm.Message at the next sequence number.
-// `agentID` attributes the row to a specific agent; "" means the
-// top-level agent (Load filters those for resume). Sub-agents
+// AppendMessage records one llm.Message at the next sequence number and
+// returns that seq. `agentID` attributes the row to a specific agent; ""
+// means the top-level agent (Load filters those for resume). Sub-agents
 // (spawn_agent, workflow roles) pass their own id so their transcripts
 // stay queryable but don't leak into top-level resume.
-func (w *Writer) AppendMessage(msg llm.Message, agentID string) error {
+//
+// The returned seq is the stable handle for AppendMessageUsage: callers
+// must pass it back explicitly rather than relying on the writer's
+// internal cursor, because a concurrent append on the shared writer can
+// advance that cursor in between (mis-attributing the usage).
+func (w *Writer) AppendMessage(msg llm.Message, agentID string) (int, error) {
+	w.mu.Lock()
 	w.seq++
+	seq := w.seq
+	w.mu.Unlock()
+
 	toolCallsJSON := ""
 	if len(msg.ToolCalls) > 0 {
 		b, err := json.Marshal(msg.ToolCalls)
 		if err != nil {
-			return fmt.Errorf("marshal tool_calls: %w", err)
+			return 0, fmt.Errorf("marshal tool_calls: %w", err)
 		}
 		toolCallsJSON = string(b)
 	}
 	now := time.Now().Unix()
 	tx, err := w.db.Begin()
 	if err != nil {
-		return fmt.Errorf("begin tx: %w", err)
+		return 0, fmt.Errorf("begin tx: %w", err)
 	}
 	if _, err := tx.Exec(
 		`INSERT INTO messages(session_id, seq, role, content, tool_call_id, name, tool_calls, agent_id, synthetic, ignored)
 		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		w.sessionID, w.seq, msg.Role, msg.Content, msg.ToolCallID, msg.Name, toolCallsJSON, agentID,
+		w.sessionID, seq, msg.Role, msg.Content, msg.ToolCallID, msg.Name, toolCallsJSON, agentID,
 		boolToInt(msg.Synthetic), boolToInt(msg.Ignored),
 	); err != nil {
 		tx.Rollback()
-		return fmt.Errorf("insert message: %w", err)
+		return 0, fmt.Errorf("insert message: %w", err)
 	}
 	if _, err := tx.Exec(
 		`UPDATE sessions SET updated_at = ? WHERE id = ?`, now, w.sessionID,
 	); err != nil {
 		tx.Rollback()
-		return fmt.Errorf("update session ts: %w", err)
+		return 0, fmt.Errorf("update session ts: %w", err)
 	}
 	// Auto-label: first top-level user message wins. The WHERE label = ''
 	// guard makes this idempotent — resumed sessions or sessions that
@@ -156,33 +170,35 @@ func (w *Writer) AppendMessage(msg llm.Message, agentID string) error {
 				label, w.sessionID,
 			); err != nil {
 				tx.Rollback()
-				return fmt.Errorf("auto-label: %w", err)
+				return 0, fmt.Errorf("auto-label: %w", err)
 			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return err
+		return 0, err
 	}
+	w.mu.Lock()
 	w.hasMessages = true
-	return nil
+	w.mu.Unlock()
+	return seq, nil
 }
 
 // AppendMessageUsage records provider-reported token counts for the
-// message most recently appended via AppendMessage. Targets
-// (session_id, w.seq, agentID) — that triple must already exist in
-// the messages table, or the row will be orphaned (kept as a no-op,
-// since the FK is on session_id only). Re-emission for the same key
-// overwrites via ON CONFLICT.
+// message at `seq` (the value returned by the AppendMessage that wrote
+// that row). Targets (session_id, seq, agentID) — that triple must
+// already exist in the messages table, or the row will be orphaned
+// (kept as a no-op, since the FK is on session_id only). Re-emission for
+// the same key overwrites via ON CONFLICT.
 //
-// The caller-side invariant is documented on tools.SessionWriter:
-// call this immediately after AppendMessage so w.seq still points at
-// the row the usage describes.
-func (w *Writer) AppendMessageUsage(usage llm.MessageUsage, agentID string) error {
-	if w.seq == 0 {
-		// AppendMessage hasn't been called on this writer yet —
-		// nothing to attach to. Log via the caller's path; here we
-		// return nil so the agent loop doesn't surface a transient
-		// boot-time hiccup.
+// Taking seq explicitly (rather than reading the writer's internal
+// cursor) is what makes attribution correct under a shared writer: a
+// concurrent sub-agent append can advance the cursor between the
+// AppendMessage and this call, which previously stamped the usage onto
+// the wrong row.
+func (w *Writer) AppendMessageUsage(seq int, usage llm.MessageUsage, agentID string) error {
+	if seq == 0 {
+		// No prior AppendMessage produced a row to attach to. Return nil
+		// so the agent loop doesn't surface a transient boot-time hiccup.
 		return nil
 	}
 	_, err := w.db.Exec(
@@ -197,7 +213,7 @@ func (w *Writer) AppendMessageUsage(usage llm.MessageUsage, agentID string) erro
 		    cache_write_tokens=excluded.cache_write_tokens,
 		    reasoning_tokens=excluded.reasoning_tokens,
 		    total_tokens=excluded.total_tokens`,
-		w.sessionID, w.seq, agentID,
+		w.sessionID, seq, agentID,
 		usage.InputTokens, usage.OutputTokens,
 		usage.CacheReadTokens, usage.CacheWriteTokens,
 		usage.ReasoningTokens, usage.TotalTokens,
@@ -266,7 +282,11 @@ func SlugifyLabel(s string) string {
 
 // HasMessages reports whether at least one message has been persisted
 // to this session.
-func (w *Writer) HasMessages() bool { return w.hasMessages }
+func (w *Writer) HasMessages() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.hasMessages
+}
 
 // Discard deletes the session row (cascading to messages, tool_calls,
 // and events via FK constraints). Used by the TUI on close when the
@@ -285,7 +305,10 @@ func (w *Writer) Discard() error {
 // fields (chans, errors) are stringified by the caller before passing in.
 // Distinct seq from messages.seq and tool_calls.seq.
 func (w *Writer) AppendEvent(eventType string, payload any) error {
+	w.mu.Lock()
 	w.eventSeq++
+	eventSeq := w.eventSeq
+	w.mu.Unlock()
 	var raw []byte
 	if payload != nil {
 		b, err := json.Marshal(payload)
@@ -297,7 +320,7 @@ func (w *Writer) AppendEvent(eventType string, payload any) error {
 	now := time.Now().Unix()
 	_, err := w.db.Exec(
 		`INSERT INTO events(session_id, seq, type, payload, ts) VALUES(?,?,?,?,?)`,
-		w.sessionID, w.eventSeq, eventType, raw, now,
+		w.sessionID, eventSeq, eventType, raw, now,
 	)
 	if err != nil {
 		return fmt.Errorf("insert event: %w", err)
@@ -309,7 +332,10 @@ func (w *Writer) AppendEvent(eventType string, payload any) error {
 // Args is JSON-marshalled; status is one of "ok", "error", "denied".
 // Distinct seq from messages.seq.
 func (w *Writer) AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error {
+	w.mu.Lock()
 	w.toolSeq++
+	toolSeq := w.toolSeq
+	w.mu.Unlock()
 	argsJSON := ""
 	if len(args) > 0 {
 		b, err := json.Marshal(args)
@@ -321,7 +347,7 @@ func (w *Writer) AppendToolCall(callID, name string, args map[string]interface{}
 	_, err := w.db.Exec(
 		`INSERT INTO tool_calls(session_id, seq, call_id, name, args, llm_output, full_output, status)
 		 VALUES(?,?,?,?,?,?,?,?)`,
-		w.sessionID, w.toolSeq, callID, name, argsJSON, llmOutput, fullOutput, status,
+		w.sessionID, toolSeq, callID, name, argsJSON, llmOutput, fullOutput, status,
 	)
 	if err != nil {
 		return fmt.Errorf("insert tool_call: %w", err)

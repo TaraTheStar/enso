@@ -24,10 +24,14 @@ import (
 // (~/.config/enso) and -c flag files are user-controlled and so always
 // trusted; system-tier (/etc) is admin-controlled and trusted.
 //
-// Only `<cwd>/.enso/config.toml` is gated. `config.local.toml` is gitignored
-// (so it isn't part of the cloned hostile content) and is rewritten by
-// enso itself on every "Allow + Remember" — gating it would mean constant
-// trust drift with no real defence-in-depth.
+// Both `<cwd>/.enso/config.toml` and `<cwd>/.enso/config.local.toml` are
+// gated. config.local.toml being gitignored does NOT keep it out of a
+// hostile clone — a repo author can `git add -f` it, and it loads at higher
+// priority than config.toml carrying the same [hooks]/[mcp]/permissions
+// payload. To avoid trust drift from enso's own "Allow + Remember" writes,
+// every enso write to config.local.toml records the new hash as trusted
+// (see config.AppendAllow / config.RemoveRule), so only content enso did
+// NOT author trips the gate.
 
 // TrustEntry records that the file at Path was trusted at TrustedAt with
 // contents hashing to SHA256. If a future load sees the file with a
@@ -110,12 +114,16 @@ func hashFile(path string) (string, error) {
 }
 
 // gatedProjectPaths returns the project-tier config files that require the
-// trust gate for cwd. Currently just `<cwd>/.enso/config.toml`.
+// trust gate for cwd: both `<cwd>/.enso/config.toml` and the
+// higher-priority `<cwd>/.enso/config.local.toml`.
 func gatedProjectPaths(cwd string) []string {
 	if cwd == "" {
 		return nil
 	}
-	return []string{filepath.Join(cwd, ".enso", "config.toml")}
+	return []string{
+		filepath.Join(cwd, ".enso", "config.toml"),
+		filepath.Join(cwd, ".enso", "config.local.toml"),
+	}
 }
 
 // UntrustedConfig describes a project-tier config file that exists on disk

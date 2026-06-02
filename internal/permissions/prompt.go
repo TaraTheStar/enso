@@ -5,7 +5,9 @@ package permissions
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/TaraTheStar/enso/internal/bus"
@@ -50,7 +52,19 @@ type PromptRequest struct {
 }
 
 // Checker evaluates tool calls against allowlist and config mode.
+//
+// mu guards every mutable field — yolo, the turnAllow pointer + its
+// patterns, and mutations of the persistent allowlist (AddAllow /
+// RemoveRule) against concurrent reads in Check. This matters now that
+// grants can arrive off the agent goroutine: the worker's serveControl
+// handles CtrlAddAllow / CtrlSetYolo on a separate goroutine from the
+// agent loop that calls Check, and the modal's "Allow Turn" / agent's
+// ResetTurnAllows likewise race a concurrent Check. mode is set once at
+// construction and never mutated, so reading it under the lock is just
+// for uniformity.
 type Checker struct {
+	mu sync.Mutex
+
 	allowlist *Allowlist
 	mode      string // "prompt", "allow", "deny"
 	yolo      bool
@@ -81,11 +95,15 @@ func NewChecker(allow, ask, deny []string, mode string) *Checker {
 
 // SetYolo toggles yolo mode (auto-allow all).
 func (c *Checker) SetYolo(yolo bool) {
+	c.mu.Lock()
 	c.yolo = yolo
+	c.mu.Unlock()
 }
 
 // Yolo reports whether yolo mode is currently active.
 func (c *Checker) Yolo() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.yolo
 }
 
@@ -102,7 +120,9 @@ func (c *Checker) AddAllow(pattern string) error {
 		return fmt.Errorf("invalid pattern %q (expected `tool(arg)` form)", pattern)
 	}
 	p.Kind = KindAllow
+	c.mu.Lock()
 	c.allowlist.AppendPattern(p)
+	c.mu.Unlock()
 	return nil
 }
 
@@ -119,10 +139,12 @@ func (c *Checker) AddTurnAllow(pattern string) error {
 		return fmt.Errorf("invalid pattern %q (expected `tool(arg)` form)", pattern)
 	}
 	p.Kind = KindAllow
+	c.mu.Lock()
 	if c.turnAllow == nil {
 		c.turnAllow = NewAllowlist(nil, nil, nil)
 	}
 	c.turnAllow.AppendPattern(p)
+	c.mu.Unlock()
 	return nil
 }
 
@@ -132,12 +154,16 @@ func (c *Checker) AddTurnAllow(pattern string) error {
 // the only safe boundary, since sub-agent fan-out and tool-call
 // chains all run within one user-driven turn.
 func (c *Checker) ResetTurnAllows() {
+	c.mu.Lock()
 	c.turnAllow = nil
+	c.mu.Unlock()
 }
 
 // HasTurnAllows reports whether any turn-scoped grants are active.
 // Useful for /permissions debugging and tests.
 func (c *Checker) HasTurnAllows() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.turnAllow != nil && len(c.turnAllow.patterns) > 0
 }
 
@@ -154,24 +180,38 @@ func (c *Checker) RemoveRule(pattern string, kind Kind) (bool, error) {
 	if p == nil {
 		return false, fmt.Errorf("invalid pattern %q (expected `tool(arg)` form)", pattern)
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.allowlist.Remove(p.Tool, p.Arg, kind), nil
 }
 
 // Patterns returns a copy of the live allowlist. Used by the
 // /permissions overlay for rendering.
-func (c *Checker) Patterns() []Pattern { return c.allowlist.Patterns() }
+func (c *Checker) Patterns() []Pattern {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.allowlist.Patterns()
+}
 
 // DerivePattern returns a sensible allowlist pattern for the given tool
 // call, suitable as the default rule the user accepts via "Allow +
-// Remember". Conventions:
+// Remember". `cwd` is the session working directory, used to path-scope
+// read/grep grants. Conventions:
 //
 //	bash      → "bash(<first-word> *)"  (generalises to every invocation
 //	                                    of that command)
-//	read/grep/glob → "<tool>(**)"       (read-only, broadly safe)
+//	read/grep → "<tool>(<cwd>/**)" when the path is inside cwd, else
+//	            "<tool>(<exact-clean-path>)"  (project-scoped, never `**`)
+//	glob      → "glob(<exact-pattern>)"  (the glob the user just ran)
 //	write/edit/web_fetch → "<tool>(<exact-arg>)"  (conservative — exact
 //	                                              path / url only)
 //	anything else → "<tool>(*)"
-func DerivePattern(toolName string, args map[string]any) string {
+//
+// read/grep are deliberately NOT `**`: a bare `read(**)` matches
+// /etc/passwd, ~/.ssh, and enso's own API-key config, so "remember read"
+// would silently grant whole-filesystem read. Scoping to cwd keeps the
+// rule useful within the project while keeping those out of reach.
+func DerivePattern(toolName string, args map[string]any, cwd string) string {
 	switch toolName {
 	case "bash":
 		cmd, _ := args["cmd"].(string)
@@ -184,8 +224,18 @@ func DerivePattern(toolName string, args map[string]any) string {
 		}
 		return "bash(" + cmd + ")"
 
-	case "read", "grep", "glob":
-		return toolName + "(**)"
+	case "read", "grep":
+		if path, _ := args["path"].(string); path != "" {
+			return derivePathPattern(toolName, path, cwd)
+		}
+
+	case "glob":
+		// glob's arg is itself a pattern, matched lexically (not as a
+		// path), so the conservative "remember" is the exact pattern the
+		// user just ran — never a broadened `**`.
+		if pat, _ := args["pattern"].(string); pat != "" {
+			return "glob(" + pat + ")"
+		}
 
 	case "write", "edit":
 		if path, _ := args["path"].(string); path != "" {
@@ -200,6 +250,23 @@ func DerivePattern(toolName string, args map[string]any) string {
 	return toolName + "(*)"
 }
 
+// derivePathPattern scopes a read/grep "remember" rule. A path inside the
+// session cwd becomes a project-subtree rule (`read(<cwd>/**)`) — broad
+// enough to be useful but unable to reach /etc, ~/.ssh, or enso's own key
+// store outside the project. Anything outside cwd (additional dirs,
+// absolute reads) gets an EXACT cleaned-path rule so "remember" never
+// widens to the whole filesystem. An empty cwd falls back to exact too.
+func derivePathPattern(tool, path, cwd string) string {
+	clean := filepath.Clean(path)
+	if cwd != "" {
+		c := filepath.Clean(cwd)
+		if clean == c || strings.HasPrefix(clean, c+string(filepath.Separator)) {
+			return fmt.Sprintf("%s(%s/**)", tool, c)
+		}
+	}
+	return fmt.Sprintf("%s(%s)", tool, clean)
+}
+
 // Check evaluates a tool call and returns the decision.
 //
 // Order of precedence: yolo bypass > deny pattern > turn allow > ask
@@ -209,43 +276,63 @@ func DerivePattern(toolName string, args map[string]any) string {
 // for that pattern is what they're trying to silence. Deny rules
 // still win, so a user grant can never override a hard "never".
 func (c *Checker) Check(toolName string, args map[string]interface{}, busInst *bus.Bus) (Decision, error) {
-	if c.yolo {
-		emitAutoAllow(busInst, toolName, args, "yolo")
-		return Allow, nil
-	}
-
-	argStr := buildArgString(args)
 	matchArg := extractArg(toolName, args)
+
+	// Evaluate all mutable state under the lock; defer the bus emission
+	// and error formatting until after unlock so a slow bus subscriber
+	// can't pin the checker (and to keep the critical section pure).
+	c.mu.Lock()
+	decision, autoReason, modeDeny := c.evalLocked(toolName, matchArg)
+	c.mu.Unlock()
+
+	if autoReason != "" {
+		emitAutoAllow(busInst, toolName, args, autoReason)
+	}
+	if modeDeny {
+		return Deny, fmt.Errorf("permission denied: %s(%s)", toolName, buildArgString(args))
+	}
+	return decision, nil
+}
+
+// evalLocked computes the decision against the checker's mutable state.
+// Caller must hold c.mu. It returns the decision, a non-empty
+// autoReason when the call was auto-allowed (so the caller emits the
+// audit event after releasing the lock), and modeDeny=true when the
+// denial came from the "deny" mode default (which carries an error)
+// rather than a deny rule (which doesn't). See Check's doc comment for
+// the precedence rules.
+func (c *Checker) evalLocked(toolName, matchArg string) (decision Decision, autoReason string, modeDeny bool) {
+	if c.yolo {
+		return Allow, "yolo", false
+	}
 
 	matched, kind := c.allowlist.Match(toolName, matchArg)
 	if matched && kind == KindDeny {
-		return Deny, nil
+		return Deny, "", false
 	}
 
 	if c.turnAllow != nil {
 		if turnMatched, turnKind := c.turnAllow.Match(toolName, matchArg); turnMatched && turnKind == KindAllow {
-			emitAutoAllow(busInst, toolName, args, "allow-turn")
-			return Allow, nil
+			return Allow, "allow-turn", false
 		}
 	}
 
 	if matched {
 		switch kind {
 		case KindAsk:
-			return Prompt, nil
+			return Prompt, "", false
 		case KindAllow:
-			emitAutoAllow(busInst, toolName, args, "allowlist")
-			return Allow, nil
+			return Allow, "allowlist", false
 		}
 	}
 
 	switch c.mode {
 	case "allow":
-		return Allow, nil
+		return Allow, "", false
 	case "deny":
-		return Deny, fmt.Errorf("permission denied: %s(%s)", toolName, argStr)
+		return Deny, "", true
 	default:
-		return Prompt, nil
+		return Prompt, "", false
 	}
 }
 

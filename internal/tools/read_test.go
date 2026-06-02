@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -117,6 +118,87 @@ func TestReadTool_RequiresPath(t *testing.T) {
 	_, err := ReadTool{}.Run(context.Background(), map[string]any{}, ac)
 	if err == nil {
 		t.Errorf("empty path: want error")
+	}
+}
+
+func TestReadTool_DirectoryErrors(t *testing.T) {
+	tmp := t.TempDir()
+	if err := os.Mkdir(filepath.Join(tmp, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ac := newToolAC(tmp)
+	_, err := ReadTool{}.Run(context.Background(), map[string]any{"path": "sub"}, ac)
+	if err == nil {
+		t.Errorf("reading a directory: want error")
+	}
+}
+
+// TestReadTool_LargeFileStreams is the OOM regression: a file over
+// readFullMaxBytes must NOT be slurped whole — it streams only the
+// requested window. We make an 11 MiB file but ask for just the first
+// two lines; the result carries them and the display flags it as a
+// large-file read.
+func TestReadTool_LargeFileStreams(t *testing.T) {
+	tmp := t.TempDir()
+	var b strings.Builder
+	b.WriteString("alpha\nbeta\n")
+	filler := strings.Repeat("x", 63) + "\n" // 64 bytes/line
+	for b.Len() < readFullMaxBytes+(1<<20) { // ~11 MiB
+		b.WriteString(filler)
+	}
+	mustWriteFile(t, filepath.Join(tmp, "big.log"), b.String())
+
+	ac := newToolAC(tmp)
+	res, err := ReadTool{}.Run(context.Background(),
+		map[string]any{"path": "big.log", "first_line": float64(1), "last_line": float64(2)}, ac)
+	if err != nil {
+		t.Fatalf("read large: %v", err)
+	}
+	if !strings.Contains(res.LLMOutput, "alpha") || !strings.Contains(res.LLMOutput, "beta") {
+		t.Errorf("window missing requested lines:\n%s", res.LLMOutput)
+	}
+	if strings.Contains(res.LLMOutput, "xxxxx") {
+		t.Errorf("streamed beyond the requested window:\n%s", res.LLMOutput)
+	}
+	if !strings.Contains(res.DisplayOutput, "large file") {
+		t.Errorf("display should flag a large-file read; got %q", res.DisplayOutput)
+	}
+}
+
+func TestReadFileWindow(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "w.txt")
+	mustWriteFile(t, path, "l1\nl2\nl3\nl4\nl5\n")
+
+	// Range [2,4].
+	lines, capped, err := readFileWindow(path, 2, 4, 1<<20, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if capped {
+		t.Errorf("small range should not be capped")
+	}
+	if strings.Join(lines, ",") != "l2,l3,l4" {
+		t.Errorf("got %v, want [l2 l3 l4]", lines)
+	}
+
+	// Line-count cap trips capped=true and bounds the result.
+	lines, capped, err = readFileWindow(path, 1, math.MaxInt, 1<<20, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capped || len(lines) != 2 {
+		t.Errorf("line cap: got %d lines capped=%v, want 2 capped=true", len(lines), capped)
+	}
+
+	// A single over-long line is clipped, not errored.
+	mustWriteFile(t, path, strings.Repeat("a", 5000)+"\n")
+	lines, capped, err = readFileWindow(path, 1, 1, 100, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !capped || len(lines) != 1 || len(lines[0]) != 100 {
+		t.Errorf("long-line clip: got len=%d capped=%v, want len=100 capped=true", len(lines[0]), capped)
 	}
 }
 

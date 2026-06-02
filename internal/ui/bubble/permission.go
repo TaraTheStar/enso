@@ -3,11 +3,14 @@
 package bubble
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/permissions"
 )
@@ -21,6 +24,12 @@ type permPending struct {
 	req     *permissions.PromptRequest
 	checker *permissions.Checker
 	cwd     string
+	// sess is the seam to the worker's REAL enforcing checker. On the
+	// default local path the checker enforcing tool gating lives in the
+	// worker process, so "always"/"turn" grants RPC through here
+	// (mirroring /yolo); checker above is only the host display mirror.
+	// nil in true attach mode (no wire path to the daemon's checker).
+	sess *host.Session
 }
 
 // startPermPrompt is called from handleBusEvent when an
@@ -141,19 +150,35 @@ func resolvePerm(p *permPending, key string) (decision permissions.Decision, dec
 	case "n", "esc":
 		return permissions.Deny, true, nil
 	case "a":
-		// "Remember" — persist a matching allow pattern in the local
-		// checker + project config, then allow this call. In attach
-		// mode the checker lives in the daemon process and we have no
-		// wire path to mutate it; fall back to plain Allow with a
-		// notice so the user knows persistence didn't happen.
-		if p.checker == nil {
+		// "Remember" — apply a matching allow pattern to the enforcing
+		// checker (worker-side via sess on the default local path; the
+		// in-process checker otherwise), persist it to project config,
+		// and mirror it onto the host display checker, then allow this
+		// call. Only in true attach mode (no sess, no checker) is there
+		// no wire path to enforcement — fall back to plain Allow with a
+		// notice so the user knows the grant didn't take.
+		if p.sess == nil && p.checker == nil {
 			cmd = tea.Println(noticeStyle.Render("(allowed once; remember/turn unavailable in attach mode)"))
 			return permissions.Allow, true, cmd
 		}
-		pattern := permissions.DerivePattern(p.req.ToolName, p.req.Args)
-		if err := p.checker.AddAllow(pattern); err != nil {
-			cmd = tea.Println(errorStyle.Render(fmt.Sprintf("remember %s: %v", pattern, err)))
-			return permissions.Allow, true, cmd
+		pattern := permissions.DerivePattern(p.req.ToolName, p.req.Args, p.cwd)
+		// Enforcement first: apply to the worker's real checker before
+		// the decision is sent so the next call in this session is
+		// gated by the new rule, not a race.
+		if p.sess != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := p.sess.AddAllow(ctx, pattern)
+			cancel()
+			if err != nil {
+				cmd = tea.Println(errorStyle.Render(fmt.Sprintf("remember %s: %v", pattern, err)))
+				return permissions.Allow, true, cmd
+			}
+		}
+		if p.checker != nil {
+			if err := p.checker.AddAllow(pattern); err != nil {
+				cmd = tea.Println(errorStyle.Render(fmt.Sprintf("remember %s: %v", pattern, err)))
+				return permissions.Allow, true, cmd
+			}
 		}
 		path := config.ProjectLocalPath(p.cwd)
 		if err := config.AppendAllow(path, pattern); err != nil {
@@ -164,15 +189,32 @@ func resolvePerm(p *permPending, key string) (decision permissions.Decision, dec
 		return permissions.Allow, true, cmd
 	case "t":
 		// Turn-scoped grant: matches future calls in this turn but
-		// doesn't persist. Same attach-mode caveat.
-		if p.checker == nil {
+		// doesn't persist. Same enforcement surfaces as "always".
+		if p.sess == nil && p.checker == nil {
 			cmd = tea.Println(noticeStyle.Render("(allowed once; remember/turn unavailable in attach mode)"))
 			return permissions.Allow, true, cmd
 		}
-		pattern := permissions.DerivePattern(p.req.ToolName, p.req.Args)
-		if err := p.checker.AddTurnAllow(pattern); err != nil {
-			cmd = tea.Println(errorStyle.Render(fmt.Sprintf("allow-turn %s: %v", pattern, err)))
-			return permissions.Allow, true, cmd
+		pattern := permissions.DerivePattern(p.req.ToolName, p.req.Args, p.cwd)
+		if p.sess != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := p.sess.AddTurnAllow(ctx, pattern)
+			cancel()
+			if err != nil {
+				cmd = tea.Println(errorStyle.Render(fmt.Sprintf("allow-turn %s: %v", pattern, err)))
+				return permissions.Allow, true, cmd
+			}
+		}
+		// Mirror onto the host checker only when it is itself the
+		// enforcing checker (in-process path, sess == nil). The host
+		// display mirror is never reset host-side — only the worker
+		// agent loop calls ResetTurnAllows at each user message — so
+		// mirroring a transient turn grant onto it would leave stale
+		// entries that over-report in /perms.
+		if p.sess == nil && p.checker != nil {
+			if err := p.checker.AddTurnAllow(pattern); err != nil {
+				cmd = tea.Println(errorStyle.Render(fmt.Sprintf("allow-turn %s: %v", pattern, err)))
+				return permissions.Allow, true, cmd
+			}
 		}
 		cmd = tea.Println(statusStyle.Render(fmt.Sprintf("→ allowing %s for this turn", pattern)))
 		return permissions.Allow, true, cmd

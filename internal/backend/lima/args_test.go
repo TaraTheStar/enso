@@ -100,8 +100,11 @@ func TestBuildVMConfig_IptablesBootstrap(t *testing.T) {
 	// strand the seal.
 	y := (&Backend{Sealed: true, Init: []string{"echo user-step"}}).buildVMConfig(cwd, "/e/exe")
 	speed := strings.Index(y, "set timeout=0")
-	boot := strings.Index(y, "apk add --no-cache iptables")
+	boot := strings.Index(y, "apk add --no-cache iptables ip6tables")
 	user := strings.Index(y, "echo user-step")
+	if boot < 0 || !strings.Contains(y, "ip6tables") {
+		t.Errorf("sealed Alpine bootstrap must install ip6tables for the fail-closed v6 seal, got:\n%s", y)
+	}
 	if speed < 0 || boot < 0 {
 		t.Errorf("sealed Alpine must emit boot-speedup AND iptables bootstrap, got:\n%s", y)
 	}
@@ -243,12 +246,45 @@ func TestSealScript_DefaultDenyPosture(t *testing.T) {
 
 	// With a proxy: exactly that host:port is opened, before the REJECT.
 	p := sealScript("192.168.5.2:54321")
-	allow := "ENSO_EGRESS -p tcp -d 192.168.5.2 --dport 54321 -j ACCEPT"
+	allow := "iptables -w -A ENSO_EGRESS -p tcp -d 192.168.5.2 --dport 54321 -j ACCEPT"
 	if !strings.Contains(p, allow) {
 		t.Errorf("proxied seal must open the gateway:port, got:\n%s", p)
 	}
-	if strings.Index(p, allow) > strings.Index(p, "-j REJECT") {
+	if strings.Index(p, allow) > strings.Index(p, "iptables -w -A ENSO_EGRESS -j REJECT") {
 		t.Errorf("proxy ACCEPT must precede REJECT:\n%s", p)
+	}
+}
+
+// TestSealScript_IPv6DefaultDeny is the S4 regression: the seal must
+// default-deny IPv6 OUTPUT too, or a guest with working IPv6 egresses
+// around the v4-only allowlist. The v6 chain mirrors v4 (lo + established
+// + REJECT) but carries NO proxy ACCEPT — the proxy is at the IPv4
+// gateway, so v6 is a pure seal.
+func TestSealScript_IPv6DefaultDeny(t *testing.T) {
+	for _, in := range []string{"", "192.168.5.2:54321"} {
+		s := sealScript(in)
+		for _, want := range []string{
+			"ip6tables -w -F ENSO_EGRESS 2>/dev/null || ip6tables -w -N ENSO_EGRESS",
+			"ip6tables -w -A ENSO_EGRESS -o lo -j ACCEPT",
+			"ip6tables -w -A ENSO_EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT",
+			"ip6tables -w -A ENSO_EGRESS -j REJECT --reject-with icmp6-port-unreachable",
+			"ip6tables -w -C OUTPUT -j ENSO_EGRESS",
+		} {
+			if !strings.Contains(s, want) {
+				t.Errorf("v6 seal (proxy=%q) missing %q:\n%s", in, want, s)
+			}
+		}
+		// The v6 chain never opens a port — the proxy is IPv4-only.
+		v6Start := strings.Index(s, "ip6tables")
+		if strings.Contains(s[v6Start:], "--dport") {
+			t.Errorf("v6 chain must not open any egress port (proxy is IPv4), got:\n%s", s)
+		}
+		// v6 REJECT must follow its ACCEPT allowances (order matters).
+		rej := strings.Index(s, "ip6tables -w -A ENSO_EGRESS -j REJECT")
+		lo := strings.Index(s, "ip6tables -w -A ENSO_EGRESS -o lo -j ACCEPT")
+		if rej < lo {
+			t.Errorf("v6 REJECT must follow the ACCEPT rules:\n%s", s)
+		}
 	}
 }
 

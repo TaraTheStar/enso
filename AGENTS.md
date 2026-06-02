@@ -153,20 +153,35 @@ something feels off:
   unfenced tools were safe (they aren't), and a real fix would need
   per-call nonces around *every* tool result with system-prompt
   awareness — a prompt-engineering project on its own.
-- **Bash deny-rule bypass via command substitution.** Deny rules are
-  now segment-aware: `bash(rm -rf *)` correctly catches `do_evil; rm -rf /`,
-  `cd / && rm -rf *`, `cd / || rm -rf *`, `ls | rm -rf *`, and newline-
-  separated chains by splitting on top-level separators
-  (`internal/permissions/allowlist.go` `bashSplitTopLevel`). The
-  remaining bypasses — `$(rm -rf /)`, backticks, `eval "$cmd"`, here-
-  docs, and anything inside shell control flow — are NOT closed,
-  because closing them properly needs a full shell parser
-  (`mvdan.cc/sh`-class) that we've punted on. **Deny rules are
-  guardrails, not walls.** For adversarial inputs (hostile model,
-  hostile dependency code being reviewed), an isolated backend
-  (`[backend] type = "podman"` / `"lima"`) is
-  the boundary — the documented residual bypass classes are caught
-  there because the entire shell session runs inside a container.
+- **Bash deny-rule bypass — best-effort, not a wall.** Deny rules are
+  segment-aware AND lexically normalized: `bash(rm -rf *)` catches
+  `do_evil; rm -rf /`, `cd / && rm -rf *`, `cd / || rm -rf *`,
+  `ls | rm -rf *`, and newline-separated chains (top-level split via
+  `bashSplitTopLevel`); duplicated/odd whitespace (`rm  -rf`), a path to
+  the binary (`/bin/rm`, `./rm`), shell-escape backslashes (`\rm`,
+  `r\m`), and a quoted command word (`"rm"`) via `normalizeBashSegment`;
+  and a denied command tucked inside `$(...)` / backticks via
+  `bashSubstitutions` (single-quoted substitutions stay literal). All in
+  `internal/permissions/allowlist.go` (`Allowlist.Match`). The remaining
+  bypasses — interpreter indirection (`eval "$cmd"`, `sh -c '...'`,
+  `xargs`), process substitution `<(...)`, here-docs, and anything
+  inside shell control flow — are NOT closed, because closing them
+  properly needs a full shell parser (`mvdan.cc/sh`-class) that we've
+  punted on. **Deny rules are guardrails, not walls.** For adversarial
+  inputs (hostile model, hostile dependency code being reviewed), an
+  isolated backend (`[backend] type = "podman"` / `"lima"`) is the
+  boundary — the residual bypass classes are caught there because the
+  entire shell session runs inside a container.
+- **Bash child env is credential-scrubbed.** The local-backend `bash`
+  tool runs in enso's own process, so an unscrubbed child shell would
+  let an untrusted model `echo $OPENAI_API_KEY`. `scrubbedBashEnv`
+  (`internal/tools/bash.go`) drops every `ENSO_*` var (the
+  `api_key = "$ENSO_OPENAI_KEY"` indirection source) plus any name
+  containing `API_KEY`/`SECRET`/`TOKEN`/`PASSWORD`/`CREDENTIAL`/
+  `PRIVATE_KEY`/`ACCESS_KEY` (a name-pattern denylist, so PATH/HOME/
+  toolchain vars survive). Trade-off: genuine tokens like `GITHUB_TOKEN`
+  are hidden from the model too — legitimate git/gh auth should come from
+  a credential helper, not an inherited secret.
 - **Workflow sibling parallelism** is goroutine-correct but not
   load-tested. Three-role pipelines work; large fan-outs (10+
   siblings) with shared output state under mutex are unexplored.

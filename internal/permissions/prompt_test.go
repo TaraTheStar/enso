@@ -9,32 +9,44 @@ func TestDerivePattern(t *testing.T) {
 		name string
 		tool string
 		args map[string]any
+		cwd  string
 		want string
 	}{
 		{"bash multi-word: first-word generalisation",
-			"bash", map[string]any{"cmd": "git status -s"}, "bash(git *)"},
+			"bash", map[string]any{"cmd": "git status -s"}, "/repo", "bash(git *)"},
 		{"bash single word: exact",
-			"bash", map[string]any{"cmd": "ls"}, "bash(ls)"},
+			"bash", map[string]any{"cmd": "ls"}, "/repo", "bash(ls)"},
 		{"bash empty cmd",
-			"bash", map[string]any{}, "bash(*)"},
-		{"read: broad",
-			"read", map[string]any{"path": "README.md"}, "read(**)"},
-		{"grep: broad",
-			"grep", map[string]any{"pattern": "TODO"}, "grep(**)"},
+			"bash", map[string]any{}, "/repo", "bash(*)"},
+		// S8: read/grep are scoped to cwd, never `**`.
+		{"read inside cwd: project-scoped subtree",
+			"read", map[string]any{"path": "/repo/src/main.go"}, "/repo", "read(/repo/**)"},
+		{"read of cwd itself: project-scoped subtree",
+			"read", map[string]any{"path": "/repo"}, "/repo", "read(/repo/**)"},
+		{"read outside cwd: exact cleaned path (no whole-fs grant)",
+			"read", map[string]any{"path": "/etc/passwd"}, "/repo", "read(/etc/passwd)"},
+		{"read with .. traversal: cleaned before scoping",
+			"read", map[string]any{"path": "/repo/../etc/passwd"}, "/repo", "read(/etc/passwd)"},
+		{"read empty cwd: exact",
+			"read", map[string]any{"path": "/repo/x.go"}, "", "read(/repo/x.go)"},
+		{"grep inside cwd: project-scoped subtree",
+			"grep", map[string]any{"path": "/repo/pkg"}, "/repo", "grep(/repo/**)"},
+		{"glob: exact pattern, never broadened",
+			"glob", map[string]any{"pattern": "**/*.go"}, "/repo", "glob(**/*.go)"},
 		{"write: exact path",
-			"write", map[string]any{"path": "src/x.go"}, "write(src/x.go)"},
+			"write", map[string]any{"path": "src/x.go"}, "/repo", "write(src/x.go)"},
 		{"edit: exact path",
-			"edit", map[string]any{"path": "src/x.go"}, "edit(src/x.go)"},
+			"edit", map[string]any{"path": "src/x.go"}, "/repo", "edit(src/x.go)"},
 		{"edit no path: fallback",
-			"edit", map[string]any{}, "edit(*)"},
+			"edit", map[string]any{}, "/repo", "edit(*)"},
 		{"web_fetch: exact url",
-			"web_fetch", map[string]any{"url": "https://example.com"}, "web_fetch(https://example.com)"},
+			"web_fetch", map[string]any{"url": "https://example.com"}, "/repo", "web_fetch(https://example.com)"},
 		{"unknown tool: fallback",
-			"mcp__gitea__list_repos", map[string]any{}, "mcp__gitea__list_repos(*)"},
+			"mcp__gitea__list_repos", map[string]any{}, "/repo", "mcp__gitea__list_repos(*)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := DerivePattern(tc.tool, tc.args); got != tc.want {
+			if got := DerivePattern(tc.tool, tc.args, tc.cwd); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})

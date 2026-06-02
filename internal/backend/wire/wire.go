@@ -175,6 +175,8 @@ const (
 	CtrlPrefixBreakdown  = "prefix_breakdown"    // Args: none;               Result: PrefixBreakdown
 	CtrlSetNextTurnTools = "set_next_turn_tools" // Args: ControlNames;      Result: none
 	CtrlSetYolo          = "set_yolo"            // Args: ControlBool;       Result: none
+	CtrlAddAllow         = "add_allow"           // Args: ControlName(pattern); Result: none (Error on bad pattern)
+	CtrlAddTurnAllow     = "add_turn_allow"      // Args: ControlName(pattern); Result: none (Error on bad pattern)
 )
 
 // ControlBool is the args payload for single-bool methods.

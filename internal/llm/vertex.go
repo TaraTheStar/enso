@@ -174,6 +174,13 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		// latest seen and emit once at end-of-stream.
 		var lastUsage MessageUsage
 		var sawUsage bool
+		// Monotonic index across the whole stream, used to disambiguate
+		// synthesised tool-call IDs. Gemini omits ids and two parallel
+		// calls to the SAME tool would otherwise both get `call_<name>`,
+		// colliding so a tool result can't be matched to the right call
+		// (and breaking compaction-boundary matching / cross-provider
+		// /model swap). Suffixing with this index keeps them distinct.
+		toolCallIdx := 0
 
 		stream(func(resp *genai.GenerateContentResponse, err error) bool {
 			if err != nil {
@@ -211,11 +218,11 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 						}
 						// Gemini omits an explicit id for most calls;
 						// synthesise one so downstream code can match
-						// tool results back to this call.
-						id := fc.ID
-						if id == "" {
-							id = "call_" + fc.Name
-						}
+						// tool results back to this call. The index suffix
+						// keeps parallel same-tool calls distinct (see
+						// toolCallIdx above).
+						id := synthVertexToolCallID(fc.ID, fc.Name, toolCallIdx)
+						toolCallIdx++
 						tc := ToolCall{ID: id, Type: "function"}
 						tc.Function.Name = fc.Name
 						tc.Function.Arguments = string(args)
@@ -252,6 +259,20 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 	}()
 
 	return eventCh, nil
+}
+
+// synthVertexToolCallID returns the tool-call ID to emit for a Gemini
+// function-call part. Gemini supplies an explicit id only rarely; when
+// it's empty we synthesise `call_<name>_<idx>` where idx is a per-stream
+// monotonic counter. The idx is what makes two PARALLEL calls to the
+// same tool distinct — without it both would be `call_<name>` and the
+// tool results couldn't be matched back to the right call. A provided
+// id is always trusted verbatim.
+func synthVertexToolCallID(provided, name string, idx int) string {
+	if provided != "" {
+		return provided
+	}
+	return fmt.Sprintf("call_%s_%d", name, idx)
 }
 
 // startRecoveryProbe is a stub for the same reason Bedrock's is: there

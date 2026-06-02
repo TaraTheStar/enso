@@ -83,26 +83,83 @@ func TestBashDeny_QuotedSeparatorsDoNotSplit(t *testing.T) {
 	}
 }
 
+func TestBashDeny_BlocksLexicalEvasions(t *testing.T) {
+	// S6: argv[0] normalization (basename / backslash-strip / unquote)
+	// plus whitespace collapse closes the cheap evasions that a literal
+	// pattern match used to miss. All of these must trip `bash(rm -rf *)`.
+	al := NewAllowlist(nil, nil, []string{"bash(rm -rf *)"})
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{"double space", "rm  -rf /tmp/foo"},
+		{"tab separated", "rm\t-rf /tmp/foo"},
+		{"absolute path", "/bin/rm -rf /tmp/foo"},
+		{"relative path", "./rm -rf /tmp/foo"},
+		{"leading backslash", `\rm -rf /tmp/foo`},
+		{"interior backslash", `r\m -rf /tmp/foo`},
+		{"quoted binary", `"rm" -rf /tmp/foo`},
+		{"path + backslash chained", `do_evil; /bin/\rm -rf /`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matched, kind := al.Match("bash", tc.cmd)
+			if !matched || kind != KindDeny {
+				t.Errorf("cmd=%q matched=%v kind=%v, want deny", tc.cmd, matched, kind)
+			}
+		})
+	}
+}
+
+func TestBashDeny_BlocksCommandSubstitution(t *testing.T) {
+	// S6: a denied command tucked inside `$(...)` or backticks is now
+	// extracted and matched. Single-quoted substitutions stay literal
+	// (no execution → no deny).
+	al := NewAllowlist(nil, nil, []string{"bash(rm -rf *)"})
+	cases := []struct {
+		name     string
+		cmd      string
+		wantDeny bool
+	}{
+		{"dollar-paren", `echo $(rm -rf /tmp/foo)`, true},
+		{"backtick", "echo `rm -rf /tmp/foo`", true},
+		{"dollar-paren in double quotes", `echo "$(rm -rf /tmp/foo)"`, true},
+		{"nested dollar-paren", `echo $(echo $(rm -rf /tmp/foo))`, true},
+		{"normalized inside subst", `echo $(/bin/\rm -rf /tmp/foo)`, true},
+		// Inside single quotes substitution does not run, so no deny.
+		{"single-quoted subst is literal", `echo '$(rm -rf /tmp/foo)'`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			matched, kind := al.Match("bash", tc.cmd)
+			gotDeny := matched && kind == KindDeny
+			if gotDeny != tc.wantDeny {
+				t.Errorf("cmd=%q gotDeny=%v want %v", tc.cmd, gotDeny, tc.wantDeny)
+			}
+		})
+	}
+}
+
 func TestBashDeny_KnownResidualGap_DocumentedNotFixed(t *testing.T) {
-	// Locks in the documented gap from AGENTS.md / TODO #21: the
-	// segment splitter does NOT recurse into command substitution or
-	// backticks. These are real bypasses; a security-conscious user
-	// must rely on an isolating backend (`[backend] type = "podman"`
-	// or `"lima"`) for protection. If a
-	// future change extends the matcher to handle these, this test
-	// SHOULD fail and be updated — that's a deliberate signpost.
+	// Locks in the residual gaps documented on Allowlist.Match: deny is
+	// best-effort and does NOT chase interpreter indirection or process
+	// substitution. These are real bypasses; a security-conscious user
+	// must rely on an isolating backend (`[backend] type = "podman"` or
+	// `"lima"`) for protection. If a future change closes one of these,
+	// this test SHOULD fail and be updated — that's a deliberate signpost.
 	al := NewAllowlist(nil, nil, []string{"bash(rm -rf *)"})
 	cases := []string{
-		`echo $(rm -rf /tmp/foo)`,
-		"echo `rm -rf /tmp/foo`",
-		`eval "rm -rf /tmp/foo"`,
+		`eval "rm -rf /tmp/foo"`,    // interpreter indirection
+		`sh -c "rm -rf /tmp/foo"`,   // explicit interpreter
+		`xargs rm -rf < /tmp/files`, // argv from another stream
+		`cat <(rm -rf /tmp/foo)`,    // process substitution
 	}
 	for _, cmd := range cases {
 		matched, kind := al.Match("bash", cmd)
 		if matched && kind == KindDeny {
 			t.Errorf(
-				"cmd=%q now matches deny — segment splitter has been extended? "+
-					"If intentional, update this test and AGENTS.md.",
+				"cmd=%q now matches deny — the matcher has been extended? "+
+					"If intentional, update this test and the Allowlist.Match doc.",
 				cmd,
 			)
 		}

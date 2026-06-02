@@ -82,6 +82,75 @@ func TestBuildRunArgs_OverlayAndEgress(t *testing.T) {
 	}
 }
 
+// TestBuildRunArgs_EgressSeal is the S3 regression: slirp egress mode is
+// NOT sealed by the HTTPS_PROXY env alone (a model can unset it and dial
+// slirp's NAT or the host loopback at the gateway). The container must get
+// NET_ADMIN plus a fail-closed in-guest packet seal so the proxy is the
+// only L3 route out.
+func TestBuildRunArgs_EgressSeal(t *testing.T) {
+	b := &Backend{Image: "alpine", EgressProxy: "http://127.0.0.1:54321"}
+	got := joinArgs(b.buildRunArgs("n", "t1", "/e", "/p", ""))
+
+	if !strings.Contains(got, "--cap-add NET_ADMIN") {
+		t.Errorf("egress mode must grant NET_ADMIN for the in-guest seal, got: %s", got)
+	}
+	// The entrypoint must be the wrapped script (not a direct exec).
+	if strings.Contains(got, "alpine /usr/local/bin/enso __worker") {
+		t.Errorf("egress mode must wrap the worker in a sealing entrypoint, got: %s", got)
+	}
+	for _, want := range []string{
+		"set -e",
+		"apk add --no-cache iptables ip6tables", // fail-closed tooling bootstrap
+		"iptables -w -A ENSO_EGRESS -p tcp -d 10.0.2.2 --dport 54321 -j ACCEPT",
+		"iptables -w -A ENSO_EGRESS -j REJECT",
+		"ip6tables -w -A ENSO_EGRESS -j REJECT", // v6 sealed too (S4 shares this)
+		"exec /usr/local/bin/enso __worker",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("sealing entrypoint missing %q, got: %s", want, got)
+		}
+	}
+	// Order is the security property: the seal is applied LAST, so the
+	// only thing that ever runs sealed is the worker exec.
+	sealAt := strings.Index(got, "ENSO_EGRESS -j REJECT")
+	execAt := strings.Index(got, "exec /usr/local/bin/enso __worker")
+	if sealAt < 0 || execAt < 0 || sealAt > execAt {
+		t.Errorf("seal must be applied before the worker exec, got: %s", got)
+	}
+}
+
+// TestBuildRunArgs_NoProxyNoSeal proves the fully-sealed path (--network
+// none) is untouched: no NET_ADMIN, no seal — it has no network at all, so
+// there is nothing to filter, and the worker is exec'd directly.
+func TestBuildRunArgs_NoProxyNoSeal(t *testing.T) {
+	got := joinArgs((&Backend{Image: "alpine"}).buildRunArgs("n", "t1", "/e", "/p", ""))
+	if strings.Contains(got, "NET_ADMIN") || strings.Contains(got, "ENSO_EGRESS") {
+		t.Errorf("fully-sealed (--network none) box must not add a seal/cap, got: %s", got)
+	}
+	if !strings.HasSuffix(got, "alpine /usr/local/bin/enso __worker") {
+		t.Errorf("no-proxy box must exec the worker directly, got: %s", got)
+	}
+}
+
+// TestBuildRunArgs_EgressSealAfterInit proves user init runs BEFORE the
+// seal (so it keeps full egress for package installs — init is
+// operator-controlled, same trust as the allowlist), and the seal still
+// lands before the worker exec.
+func TestBuildRunArgs_EgressSealAfterInit(t *testing.T) {
+	b := &Backend{Image: "alpine", EgressProxy: "http://127.0.0.1:54321", Init: []string{"echo provision-step"}}
+	got := joinArgs(b.buildRunArgs("n", "t1", "/e", "/p", ""))
+
+	initAt := strings.Index(got, "echo provision-step")
+	sealAt := strings.Index(got, "ENSO_EGRESS -j REJECT")
+	execAt := strings.Index(got, "exec /usr/local/bin/enso __worker")
+	if initAt < 0 || sealAt < 0 || execAt < 0 {
+		t.Fatalf("expected init, seal, and exec all present, got: %s", got)
+	}
+	if !(initAt < sealAt && sealAt < execAt) {
+		t.Errorf("order must be init < seal < exec, got: %s", got)
+	}
+}
+
 func TestContainerProxyURL(t *testing.T) {
 	for in, want := range map[string]string{
 		"http://127.0.0.1:8080":      "http://10.0.2.2:8080",

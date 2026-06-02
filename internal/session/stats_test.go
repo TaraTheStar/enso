@@ -25,13 +25,13 @@ func TestComputeStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w1.AppendMessage(llm.Message{Role: "user", Content: "hello"}, ""); err != nil {
+	if _, err := w1.AppendMessage(llm.Message{Role: "user", Content: "hello"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	asst := llm.Message{Role: "assistant", Content: "world"}
 	asst.ToolCalls = []llm.ToolCall{{ID: "c1"}}
 	asst.ToolCalls[0].Function.Name = "bash"
-	if err := w1.AppendMessage(asst, ""); err != nil {
+	if _, err := w1.AppendMessage(asst, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := w1.AppendToolCall("c1", "bash", map[string]any{"cmd": "ls"}, "ok", "ok", "ok"); err != nil {
@@ -45,7 +45,7 @@ func TestComputeStats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w2.AppendMessage(llm.Message{Role: "user", Content: "hi"}, ""); err != nil {
+	if _, err := w2.AppendMessage(llm.Message{Role: "user", Content: "hi"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := w2.AppendToolCall("c3", "read", map[string]any{}, "boom", "boom", "error"); err != nil {

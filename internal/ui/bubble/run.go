@@ -448,13 +448,18 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 			ignorePatterns: ignorePatterns,
 		},
 		sessions:   &sessionsOverlayData{store: store},
+		palette:    &slashPaletteData{reg: slashReg},
 		cancelTurn: sess.Cancel,
 	}
-	// Enforcing checker is worker-side: leaving permCheckerCwd.checker
-	// nil makes the modal's "always/turn" honestly degrade to
-	// allow-once (y/n still cross the wire), exactly like attach mode.
-	m.permCheckerCwd.checker = nil
+	// The enforcing checker is worker-side; dispChecker is its host
+	// display mirror. "always"/"turn" grants from the modal apply to
+	// the worker's real checker over the seam (m.permCheckerCwd.sess,
+	// mirroring how /yolo RPCs the enforcing checker) and mirror onto
+	// dispChecker so /perms + /info stay in sync — so they actually
+	// gate future calls instead of degrading to allow-once.
+	m.permCheckerCwd.checker = dispChecker
 	m.permCheckerCwd.cwd = cwd
+	m.permCheckerCwd.sess = sess
 	slashContext.conv = &m.conv
 
 	p := tea.NewProgram(m)

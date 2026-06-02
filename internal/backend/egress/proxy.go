@@ -26,6 +26,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/TaraTheStar/enso/internal/netsec"
 )
 
 // Proxy is an HTTP/HTTPS forward proxy that only connects to allowed
@@ -54,7 +56,14 @@ type Proxy struct {
 
 	ln  net.Listener
 	srv *http.Server
+	tr  *http.Transport // plain-HTTP forward, dialing through safeDial
 }
+
+// denyIP is the SSRF address-class check, package-level so tests can swap
+// it (e.g. permit loopback to point a denied target at an httptest
+// server while keeping the other classes denied). Production uses the
+// shared denylist in internal/netsec.
+var denyIP = netsec.IsDeniedIP
 
 // New creates an unstarted proxy with an empty (deny-all) allowlist.
 func New() *Proxy { return &Proxy{allowed: map[string]bool{}} }
@@ -101,6 +110,19 @@ func (p *Proxy) isAllowed(hostport string) bool {
 	return p.allowAll || p.allowed[strings.ToLower(hostport)]
 }
 
+// explicitlyAllowed reports whether hostport is on the static allowlist —
+// WITHOUT the AllowAll short-circuit. This is the SSRF denylist's opt-out:
+// a target the operator/broker named explicitly may resolve to an
+// otherwise-denied address (the local-model-on-loopback case), exactly as
+// web_fetch's allow_hosts exempts the same denylist. AllowAll (--yolo)
+// does NOT exempt — its map is empty, so yolo traffic stays filtered and
+// can't be relayed to loopback/metadata.
+func (p *Proxy) explicitlyAllowed(hostport string) bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.allowed[strings.ToLower(hostport)]
+}
+
 // gate decides whether target may be reached: the static allowlist
 // (or allow-all) first, then — only if a Decider is installed — an
 // interactive prompt. A granted interactive decision is promoted to
@@ -137,9 +159,60 @@ func (p *Proxy) Start() error {
 		return fmt.Errorf("egress: listen: %w", err)
 	}
 	p.ln = ln
+	p.tr = http.DefaultTransport.(*http.Transport).Clone()
+	p.tr.DialContext = p.safeDial // pin resolved IPs; refuse denied classes
 	p.srv = &http.Server{Handler: http.HandlerFunc(p.handle)}
 	go func() { _ = p.srv.Serve(ln) }()
 	return nil
+}
+
+// safeDial resolves addr's host once, refuses the connection if ANY
+// resolved IP is a denied class (loopback / RFC1918 / link-local /
+// metadata / CGNAT / …), and then dials a surviving IP literal directly
+// rather than letting the stack re-resolve. This is the DNS-rebind
+// defence and, equally, what stops a sealed worker from using the proxy
+// as an open relay into host-loopback or cloud-metadata services under
+// --yolo (AllowAll), where the allowlist gate is off.
+//
+// The denylist runs on every dial EXCEPT for a target the operator/broker
+// put on the explicit allowlist — that is the opt-out for the legitimate
+// "reach my host-loopback model server" case, mirroring web_fetch's
+// allow_hosts exemption. AllowAll does NOT exempt (its map is empty), so
+// yolo traffic is still filtered. The "refuse if ANY IP is denied" stance
+// (rather than "dial the first allowed IP") stops a name that resolves to
+// a mix of public and loopback addresses from being used at all.
+func (p *Proxy) safeDial(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("egress: bad target %q: %w", addr, err)
+	}
+	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return nil, fmt.Errorf("egress: resolve %s: %w", host, err)
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("egress: resolve %s: no addresses", host)
+	}
+	if !p.explicitlyAllowed(addr) {
+		for _, ip := range ips {
+			if denyIP(ip) {
+				return nil, fmt.Errorf("egress: refusing %s: resolves to denied address %s", host, ip)
+			}
+		}
+	}
+	var lastErr error
+	d := net.Dialer{Timeout: 10 * time.Second}
+	for _, ip := range ips {
+		conn, derr := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
+		if derr == nil {
+			return conn, nil
+		}
+		lastErr = derr
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("egress: no addresses to dial for %s", host)
+	}
+	return nil, lastErr
 }
 
 // Addr is the host:port the proxy listens on (loopback).
@@ -183,7 +256,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	r.RequestURI = ""
-	resp, err := http.DefaultTransport.RoundTrip(r)
+	resp, err := p.tr.RoundTrip(r)
 	if err != nil {
 		http.Error(w, "egress: "+err.Error(), http.StatusBadGateway)
 		return
@@ -204,7 +277,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "egress denied: "+target+" not on the task allowlist", http.StatusForbidden)
 		return
 	}
-	dst, err := net.DialTimeout("tcp", target, 10*time.Second)
+	dst, err := p.safeDial(r.Context(), "tcp", target)
 	if err != nil {
 		http.Error(w, "egress: "+err.Error(), http.StatusBadGateway)
 		return

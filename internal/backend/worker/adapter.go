@@ -398,19 +398,39 @@ func (s *seam) send(env backend.Envelope) error {
 type remoteWriter struct {
 	s         *seam
 	sessionID string
+
+	// seqMu guards seq, the worker-side message counter. Appends are
+	// shipped fire-and-forget and applied by the host in receipt order,
+	// so this counter mirrors the host's allocation; it exists to hand
+	// the agent loop a stable per-message seq to pass to
+	// AppendMessageUsage (the host re-derives the real DB seq from its
+	// own in-order application — see host.go's lastSeqByAgent).
+	seqMu sync.Mutex
+	seq   int
 }
 
 func (rw *remoteWriter) SessionID() string { return rw.sessionID }
 
-func (rw *remoteWriter) AppendMessage(msg llm.Message, agentID string) error {
+func (rw *remoteWriter) AppendMessage(msg llm.Message, agentID string) (int, error) {
+	rw.seqMu.Lock()
+	rw.seq++
+	seq := rw.seq
+	rw.seqMu.Unlock()
 	body, err := backend.NewBody(wire.PersistMessage{Msg: msg, AgentID: agentID})
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return rw.s.send(backend.Envelope{Kind: backend.MsgPersistMessage, Body: body})
+	if err := rw.s.send(backend.Envelope{Kind: backend.MsgPersistMessage, Body: body}); err != nil {
+		return 0, err
+	}
+	return seq, nil
 }
 
-func (rw *remoteWriter) AppendMessageUsage(usage llm.MessageUsage, agentID string) error {
+func (rw *remoteWriter) AppendMessageUsage(seq int, usage llm.MessageUsage, agentID string) error {
+	// seq is intentionally not shipped: the host attributes usage to the
+	// message it last applied for this agent (in-order), which matches
+	// the seq we handed back from AppendMessage.
+	_ = seq
 	body, err := backend.NewBody(wire.PersistMessageUsage{Usage: usage, AgentID: agentID})
 	if err != nil {
 		return err
@@ -556,6 +576,24 @@ func (s *seam) serveControl(ctx context.Context, env backend.Envelope) {
 		_ = json.Unmarshal(req.Args, &a)
 		if s.checker != nil {
 			s.checker.SetYolo(a.Value)
+		}
+
+	case wire.CtrlAddAllow:
+		var a wire.ControlName
+		_ = json.Unmarshal(req.Args, &a)
+		if s.checker != nil {
+			if err := s.checker.AddAllow(a.Name); err != nil {
+				resp.Error = err.Error()
+			}
+		}
+
+	case wire.CtrlAddTurnAllow:
+		var a wire.ControlName
+		_ = json.Unmarshal(req.Args, &a)
+		if s.checker != nil {
+			if err := s.checker.AddTurnAllow(a.Name); err != nil {
+				resp.Error = err.Error()
+			}
 		}
 
 	default:
