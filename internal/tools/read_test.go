@@ -256,6 +256,19 @@ func TestReadTool_PNGEmitsImagePart(t *testing.T) {
 	}
 }
 
+// TestReadTool_DescriptionAdvertisesImages guards the discoverability
+// contract: the tool fully supports reading images, but a model only
+// knows to pass an image path if the description says so. A revert that
+// drops the image mention would silently make the feature invisible.
+func TestReadTool_DescriptionAdvertisesImages(t *testing.T) {
+	desc := strings.ToLower(ReadTool{}.Description())
+	for _, want := range []string{"image", "png"} {
+		if !strings.Contains(desc, want) {
+			t.Errorf("read description should advertise images (missing %q): %q", want, ReadTool{}.Description())
+		}
+	}
+}
+
 // TestReadTool_NonImageBinaryFallsThrough verifies that a .bin file
 // the sniffer can't classify routes through the normal text-read
 // path (no Parts). Better to show the user the symptom (garbled

@@ -47,7 +47,7 @@ func TestRun_ResetsTurnAllowsBetweenUserMessages(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	inputCh := make(chan string, 2)
+	inputCh := make(chan UserInput, 2)
 	runDone := make(chan struct{})
 	go func() {
 		_ = a.Run(ctx, inputCh)
@@ -56,7 +56,7 @@ func TestRun_ResetsTurnAllowsBetweenUserMessages(t *testing.T) {
 
 	// First user message: agent's Run should call ResetTurnAllows
 	// before processing.
-	inputCh <- "hello"
+	inputCh <- UserInput{Text: "hello"}
 
 	deadline := time.After(2 * time.Second)
 	for checker.HasTurnAllows() {

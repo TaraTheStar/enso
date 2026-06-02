@@ -104,6 +104,12 @@ type Compacted struct {
 	After  int
 }
 
+// Notice is a neutral informational line in the transcript (e.g.
+// "📎 attached shot.png"). Rendered dim, distinct from Error.
+type Notice struct {
+	Text string
+}
+
 func (*User) isBlock()           {}
 func (*Assistant) isBlock()      {}
 func (*Tool) isBlock()           {}
@@ -112,3 +118,4 @@ func (*Error) isBlock()          {}
 func (*Cancelled) isBlock()      {}
 func (*InputDiscarded) isBlock() {}
 func (*Compacted) isBlock()      {}
+func (*Notice) isBlock()         {}

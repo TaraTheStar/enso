@@ -171,10 +171,10 @@ func driveOneTurn(t *testing.T, a *Agent, prompt string) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	inputCh := make(chan string, 1)
+	inputCh := make(chan UserInput, 1)
 	done := make(chan struct{})
 	go func() { _ = a.Run(ctx, inputCh); close(done) }()
-	inputCh <- prompt
+	inputCh <- UserInput{Text: prompt}
 
 	deadline := time.After(2 * time.Second)
 	for a.CumulativeOutputTokens() == 0 {

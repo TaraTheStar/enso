@@ -4,6 +4,7 @@ package bubble
 
 import (
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -16,6 +17,11 @@ import (
 // all input keys route to the y/t/n resolver instead of the buffer.
 type egressPending struct {
 	req *permissions.EgressPrompt
+	// deadline is the effective auto-deny time: req.Deadline when the
+	// broker set one, otherwise now+egressPromptDeadline applied on
+	// receipt. The countdown tick (egressTickMsg) auto-denies past it and
+	// View renders the remaining seconds.
+	deadline time.Time
 }
 
 // startEgressPrompt prints the inline egress prompt to scrollback. The

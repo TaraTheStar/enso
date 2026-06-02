@@ -36,7 +36,7 @@ type ReadTool struct{}
 
 func (t ReadTool) Name() string { return "read" }
 func (t ReadTool) Description() string {
-	return "Read a file or a line range. Args: path (string), first_line (int), last_line (int)"
+	return "Read a file or a line range. Also reads images (png, jpeg, gif, webp) — pass an image path and a vision-capable model sees the image directly. Args: path (string), first_line (int), last_line (int)"
 }
 func (t ReadTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{

@@ -2,6 +2,8 @@
 
 package permissions
 
+import "time"
+
 // EgressDecision is the user's answer to an interactive egress prompt.
 // It mirrors the tool-permission y/n/turn shape, scoped to network
 // egress: the only "remember" granularity that makes sense for a
@@ -29,4 +31,11 @@ type EgressPrompt struct {
 	Target  string // "host:port" the box is trying to reach
 	Reason  string // human-facing why (originating tool / command), best-effort
 	Respond chan EgressDecision
+	// Deadline is the wall-clock time at which the prompt is auto-denied
+	// if no decision arrives. A broker may set it (e.g. to match a
+	// request-context timeout); when left zero the interactive TUI
+	// applies its own default so a sealed box never hangs indefinitely on
+	// a user who walked away. Auto-deny is safe here — it just blocks the
+	// one connection, which the model can retry. Not serialized.
+	Deadline time.Time `json:"-"`
 }

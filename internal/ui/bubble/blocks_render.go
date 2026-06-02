@@ -101,7 +101,11 @@ func renderBlock(b blocks.Block, width int, finalized bool) string {
 			}
 		}
 		if v.Closed {
-			label := "thinking…"
+			// Past tense: a closed block is done thinking. Live graduation
+			// always records a Duration ("thought for N.Ns"); a replayed
+			// block has none (Duration isn't persisted) so it shows a plain
+			// "thought" rather than a misleading "thinking…".
+			label := "thought"
 			if v.Duration > 0 {
 				label = fmt.Sprintf("thought for %s", fmtDuration(v.Duration))
 			}
@@ -163,6 +167,9 @@ func renderBlock(b blocks.Block, width int, finalized bool) string {
 
 	case *blocks.InputDiscarded:
 		return noticeStyle.Render(fmt.Sprintf("(discarded %d queued message%s)", v.Count, plural(v.Count)))
+
+	case *blocks.Notice:
+		return statusStyle.Render(v.Text)
 	}
 	return ""
 }

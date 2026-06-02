@@ -3,6 +3,7 @@
 package backend
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"testing"
@@ -52,6 +53,44 @@ func TestStreamChannelRoundTrip(t *testing.T) {
 	}
 	if in.Text != "hello worker" {
 		t.Fatalf("body text = %q, want %q", in.Text, "hello worker")
+	}
+}
+
+// TestInputBodyImagesRoundTrip locks the wire contract for user image
+// attachments: InputImage bytes survive a NewBody → Channel → Unmarshal
+// trip (JSON-encoded as base64) so an isolated worker reconstructs the
+// exact image the host read.
+func TestInputBodyImagesRoundTrip(t *testing.T) {
+	pr, pw := io.Pipe()
+	host := NewStreamChannelRW(nil, pw, pw)
+	worker := NewStreamChannelRW(pr, nil, pr)
+
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 9, 8, 7}
+	body, err := NewBody(InputBody{
+		Text:   "look at @shot.png",
+		Images: []InputImage{{MIME: "image/png", Data: png}},
+	})
+	if err != nil {
+		t.Fatalf("NewBody: %v", err)
+	}
+	go func() {
+		_ = host.Send(Envelope{Kind: MsgInput, Body: body})
+		_ = host.Close()
+	}()
+
+	got, err := worker.Recv()
+	if err != nil {
+		t.Fatalf("Recv: %v", err)
+	}
+	var in InputBody
+	if err := json.Unmarshal(got.Body, &in); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if in.Text != "look at @shot.png" {
+		t.Errorf("text = %q", in.Text)
+	}
+	if len(in.Images) != 1 || in.Images[0].MIME != "image/png" || !bytes.Equal(in.Images[0].Data, png) {
+		t.Fatalf("image did not round-trip: %+v", in.Images)
 	}
 }
 

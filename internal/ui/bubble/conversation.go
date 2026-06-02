@@ -3,6 +3,7 @@
 package bubble
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -177,6 +178,16 @@ func (c *conversation) HandleEvent(ev bus.Event) []blocks.Block {
 		c.history = append(c.history, idb)
 		return []blocks.Block{idb}
 
+	case bus.EventNotice:
+		s, _ := ev.Payload.(string)
+		if s == "" {
+			return nil
+		}
+		out := c.flushLive()
+		nb := &blocks.Notice{Text: s}
+		c.history = append(c.history, nb)
+		return append(out, nb)
+
 	case bus.EventAgentIdle:
 		// Pipeline finished. Flush any straggler (defensive — usually
 		// nothing live by this point).
@@ -242,6 +253,76 @@ func formatToolCall(d map[string]any) string {
 		parts = append(parts, fmt.Sprintf("%s=%s", k, summarizeArg(args[k])))
 	}
 	return name + "(" + strings.Join(parts, ", ") + ")"
+}
+
+// historyBlocks converts a persisted message history into renderable
+// display blocks for replay into scrollback (resume) or inline display
+// (/transcript). User and assistant prose become User/Assistant blocks;
+// an assistant turn's persisted reasoning becomes a Reasoning block above
+// its response; each assistant tool call becomes a Tool block paired with
+// its result message's output (matched by tool_call_id) — so a replayed
+// session shows the thinking and the tools it ran, not just the prose.
+//
+// "tool" rows are consumed into the Tool blocks above and not emitted on
+// their own; "system" / other roles aren't replayed.
+func historyBlocks(history []llm.Message) []blocks.Block {
+	// First pass: index tool results by call id so each call can show
+	// the output it produced. A later duplicate id (shouldn't happen in
+	// a well-formed transcript) keeps the last result.
+	outputs := make(map[string]string)
+	for _, m := range history {
+		if m.Role == "tool" && m.ToolCallID != "" {
+			outputs[m.ToolCallID] = m.Content
+		}
+	}
+	var out []blocks.Block
+	for _, m := range history {
+		switch m.Role {
+		case "user":
+			if strings.TrimSpace(m.Content) == "" {
+				continue
+			}
+			out = append(out, &blocks.User{Text: m.Content})
+		case "assistant":
+			// An assistant turn can carry reasoning, prose, AND tool calls;
+			// emit them in the live event order — reasoning streams first
+			// (and graduates above the response), then the prose, then each
+			// tool call.
+			if strings.TrimSpace(m.Reasoning) != "" {
+				out = append(out, &blocks.Reasoning{Text: m.Reasoning, Closed: true})
+			}
+			if strings.TrimSpace(m.Content) != "" {
+				out = append(out, &blocks.Assistant{Text: m.Content})
+			}
+			for _, tc := range m.ToolCalls {
+				out = append(out, toolBlockFromCall(tc, outputs[tc.ID]))
+			}
+		}
+	}
+	return out
+}
+
+// toolBlockFromCall reconstructs a Tool display block from a persisted
+// tool call and its recorded output (empty when the call had no reply —
+// e.g. an interrupted turn). StartedAt/Duration stay zero so a replayed
+// call never animates as "running" (see blocks.Tool.Running). The call
+// signature is formatted with the same formatToolCall the live path
+// uses, by re-parsing the JSON argument string into the args map it
+// expects — so replayed and live tool headers render identically.
+func toolBlockFromCall(tc llm.ToolCall, output string) *blocks.Tool {
+	d := map[string]any{"name": tc.Function.Name}
+	if tc.Function.Arguments != "" {
+		var args map[string]any
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err == nil {
+			d["args"] = args
+		}
+	}
+	return &blocks.Tool{
+		ID:     tc.ID,
+		Name:   tc.Function.Name,
+		Call:   formatToolCall(d),
+		Output: output,
+	}
 }
 
 // summarizeArg flattens a JSON-y argument into a short display form.

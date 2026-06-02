@@ -62,11 +62,11 @@ func (p *pickerData) matches() []string {
 }
 
 // renderPicker produces the alt-screen view for the @ file picker.
-// width/height come from tea.WindowSizeMsg; the current layout ignores
-// them and lets the terminal handle wrapping at narrow widths.
+// width is ignored (the terminal handles wrapping at narrow widths);
+// height bounds the visible list so a long file list scrolls with the
+// selection instead of overflowing a short terminal.
 func renderPicker(p *pickerData, width, height int) string {
 	_ = width
-	_ = height
 
 	title := lipgloss.NewStyle().
 		Foreground(paletteHex("lavender")).
@@ -96,10 +96,14 @@ func renderPicker(p *pickerData, width, height int) string {
 		}
 	}
 
+	// Reserve rows for the fixed chrome (title, blanks, filter, footer)
+	// and scroll the list to keep the selection visible.
+	listLines, above, below := windowList(listLines, p.sel, height-overlayChrome)
+
 	footer := lipgloss.NewStyle().
 		Foreground(paletteHex("comment")).
 		Faint(true).
-		Render(fmt.Sprintf("Enter pick · ↑/↓ move · Esc cancel    %d match%s", len(matches), plural(len(matches))))
+		Render(fmt.Sprintf("Enter pick · ↑/↓ move · Esc cancel    %d match%s", len(matches), plural(len(matches))) + scrollSuffix(above, below))
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
