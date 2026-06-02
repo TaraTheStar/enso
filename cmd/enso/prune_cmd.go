@@ -14,6 +14,7 @@ import (
 	"github.com/TaraTheStar/enso/internal/backend/exestage"
 	"github.com/TaraTheStar/enso/internal/backend/lima"
 	"github.com/TaraTheStar/enso/internal/backend/podman"
+	"github.com/TaraTheStar/enso/internal/session"
 )
 
 // flagPruneOlderThan restricts `enso prune` to instances at least this
@@ -66,6 +67,16 @@ var pruneCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "sweep staged binaries: %v\n", err)
 		} else if n > 0 {
 			fmt.Printf("removed %d staged enso binary snapshot(s)\n", n)
+		}
+
+		// Orphaned per-turn /rewind checkpoint snapshots: a discarded
+		// session's FK CASCADE drops the checkpoint rows but can't reach
+		// the on-disk snapshot tree, so those dirs accumulate under
+		// $XDG_STATE_HOME/enso/checkpoints until swept here.
+		if n, err := session.SweepCheckpoints(flagPruneOlderThan); err != nil {
+			fmt.Fprintf(os.Stderr, "sweep checkpoints: %v\n", err)
+		} else if n > 0 {
+			fmt.Printf("removed %d checkpoint snapshot(s)\n", n)
 		}
 		return nil
 	},

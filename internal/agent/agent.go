@@ -51,6 +51,16 @@ type Agent struct {
 	MaxTurns  int
 	Hooks     *hooks.Hooks // optional; on_session_end fires from Run's defer
 
+	// OnUserTurn, when non-nil, is invoked synchronously at the start of
+	// each GENUINE user turn (a message received over Run's input channel)
+	// with that user message's persisted seq, BEFORE any inference or tool
+	// call runs. The backend wiring uses it to snapshot the workspace for
+	// /rewind (per-turn checkpoint). It deliberately does NOT fire for
+	// auto-recovery nudges or sub-agent RunOneShot turns — only real user
+	// submits get a checkpoint. The agent stays FS-agnostic: this is a bare
+	// (seq int) callback, not a snapshot dependency.
+	OnUserTurn func(seq int)
+
 	// recoverAttempts counts consecutive auto-recovery retries (truncation
 	// / repetition / stall) so a pathological turn can't loop forever. Per
 	// the active provider's MaxRecoverAttempts; reset on any healthy
@@ -600,6 +610,11 @@ type Config struct {
 	// PodmanBackend). Surfaced verbatim in the # Environment prompt
 	// section. Empty → environmentNote states the conservative truth.
 	IsolationNote string
+
+	// OnUserTurn is forwarded to Agent.OnUserTurn — a per-genuine-user-turn
+	// callback (with the message seq) the backend uses to snapshot the
+	// workspace for /rewind. nil disables per-turn checkpointing.
+	OnUserTurn func(seq int)
 }
 
 // normalizeWriter collapses a typed-nil SessionWriter (a nil
@@ -738,6 +753,7 @@ func New(cfg Config) (*Agent, error) {
 		Writer:                 cfg.Writer,
 		MaxTurns:               maxTurns,
 		Hooks:                  cfg.Hooks,
+		OnUserTurn:             cfg.OnUserTurn,
 		pruneCfg:               pruneCfg,
 		toolMeta:               map[int]*toolMessageMeta{},
 		messageUsage:           mu,
@@ -946,7 +962,15 @@ func (a *Agent) Run(ctx context.Context, inputCh <-chan UserInput) error {
 				a.Perms.ResetTurnAllows()
 			}
 
-			a.appendUserMessage(prompt.Text, prompt.Parts)
+			turnSeq := a.appendUserMessage(prompt.Text, prompt.Parts)
+			// Per-turn workspace checkpoint for /rewind. Fires only here
+			// (the genuine-user-turn path), synchronously before any
+			// inference/tool call, so the snapshot captures the project
+			// state the user was looking at when they sent this message.
+			// Best-effort and FS-agnostic (the callback owns snapshotting).
+			if a.OnUserTurn != nil && turnSeq > 0 {
+				a.OnUserTurn(turnSeq)
+			}
 			// Payload is intentionally the text only, NOT prompt.Parts:
 			// EventUserMessage is published worker-side and crosses the seam
 			// back to host observers, so embedding the (up to 10 MiB) image
@@ -1317,10 +1341,12 @@ func recoverWord(finishReason string) string {
 // appendUserMessage appends a user-role message and bumps the
 // session-wide user-turn counter the prune subsystem keys off of.
 // All user messages should land here (not appendMessage directly) so
-// turn-age accounting stays consistent.
-func (a *Agent) appendUserMessage(content string, parts []llm.MessagePart) {
+// turn-age accounting stays consistent. Returns the persisted message's
+// seq (0 when no Writer is configured), so the Run loop can hand a
+// genuine user turn's seq to OnUserTurn for checkpointing.
+func (a *Agent) appendUserMessage(content string, parts []llm.MessagePart) int {
 	a.userTurnCounter++
-	a.appendMessage(llm.Message{Role: "user", Content: content, Parts: parts})
+	return a.appendMessage(llm.Message{Role: "user", Content: content, Parts: parts})
 }
 
 // appendMessage persists the message (if a Writer is configured) before

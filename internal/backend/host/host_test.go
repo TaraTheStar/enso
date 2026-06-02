@@ -6,6 +6,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/enso/internal/session"
 )
 
 type noopCloser struct{}
@@ -186,5 +189,102 @@ func TestSessionTelemetry(t *testing.T) {
 	}
 	if tel.CumIn <= 0 || tel.CumOut <= 0 {
 		t.Errorf("token accounting not reported: in=%d out=%d (want both >0 after a completed turn)", tel.CumIn, tel.CumOut)
+	}
+}
+
+// TestSessionIsolatedCheckpoint exercises the full Stage-4 isolated-backend
+// checkpoint seam end-to-end through the real worker↔host adapters: an
+// ISOLATED worker (Isolation.Kind set) ships its user message over the
+// seam AND a MsgCheckpoint from OnUserTurn; the host applies the message
+// to its own writer and snapshots the overlay's `merged` dir at that
+// turn's HOST seq. Proves the host records a checkpoint and captures the
+// merged tree — without the local worker's self-snapshot path running.
+func TestSessionIsolatedCheckpoint(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	mock := llmtest.New()
+	mock.Push(llmtest.Script{Text: "ok"}) // text-only: one clean user turn
+
+	providers := map[string]*llm.Provider{
+		"test": {Name: "test", Model: "m", Pool: llm.NewPool(4), Client: mock},
+	}
+
+	cfg := &config.Config{}
+	cfg.Permissions.Mode = "allow" // Checkpoints default ON (Disabled=false)
+	rc, _ := json.Marshal(cfg)
+
+	// Host-side session + writer (the isolated worker can't reach the DB).
+	store, err := session.OpenAt(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	sid := "sess-iso-ckpt"
+	if _, err := session.NewSessionWithID(store, sid, "m", "test", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := session.AttachWriter(store, sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Stand in for the overlay's `merged` dir (lives host-side).
+	merged := t.TempDir()
+	if err := os.WriteFile(filepath.Join(merged, "code.txt"), []byte("work"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	spec := backend.TaskSpec{
+		TaskID:          "t1",
+		Cwd:             t.TempDir(),
+		Prompt:          "ping",
+		SessionID:       sid,
+		ResolvedConfig:  rc,
+		Providers:       []backend.ProviderInfo{{Name: "test", Model: "m"}},
+		DefaultProvider: "test",
+		Isolation:       backend.IsolationSpec{Kind: "container"}, // → isolated worker branch
+	}
+
+	busInst := bus.New()
+	sub := busInst.Subscribe(256)
+	go func() {
+		for range sub {
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	sess, err := host.Start(ctx, &fakeBackend{}, spec, providers, busInst,
+		host.WithWriter(writer), host.WithCheckpointer(store, merged, 20))
+	if err != nil {
+		t.Fatalf("host.Start: %v", err)
+	}
+	if err := sess.Wait(); err != nil {
+		t.Fatalf("session ended with error: %v", err)
+	}
+	busInst.Close()
+
+	// The capture runs in a host goroutine off MsgCheckpoint; poll for it.
+	var cps []session.Checkpoint
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		cps, _ = session.ListCheckpoints(store, sid)
+		if len(cps) == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(cps) != 1 {
+		t.Fatalf("want exactly one checkpoint recorded host-side, got %+v", cps)
+	}
+	// The user message "ping" is the first top-level row → host seq 1.
+	if cps[0].Seq != 1 {
+		t.Errorf("checkpoint seq = %d, want 1 (the user turn's host DB seq)", cps[0].Seq)
+	}
+	base, _ := session.CheckpointStoreDir(sid)
+	got, err := os.ReadFile(filepath.Join(base, cps[0].Snapshot, "code.txt"))
+	if err != nil || string(got) != "work" {
+		t.Fatalf("merged dir not snapshotted host-side: got %q err %v", got, err)
 	}
 }
