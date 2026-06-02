@@ -116,6 +116,10 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 	// *session.Writer never becomes a non-nil typed-nil interface.
 	var sw tools.SessionWriter
 	var history []llm.Message
+	// onUserTurn drives per-turn workspace checkpoints for /rewind. Set
+	// only on the LOCAL backend (shared FS + a real session.Writer);
+	// isolated backends snapshot the overlay host-side in a later stage.
+	var onUserTurn func(seq int)
 
 	switch {
 	case spec.Ephemeral:
@@ -134,6 +138,19 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 			sid = spec.ResumeSessionID
 		}
 		sw = &remoteWriter{s: s, sessionID: sid}
+		// Per-turn /rewind checkpointing for an ISOLATED backend: the
+		// agent FS is the overlay's `merged` dir on the HOST, unreachable
+		// from inside this guest, so the worker can't snapshot it. Instead
+		// signal the host (which owns that dir) to snapshot at each genuine
+		// user turn — fired from OnUserTurn, synchronously after the user
+		// message's MsgPersistMessage, before any inference. Bodyless: the
+		// host uses its own last-applied seq (our remoteWriter seq is
+		// relative and diverges on resume). Disabled via [checkpoints].
+		if !cfg.Checkpoints.Disabled {
+			onUserTurn = func(int) {
+				_ = s.send(backend.Envelope{Kind: backend.MsgCheckpoint})
+			}
+		}
 		if len(spec.ResumeHistory) > 0 {
 			if err := json.Unmarshal(spec.ResumeHistory, &history); err != nil {
 				return fmt.Errorf("worker: decode resume history: %w", err)
@@ -199,6 +216,12 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		}
 		if writer != nil {
 			sw = writer
+			// Per-turn checkpointing: snapshot the real project tree on each
+			// genuine user turn so /rewind can restore files. Disabled via
+			// [checkpoints] disabled = true.
+			if !cfg.Checkpoints.Disabled {
+				onUserTurn = newCheckpointFn(store, writer, spec.Cwd, writer.SessionID(), cfg.Checkpoints.RetainOrDefault())
+			}
 		}
 		if resumed != nil {
 			history = resumed.History
@@ -246,6 +269,7 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		CompactionProvider: cfg.Compaction.Provider,
 		LSPNotifier:        lsp.NewNotifier(lspMgr, spec.Cwd, lsp.NotifierOptions{}),
 		IsolationNote:      isolationNote(spec.Isolation),
+		OnUserTurn:         onUserTurn,
 	}
 	if spec.Isolation.NetworkSealed {
 		// Only a sealed worker brokers capabilities; on the unsealed

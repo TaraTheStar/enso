@@ -52,6 +52,39 @@ type Config struct {
 	Pools               map[string]PoolConfig `toml:"pools"`
 	Compaction          CompactionConfig      `toml:"compaction"`
 	Bash                BashConfig            `toml:"bash"`
+	Checkpoints         CheckpointConfig      `toml:"checkpoints"`
+}
+
+// DefaultCheckpointRetain is how many recent per-turn checkpoints a
+// session keeps when [checkpoints] retain is unset. Older snapshots are
+// pruned (rows + on-disk trees) to bound disk use.
+const DefaultCheckpointRetain = 20
+
+// CheckpointConfig tunes per-turn workspace checkpointing — the
+// snapshots that back /rewind (per-message undo & in-conversation
+// branching). On the local backend each genuine user turn snapshots the
+// project tree (cp --reflink, near-free on CoW filesystems) so a later
+// /rewind can restore the files to that turn.
+//
+//	[checkpoints]
+//	disabled = false   # set true to turn per-turn snapshots off entirely
+//	retain   = 20      # recent checkpoints kept per session (0 = default)
+//
+// Disabled (not Enabled) so the zero value leaves checkpointing ON — the
+// designed default for a coding tool, where undoing the agent's file
+// changes is the point.
+type CheckpointConfig struct {
+	Disabled bool `toml:"disabled"`
+	Retain   int  `toml:"retain"`
+}
+
+// RetainOrDefault returns the configured retention count, or
+// DefaultCheckpointRetain when unset/non-positive.
+func (c CheckpointConfig) RetainOrDefault() int {
+	if c.Retain <= 0 {
+		return DefaultCheckpointRetain
+	}
+	return c.Retain
 }
 
 // Default tool-call timeouts. Bash foreground commands get a generous

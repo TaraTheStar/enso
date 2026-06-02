@@ -142,6 +142,14 @@ type model struct {
 	palette     *slashPaletteData
 	paletteOpen bool
 
+	// rewind is the /rewind overlay (per-message checkpoint/undo). Same
+	// alt-screen pattern; selecting a turn + restore mode sets
+	// m.pendingRewind so run.go applies the restore and re-execs into the
+	// session after p.Run() returns.
+	rewind        *rewindOverlayData
+	rewindOpen    bool
+	pendingRewind *pendingRewindReq
+
 	// perm is the in-flight permission prompt, if any. While set, the
 	// agent is blocked on req.Respond and we route key input to the
 	// inline y/n/a/t resolver instead of the regular input handler.
@@ -246,7 +254,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// maxInputLines rows). Only \r\n and bare \r are normalised to
 		// \n so the buffer's line breaks are consistent regardless of
 		// the source platform's line endings.
-		if m.pickerOpen || m.sessionsOpen || m.paletteOpen || m.perm != nil || m.egress != nil || m.overlayOpen {
+		if m.pickerOpen || m.sessionsOpen || m.paletteOpen || m.rewindOpen || m.perm != nil || m.egress != nil || m.overlayOpen {
 			return m, nil
 		}
 		if m.input.vim && m.input.vimNormal {
@@ -370,6 +378,11 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Slash-command palette: same routing pattern.
 	if m.paletteOpen {
 		return m.handlePaletteKey(msg)
+	}
+
+	// /rewind overlay: same routing pattern.
+	if m.rewindOpen {
+		return m.handleRewindKey(msg)
 	}
 
 	// Permission prompt handling: while pending, agent is blocked on
@@ -558,6 +571,17 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			// the stale startup model.
 			if p := m.slashCtx.agt.Provider(); p != nil && p.Model != "" {
 				m.modelName = p.Model
+			}
+			// /rewind signals the model to open its overlay (a command
+			// can't mutate the model directly; it sets a flag we read here,
+			// mirroring sc.quit).
+			if m.slashCtx.openRewind {
+				m.slashCtx.openRewind = false
+				if m.rewind != nil {
+					m.rewind.reset()
+					m.rewind.load()
+					m.rewindOpen = true
+				}
 			}
 			return m, cmd
 		}
@@ -1123,6 +1147,11 @@ func (m *model) View() tea.View {
 	}
 	if m.paletteOpen {
 		v := tea.NewView(renderSlashPalette(m.palette, m.width, m.height))
+		v.AltScreen = true
+		return v
+	}
+	if m.rewindOpen {
+		v := tea.NewView(renderRewindOverlay(m.rewind, m.width, m.height))
 		v.AltScreen = true
 		return v
 	}
