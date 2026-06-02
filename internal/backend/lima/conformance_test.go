@@ -123,7 +123,7 @@ func TestLimaBackendConformance(t *testing.T) {
 	}
 	defer sess.Close()
 
-	if err := sess.Submit("ping"); err != nil {
+	if err := sess.Submit("ping", nil); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	select {

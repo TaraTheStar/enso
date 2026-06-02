@@ -46,7 +46,7 @@ func TestRun_DrainsQueuedSubmitsOnCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	inputCh := make(chan string, 8)
+	inputCh := make(chan UserInput, 8)
 	runDone := make(chan struct{})
 	go func() {
 		_ = a.Run(ctx, inputCh)
@@ -55,12 +55,12 @@ func TestRun_DrainsQueuedSubmitsOnCancel(t *testing.T) {
 
 	// First message starts the turn. Wait for the user-message event so
 	// we know the agent has consumed it and entered runUntilQuiescent.
-	inputCh <- "first"
+	inputCh <- UserInput{Text: "first"}
 	waitFor(t, events, bus.EventUserMessage, "agent did not consume first prompt")
 
 	// Queue two more while the turn is blocked on the LLM Gate.
-	inputCh <- "queued-1"
-	inputCh <- "queued-2"
+	inputCh <- UserInput{Text: "queued-1"}
+	inputCh <- UserInput{Text: "queued-2"}
 
 	// Cancel the in-flight turn. The Gate goroutine is still blocked
 	// (intentionally — simulates a stuck network read); release it so
@@ -111,7 +111,7 @@ func TestRun_NoDrainOnNaturalCompletion(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	inputCh := make(chan string, 4)
+	inputCh := make(chan UserInput, 4)
 	runDone := make(chan struct{})
 	go func() {
 		_ = a.Run(ctx, inputCh)
@@ -121,8 +121,8 @@ func TestRun_NoDrainOnNaturalCompletion(t *testing.T) {
 	// Submit both up-front; the second sits in the buffer while turn 1
 	// runs to completion. A buggy drain would consume "second" instead
 	// of letting turn 2 process it.
-	inputCh <- "first"
-	inputCh <- "second"
+	inputCh <- UserInput{Text: "first"}
+	inputCh <- UserInput{Text: "second"}
 
 	// Wait for both turns to actually fire. If drain mistakenly ate
 	// "second" we'd time out here.
@@ -147,17 +147,17 @@ func TestRun_NoDrainOnNaturalCompletion(t *testing.T) {
 }
 
 func TestDrainInputCh_EmptyChannelReturnsZero(t *testing.T) {
-	ch := make(chan string, 4)
+	ch := make(chan UserInput, 4)
 	if n := drainInputCh(ch); n != 0 {
 		t.Errorf("drainInputCh on empty=%d, want 0", n)
 	}
 }
 
 func TestDrainInputCh_DrainsAll(t *testing.T) {
-	ch := make(chan string, 4)
-	ch <- "a"
-	ch <- "b"
-	ch <- "c"
+	ch := make(chan UserInput, 4)
+	ch <- UserInput{Text: "a"}
+	ch <- UserInput{Text: "b"}
+	ch <- UserInput{Text: "c"}
 	if n := drainInputCh(ch); n != 3 {
 		t.Errorf("drainInputCh=%d, want 3", n)
 	}

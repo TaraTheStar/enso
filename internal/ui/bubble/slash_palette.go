@@ -66,12 +66,11 @@ func (p *slashPaletteData) matches() []paletteEntry {
 }
 
 // renderSlashPalette produces the alt-screen view for the command
-// palette. Mirrors renderPicker's layout so the two overlays feel
-// identical; width/height are accepted for signature parity but the
-// terminal handles wrapping.
+// palette. Mirrors renderPicker's layout (incl. height-bounded
+// scrolling) so the two overlays feel identical; width is ignored and
+// the terminal handles wrapping.
 func renderSlashPalette(p *slashPaletteData, width, height int) string {
 	_ = width
-	_ = height
 
 	title := lipgloss.NewStyle().
 		Foreground(paletteHex("lavender")).
@@ -110,10 +109,12 @@ func renderSlashPalette(p *slashPaletteData, width, height int) string {
 		}
 	}
 
+	listLines, above, below := windowList(listLines, p.sel, height-overlayChrome)
+
 	footer := lipgloss.NewStyle().
 		Foreground(paletteHex("comment")).
 		Faint(true).
-		Render(fmt.Sprintf("Enter pick · ↑/↓ move · Esc cancel    %d command%s", len(matches), plural(len(matches))))
+		Render(fmt.Sprintf("Enter pick · ↑/↓ move · Esc cancel    %d command%s", len(matches), plural(len(matches))) + scrollSuffix(above, below))
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,

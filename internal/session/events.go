@@ -145,10 +145,10 @@ func (w *Writer) AppendMessage(msg llm.Message, agentID string) (int, error) {
 		return 0, fmt.Errorf("begin tx: %w", err)
 	}
 	if _, err := tx.Exec(
-		`INSERT INTO messages(session_id, seq, role, content, tool_call_id, name, tool_calls, agent_id, synthetic, ignored)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO messages(session_id, seq, role, content, tool_call_id, name, tool_calls, agent_id, synthetic, ignored, reasoning)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		w.sessionID, seq, msg.Role, msg.Content, msg.ToolCallID, msg.Name, toolCallsJSON, agentID,
-		boolToInt(msg.Synthetic), boolToInt(msg.Ignored),
+		boolToInt(msg.Synthetic), boolToInt(msg.Ignored), msg.Reasoning,
 	); err != nil {
 		tx.Rollback()
 		return 0, fmt.Errorf("insert message: %w", err)
@@ -385,13 +385,22 @@ type SessionInfoWithStats struct {
 
 // ListRecentWithStats is ListRecent plus a per-session message count
 // and approximate token total. Tokens use the same len(content)/4
-// heuristic as llm.Estimate.
-func ListRecentWithStats(s *Store, limit int) ([]SessionInfoWithStats, error) {
+// heuristic as llm.Estimate. When `cwd` is non-empty, only sessions
+// whose `cwd` column equals it are returned (the resume views scope to
+// the current project by default); pass "" to list every session.
+func ListRecentWithStats(s *Store, cwd string, limit int) ([]SessionInfoWithStats, error) {
 	// HAVING msg_count > 0 hides any 0-message session: there's nothing
 	// to resume from one, and the most common cause is a launch+quit
 	// that never reached a real prompt. Going forward those are
 	// Discard()ed on close, but historical rows from before that fix
 	// still need filtering at the read path.
+	args := []any{}
+	cwdFilter := ""
+	if cwd != "" {
+		cwdFilter = " WHERE s.cwd = ?"
+		args = append(args, cwd)
+	}
+	args = append(args, limit)
 	rows, err := s.DB.Query(
 		`SELECT s.id, s.created_at, s.updated_at, s.model, s.provider, s.cwd, s.interrupted, s.label,
 		        COUNT(m.seq) AS msg_count,
@@ -400,11 +409,11 @@ func ListRecentWithStats(s *Store, limit int) ([]SessionInfoWithStats, error) {
 		                  WHERE session_id = s.id AND agent_id = '' AND role = 'user'
 		                  ORDER BY seq DESC LIMIT 1), '') AS last_user_msg
 		 FROM sessions s
-		 LEFT JOIN messages m ON m.session_id = s.id AND m.agent_id = ''
+		 LEFT JOIN messages m ON m.session_id = s.id AND m.agent_id = ''`+cwdFilter+`
 		 GROUP BY s.id
 		 HAVING msg_count > 0
 		 ORDER BY s.updated_at DESC
-		 LIMIT ?`, limit,
+		 LIMIT ?`, args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions with stats: %w", err)
@@ -432,11 +441,21 @@ func ListRecentWithStats(s *Store, limit int) ([]SessionInfoWithStats, error) {
 	return out, rows.Err()
 }
 
-// ListRecent returns the N most-recently-updated sessions.
-func ListRecent(s *Store, limit int) ([]SessionInfo, error) {
+// ListRecent returns the N most-recently-updated sessions. When `cwd`
+// is non-empty, only sessions whose `cwd` column equals it are returned
+// (resume scopes to the current project by default); pass "" to list
+// every session in the store.
+func ListRecent(s *Store, cwd string, limit int) ([]SessionInfo, error) {
+	args := []any{}
+	cwdFilter := ""
+	if cwd != "" {
+		cwdFilter = " WHERE cwd = ?"
+		args = append(args, cwd)
+	}
+	args = append(args, limit)
 	rows, err := s.DB.Query(
 		`SELECT id, created_at, updated_at, model, provider, cwd, interrupted, label
-		 FROM sessions ORDER BY updated_at DESC LIMIT ?`, limit,
+		 FROM sessions`+cwdFilter+` ORDER BY updated_at DESC LIMIT ?`, args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list sessions: %w", err)

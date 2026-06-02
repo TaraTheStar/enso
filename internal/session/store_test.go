@@ -217,7 +217,7 @@ func TestListRecent(t *testing.T) {
 			t.Fatalf("new session: %v", err)
 		}
 	}
-	infos, err := ListRecent(s, 10)
+	infos, err := ListRecent(s, "", 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

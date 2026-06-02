@@ -50,11 +50,11 @@ func driveOnce(t *testing.T, a *Agent, b *bus.Bus, prompt string) []bus.Event {
 	sub := b.Subscribe(64)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	inputCh := make(chan string, 1)
+	inputCh := make(chan UserInput, 1)
 	runDone := make(chan struct{})
 	go func() { _ = a.Run(ctx, inputCh); close(runDone) }()
 
-	inputCh <- prompt
+	inputCh <- UserInput{Text: prompt}
 
 	var events []bus.Event
 	for {

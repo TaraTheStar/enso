@@ -28,7 +28,10 @@ servers, declarative agent profiles, or LSP integration — those are
 self-describing in the tool list).
 
 **Reading and searching the project**
-- `read` — open a file (optionally a line range).
+- `read` — open a file (optionally a line range). Also reads images (png,
+  jpeg, gif, webp): pass an image path and, on a vision-capable model, you
+  see the image itself — use it when the user points you at a screenshot or
+  diagram.
 - `grep` — search for a regex across the project.
 - `glob` — find files by path pattern.
 

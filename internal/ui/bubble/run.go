@@ -46,7 +46,6 @@ import (
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/slash"
 	"github.com/TaraTheStar/enso/internal/tools"
-	"github.com/TaraTheStar/enso/internal/ui/blocks"
 	"github.com/TaraTheStar/enso/internal/workflow"
 )
 
@@ -320,7 +319,18 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 				if !ok {
 					return
 				}
-				if err := sess.Submit(text); err != nil {
+				// Resolve `@path` image mentions to bytes HOST-side: the
+				// worker (especially isolated) can't read the host FS where
+				// the file lives, so the image must cross the seam as bytes.
+				// The `@path` text stays in the message as a reference.
+				images, attached, problems := resolveImageMentions(text, cwd)
+				for _, p := range problems {
+					busInst.Publish(bus.Event{Type: bus.EventError, Payload: fmt.Errorf("%s", p)})
+				}
+				if notice := imageAttachNotice(attached); notice != "" {
+					busInst.Publish(bus.Event{Type: bus.EventNotice, Payload: notice})
+				}
+				if err := sess.Submit(text, images); err != nil {
 					busInst.Publish(bus.Event{Type: bus.EventError, Payload: fmt.Errorf("submit: %w", err)})
 				}
 			case <-ctx.Done():
@@ -447,7 +457,7 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 			extraDirs:      cfg.Permissions.AdditionalDirectories,
 			ignorePatterns: ignorePatterns,
 		},
-		sessions:   &sessionsOverlayData{store: store},
+		sessions:   &sessionsOverlayData{store: store, cwd: cwd},
 		palette:    &slashPaletteData{reg: slashReg},
 		cancelTurn: sess.Cancel,
 	}
@@ -613,22 +623,13 @@ func shortID(id string) string {
 
 // replayHistory prints a resumed session's history into terminal
 // scrollback using the same block renderer that drives the live region,
-// so replayed and live messages look identical. Tool-call and
-// reasoning messages from history are skipped for now — re-rendering
-// a tool result without its progress sequence loses information, and
-// the existing message log doesn't carry tool block boundaries.
+// so replayed and live messages look identical. Tool calls are
+// reconstructed from the persisted assistant tool_calls + their result
+// rows (historyBlocks), so the resumed transcript shows the tools the
+// session ran — they survive into scrollback and /find. Reasoning is
+// not replayed: it is never persisted (re-derived each turn).
 func replayHistory(history []llm.Message) {
-	for _, msg := range history {
-		var b blocks.Block
-		switch msg.Role {
-		case "user":
-			b = &blocks.User{Text: msg.Content}
-		case "assistant":
-			b = &blocks.Assistant{Text: msg.Content}
-		}
-		if b == nil {
-			continue
-		}
+	for _, b := range historyBlocks(history) {
 		if s := renderBlock(b, 0, true); s != "" {
 			fmt.Println(s)
 		}

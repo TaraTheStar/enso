@@ -175,14 +175,14 @@ func TestRun_MultipleConsecutiveUserMessages(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	inputCh := make(chan string, 1)
+	inputCh := make(chan UserInput, 1)
 
 	runErr := make(chan error, 1)
 	go func() { runErr <- a.Run(ctx, inputCh) }()
 
-	inputCh <- "first prompt"
+	inputCh <- UserInput{Text: "first prompt"}
 	waitForDone()
-	inputCh <- "second prompt"
+	inputCh <- UserInput{Text: "second prompt"}
 	waitForDone()
 
 	close(inputCh)

@@ -18,6 +18,10 @@ import (
 // arrow navigation doesn't re-query.
 type sessionsOverlayData struct {
 	store *session.Store
+	// cwd scopes the list to sessions started in the current project
+	// directory (the common "resume what I was just doing here" case).
+	// Empty lists every session — set at construction; see run.go.
+	cwd string
 
 	loaded   bool
 	sessions []session.SessionInfoWithStats
@@ -43,7 +47,7 @@ func (s *sessionsOverlayData) load() {
 		s.loadErr = fmt.Errorf("session store unavailable (running --ephemeral?)")
 		return
 	}
-	infos, err := session.ListRecentWithStats(s.store, 50)
+	infos, err := session.ListRecentWithStats(s.store, s.cwd, 50)
 	if err != nil {
 		s.loadErr = err
 		return
@@ -53,15 +57,19 @@ func (s *sessionsOverlayData) load() {
 
 // renderSessionsOverlay produces the alt-screen view for the recent
 // sessions picker. Format mirrors what the splash and /sessions show:
-// short id · last user message preview · time · cwd.
+// short id · last user message preview · time · cwd. height bounds the
+// visible list so a long session history scrolls with the selection.
 func renderSessionsOverlay(d *sessionsOverlayData, width, height int) string {
 	_ = width
-	_ = height
 
+	titleText := "⏵ recent sessions"
+	if d.cwd != "" {
+		titleText = "⏵ recent sessions · this directory"
+	}
 	title := lipgloss.NewStyle().
 		Foreground(paletteHex("lavender")).
 		Bold(true).
-		Render("⏵ recent sessions")
+		Render(titleText)
 
 	if d.loadErr != nil {
 		return lipgloss.JoinVertical(lipgloss.Left,
@@ -114,10 +122,12 @@ func renderSessionsOverlay(d *sessionsOverlayData, width, height int) string {
 		rows = append(rows, line)
 	}
 
+	rows, above, below := windowList(rows, d.sel, height-sessionsOverlayChrome)
+
 	footer := lipgloss.NewStyle().
 		Foreground(paletteHex("comment")).
 		Faint(true).
-		Render(fmt.Sprintf("Enter switch · ↑/↓ move · Esc cancel    %d session%s", len(d.sessions), plural(len(d.sessions))))
+		Render(fmt.Sprintf("Enter switch · ↑/↓ move · Esc cancel    %d session%s", len(d.sessions), plural(len(d.sessions))) + scrollSuffix(above, below))
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title, "",

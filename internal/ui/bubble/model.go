@@ -47,6 +47,27 @@ func permTick() tea.Cmd {
 	})
 }
 
+// egressTickMsg drives the egress-prompt auto-deny countdown — the
+// network analogue of permTickMsg. Unlike permission prompts (which only
+// auto-deny in attach mode, where the daemon sets a deadline), an egress
+// prompt always gets a deadline: a sealed box blocked on a target the
+// user never answers would otherwise pin the prompt — and the
+// connection — indefinitely. Deny is the safe default here (it blocks
+// one connection the model can retry), so a default deadline is pure
+// upside.
+type egressTickMsg struct{}
+
+// egressPromptDeadline is the default time the interactive TUI gives the
+// user to answer an egress prompt before auto-denying, when the broker
+// didn't set its own. Matches the permission prompt's 60s feel.
+const egressPromptDeadline = 60 * time.Second
+
+func egressTick() tea.Cmd {
+	return tea.Tick(time.Second, func(time.Time) tea.Msg {
+		return egressTickMsg{}
+	})
+}
+
 // spinTickMsg drives the contextual live-status spinner above the input.
 // While any block is live (reasoning, assistant streaming, tool running)
 // the tick fires every spinFrameMs so the spinner glyph advances and the
@@ -181,6 +202,13 @@ type model struct {
 	// daemon RPC wedged). Cleared by any non-Ctrl-C key.
 	lastCancelAt time.Time
 
+	// lastQuitAt is the time of the previous *idle* quit keystroke
+	// (Ctrl-C while not busy, or Ctrl-D on an empty line). Quitting now
+	// requires a confirming second press within quitConfirmWindow so a
+	// reflexive tap doesn't discard the session with no warning. Cleared
+	// by any key other than Ctrl-C / Ctrl-D.
+	lastQuitAt time.Time
+
 	width, height int
 	quitting      bool
 }
@@ -269,6 +297,23 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Still in flight — re-render (View picks up new countdown)
 		// and schedule another tick.
 		return m, permTick()
+
+	case egressTickMsg:
+		// No egress prompt pending: drop the tick.
+		if m.egress == nil || m.egress.req == nil {
+			return m, nil
+		}
+		if !m.egress.deadline.IsZero() && time.Now().After(m.egress.deadline) {
+			// Auto-deny — same path as the user typing 'n'.
+			req := m.egress.req
+			m.egress = nil
+			go func() {
+				defer func() { _ = recover() }()
+				req.Respond <- permissions.EgressDeny
+			}()
+			return m, tea.Println(noticeStyle.Render("(egress auto-denied: deadline expired)"))
+		}
+		return m, egressTick()
 	}
 	return m, nil
 }
@@ -278,6 +323,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // Tight enough that an accidental double-tap from key chatter doesn't
 // wipe a half-typed message; loose enough for a deliberate two-tap.
 const escDoubleWindow = 500 * time.Millisecond
+
+// quitConfirmWindow is how long the "press again to quit" arm stays live
+// after an idle Ctrl-C / empty-line Ctrl-D. Longer than escDoubleWindow:
+// this is a deliberate confirm-to-quit, not an accidental-double-tap
+// guard, so the user has time to register the hint and press again.
+const quitConfirmWindow = 3 * time.Second
 
 func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Capture and clear the prior Esc timestamp so any non-Esc key
@@ -293,6 +344,17 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	prevCancelAt := m.lastCancelAt
 	if msg.String() != "ctrl+c" {
 		m.lastCancelAt = time.Time{}
+	}
+
+	// Chord-break for the idle-quit confirmation (Ctrl-C while not busy /
+	// Ctrl-D on an empty line): any key other than those two clears the
+	// arm so a stray quit keystroke doesn't stay primed behind unrelated
+	// typing. The quit cases below re-set it.
+	prevQuitAt := m.lastQuitAt
+	switch msg.String() {
+	case "ctrl+c", "ctrl+d":
+	default:
+		m.lastQuitAt = time.Time{}
 	}
 
 	// File picker handling: when open, all keys route to the picker.
@@ -403,10 +465,15 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 
 	switch key {
 	case "ctrl+d":
-		// Empty input: quit. Non-empty: clear the line (matches readline).
+		// Empty input: quit (with confirmation — see below). Non-empty:
+		// clear the line (matches readline).
 		if m.input.buf == "" {
-			m.quitting = true
-			return m, tea.Quit
+			if !prevQuitAt.IsZero() && time.Since(prevQuitAt) < quitConfirmWindow {
+				m.quitting = true
+				return m, tea.Quit
+			}
+			m.lastQuitAt = time.Now()
+			return m, tea.Println(statusStyle.Render("(press Ctrl-D again to quit)"))
 		}
 		m.input.reset()
 		return m, nil
@@ -415,7 +482,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// First Ctrl-C while busy: cancel the in-flight turn. Second
 		// Ctrl-C within the chord window: force-quit, even if the
 		// cancel itself hung (provider not honouring ctx, daemon RPC
-		// wedged). Ctrl-C while idle: quit immediately, as before.
+		// wedged).
 		busy := m.busy || m.conv.Live() != nil
 		if busy && m.cancelTurn != nil {
 			if !prevCancelAt.IsZero() && time.Since(prevCancelAt) < escDoubleWindow {
@@ -426,8 +493,15 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.lastCancelAt = time.Now()
 			return m, tea.Println(statusStyle.Render("(cancelling turn — press Ctrl-C again to force quit)"))
 		}
-		m.quitting = true
-		return m, tea.Quit
+		// Ctrl-C while idle: confirm before quitting so a reflexive tap
+		// doesn't silently discard the session. A second Ctrl-C within
+		// quitConfirmWindow commits.
+		if !prevQuitAt.IsZero() && time.Since(prevQuitAt) < quitConfirmWindow {
+			m.quitting = true
+			return m, tea.Quit
+		}
+		m.lastQuitAt = time.Now()
+		return m, tea.Println(statusStyle.Render("(press Ctrl-C again to quit)"))
 
 	case "esc":
 		// Double-Esc means "undo": on an empty input line while a
@@ -614,23 +688,35 @@ func (m *model) handleSessionsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 }
 
 // handlePickerKey routes keys to the @ file picker overlay. Filter
-// typing edits picker.filter, ↑/↓ move the selection, Enter inserts
-// the picked path at the input cursor (with a trailing space), Esc
+// typing edits picker.filter, ↑/↓ move the selection, Enter inserts the
+// picked path as an `@<path>` mention (with a trailing space), Esc
 // cancels.
+//
+// Lossless trigger: the `@` that opened the picker was deliberately NOT
+// inserted into the buffer, so a bare cancel (or an Enter with no match)
+// would silently drop the keystroke — and anything the user typed to
+// filter. Both exit paths therefore restore `@<filter>` to the input so
+// the typed text survives as literal content; the user can edit or
+// resubmit it instead of losing it.
 func (m *model) handlePickerKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		m.input.insertString("@" + m.picker.filter)
 		m.pickerOpen = false
 		return m, nil
 
 	case "enter":
 		matches := m.picker.matches()
 		if len(matches) == 0 {
+			m.input.insertString("@" + m.picker.filter)
 			m.pickerOpen = false
 			return m, nil
 		}
 		path := matches[m.picker.sel]
-		m.input.insertString(path + " ")
+		// Insert as an `@<path>` mention (marker preserved) rather than a
+		// bare path, mirroring the slash palette's `/<name>` and making
+		// file references visually distinct in the input line.
+		m.input.insertString("@" + path + " ")
 		m.pickerOpen = false
 		return m, nil
 
@@ -822,8 +908,12 @@ func (m *model) handleBusEvent(ev bus.Event) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.egress == nil && m.perm == nil {
-			m.egress = &egressPending{req: req}
-			return m, startEgressPrompt(req)
+			dl := req.Deadline
+			if dl.IsZero() {
+				dl = time.Now().Add(egressPromptDeadline)
+			}
+			m.egress = &egressPending{req: req, deadline: dl}
+			return m, tea.Batch(startEgressPrompt(req), egressTick())
 		}
 		go func() { req.Respond <- permissions.EgressDeny }()
 		return m, nil
@@ -946,6 +1036,63 @@ func subagentNotice(ev bus.Event) string {
 	return ""
 }
 
+// contextIndicator returns a compact live context-window usage badge
+// ("ctx 42%") for the status line, already styled, or "" when the data
+// isn't available — true attach mode with no agent control, or a
+// provider whose context window is unconfigured. Reads cached
+// atomics/telemetry (EstimateTokens / ContextWindow), so it's cheap to
+// call on every frame. Once usage crosses 80% of the window — where
+// auto-compaction starts looming — the badge switches to the brighter
+// notice colour so the user gets a heads-up before a compaction lands.
+func (m *model) contextIndicator() string {
+	if m.slashCtx == nil || m.slashCtx.agt == nil {
+		return ""
+	}
+	window := m.slashCtx.agt.ContextWindow()
+	if window <= 0 {
+		return ""
+	}
+	used := m.slashCtx.agt.EstimateTokens()
+	style := statusStyle
+	if used*100/window >= 80 {
+		style = noticeStyle
+	}
+	return style.Render("ctx " + percentOf(used, window))
+}
+
+// costIndicator returns a compact live session-usage badge for the
+// status line, already styled, or "" when there's nothing to show.
+// Two modes, chosen by whether the active provider carries pricing
+// (InputPrice/OutputPrice are dollars per 1M tokens, both zero for a
+// local / free model):
+//   - priced provider → "$0.0123", cumulative spend this session,
+//     derived from the cumulative input/output token counters and the
+//     provider's per-million rates (same numbers /cost reports).
+//   - free / local provider → "Σ 15k", cumulative tokens this session
+//     (input+output) so a heavy local run is still visible even though
+//     a dollar figure would be meaningless.
+//
+// Distinct from contextIndicator: that shows the CURRENT prompt-prefix
+// size (what gets re-sent each turn); this shows the session-cumulative
+// total (what's been billed so far). Reads cached atomics/telemetry, so
+// it's cheap per frame. Returns "" before any tokens are billed (a fresh
+// session shows no badge) and in true attach mode with no agent control.
+func (m *model) costIndicator() string {
+	if m.slashCtx == nil || m.slashCtx.agt == nil {
+		return ""
+	}
+	in := m.slashCtx.agt.CumulativeInputTokens()
+	out := m.slashCtx.agt.CumulativeOutputTokens()
+	if in <= 0 && out <= 0 {
+		return ""
+	}
+	if prov := m.slashCtx.agt.Provider(); prov != nil && (prov.InputPrice > 0 || prov.OutputPrice > 0) {
+		cost := float64(in)/1e6*prov.InputPrice + float64(out)/1e6*prov.OutputPrice
+		return statusStyle.Render(fmtCost(cost))
+	}
+	return statusStyle.Render("Σ " + formatWindow(int(in+out)))
+}
+
 // View renders the live region: the in-flight block (if any), a
 // single-line status, and the input prompt. Past blocks are NOT
 // rendered here — they live in terminal scrollback after tea.Println.
@@ -1015,6 +1162,20 @@ func (m *model) View() tea.View {
 	if status == "" {
 		status = statusStyle.Render(m.modelName)
 	}
+	// Live context-window usage. Steady chrome (unlike the situational
+	// hints below): shown whenever the data exists so the user can see
+	// the window filling up — and the colour shift past 80% warns before
+	// auto-compaction kicks in — instead of having to run /context.
+	if ind := m.contextIndicator(); ind != "" {
+		status += statusStyle.Render("  · ") + ind
+	}
+	// Live session cost / cumulative usage. Steady chrome alongside the
+	// context badge: ctx shows the current prompt size, this shows the
+	// session-cumulative spend (or token total on a free local model) so
+	// the user doesn't have to run /cost to watch it climb.
+	if ind := m.costIndicator(); ind != "" {
+		status += statusStyle.Render("  · ") + ind
+	}
 	// While a permission or egress prompt is pending, APPEND a pinned
 	// reminder so the user always sees that an answer is owed — the
 	// full Println'd prompt can scroll off-screen when reasoning streams
@@ -1032,6 +1193,11 @@ func (m *model) View() tea.View {
 		}
 	} else if m.egress != nil && m.egress.req != nil {
 		status += statusStyle.Render("  · ") + egressPendingHint(m.egress.req)
+		if !m.egress.deadline.IsZero() {
+			if remaining := time.Until(m.egress.deadline); remaining > 0 {
+				status += statusStyle.Render("  · auto-deny in " + fmtCountdown(remaining))
+			}
+		}
 	}
 	// Surface the interrupt affordance whenever a turn is in flight and
 	// the input line is empty — that's exactly when Esc means

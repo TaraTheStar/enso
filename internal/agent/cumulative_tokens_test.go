@@ -42,14 +42,14 @@ func TestRun_AccumulatesCumulativeTokens(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	inputCh := make(chan string, 1)
+	inputCh := make(chan UserInput, 1)
 	runDone := make(chan struct{})
 	go func() {
 		_ = a.Run(ctx, inputCh)
 		close(runDone)
 	}()
 
-	inputCh <- "hello agent please respond"
+	inputCh <- UserInput{Text: "hello agent please respond"}
 
 	// Wait for the turn to complete (EventAgentIdle) then snapshot.
 	deadline := time.After(2 * time.Second)
