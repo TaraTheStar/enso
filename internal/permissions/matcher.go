@@ -3,6 +3,7 @@
 package permissions
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -23,8 +24,19 @@ func MatchTool(pattern, tool string) bool {
 // rules into cwd-escape grants. Authors who want "any .go file" should
 // write `**/*.go`; "any .go in this project" is `<cwd>/**/*.go` (or
 // `./**/*.go` if the rule is in a project-tier config).
+//
+// Both pattern and path are filepath.Clean'd before matching, for two
+// reasons: (1) a `..` traversal in the path can't escape a scoped pattern
+// lexically — e.g. `read(/repo/**)` must NOT match `/repo/../etc/passwd`,
+// which cleans to `/etc/passwd`; (2) cleaning both keeps relative-form
+// patterns matching (`edit(./src/**)` against `./src/x.go` — both lose
+// the `./`). Clean only resolves `.`/`..`, duplicate slashes, and
+// trailing slashes; it leaves glob metacharacters (`*`, `**`, `?`)
+// untouched, so doublestar semantics are preserved. (Symlink resolution
+// is out of scope here — that containment check lives at the
+// tool/workspace layer; see S10.)
 func MatchPath(pattern, path string) bool {
-	m, _ := doublestar.PathMatch(pattern, path)
+	m, _ := doublestar.PathMatch(filepath.Clean(pattern), filepath.Clean(path))
 	return m
 }
 
@@ -39,12 +51,14 @@ func MatchPath(pattern, path string) bool {
 // in Allowlist.Match — it applies only to allow rules. See
 // bashHasUnchainedMetachars in allowlist.go.
 //
-// Allowlist.Match also extends bash deny rules with a top-level-segment
-// re-check via bashSplitTopLevel so `bash(rm -rf *)` deny correctly
-// fires on `do_evil; rm -rf /`. The remaining gap (command substitution
-// like `$(rm -rf /)` and backticks) is not closed here — for
-// adversarial inputs an isolating backend (`[backend] type =
-// "podman"` or `"lima"`) is the real boundary.
+// Allowlist.Match also extends bash deny rules with a per-segment
+// re-check (bashDenySegments) plus argv[0] normalization
+// (normalizeBashSegment) and command-substitution extraction
+// (bashSubstitutions), so `bash(rm -rf *)` deny fires on
+// `do_evil; /bin/\rm -rf /` and `$(rm -rf /)` alike. Deny is
+// best-effort by design (see Allowlist.Match) — for adversarial inputs
+// an isolating backend (`[backend] type = "podman"` or `"lima"`) is the
+// real boundary.
 func MatchCommand(pattern, cmd string) bool {
 	pattern = strings.TrimSpace(pattern)
 	if pattern == "*" || pattern == "" {

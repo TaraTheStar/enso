@@ -78,6 +78,33 @@ func TestEditTool_ReplaceAll(t *testing.T) {
 	}
 }
 
+// TestEditTool_EmptyOldString guards C1: an empty old_string used to slip
+// past the not-found guard (strings.Count(s, "") == len+1) and, with
+// replace_all, splice new_string between every byte. It must be rejected and
+// the file left untouched.
+func TestEditTool_EmptyOldString(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "f.txt"), "abc\n")
+	ac := newToolAC(tmp)
+
+	res, err := EditTool{}.Run(context.Background(), map[string]any{
+		"path":        "f.txt",
+		"old_string":  "",
+		"new_string":  "X",
+		"replace_all": true,
+	}, ac)
+	if err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	if !strings.Contains(res.LLMOutput, "must not be empty") {
+		t.Errorf("output = %q, want empty-old_string rejection", res.LLMOutput)
+	}
+	got, _ := os.ReadFile(filepath.Join(tmp, "f.txt"))
+	if string(got) != "abc\n" {
+		t.Errorf("file corrupted despite rejection: %q", got)
+	}
+}
+
 func TestEditTool_NotFound(t *testing.T) {
 	tmp := t.TempDir()
 	mustWriteFile(t, filepath.Join(tmp, "f.txt"), "alpha\n")

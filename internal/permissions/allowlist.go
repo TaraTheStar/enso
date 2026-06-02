@@ -3,6 +3,7 @@
 package permissions
 
 import (
+	"fmt"
 	"net/url"
 	"strings"
 
@@ -42,8 +43,14 @@ func ParsePattern(s string) (*Pattern, error) {
 	if idx < 0 {
 		return nil, nil // bare tool name matches all args
 	}
+	end := strings.LastIndexByte(s, ')')
+	if end < idx {
+		// No closing ')' after the '(' — slicing s[idx+1:end] would panic
+		// (end == -1). Reject as malformed instead.
+		return nil, fmt.Errorf("malformed pattern %q: missing closing ')'", s)
+	}
 	tool := s[:idx]
-	arg := s[idx+1 : strings.LastIndexByte(s, ')')]
+	arg := s[idx+1 : end]
 	p := &Pattern{Tool: tool, Arg: arg}
 	if deny {
 		p.Kind = KindDeny
@@ -91,12 +98,24 @@ func NewAllowlist(allow, ask, deny []string) *Allowlist {
 //
 // Bash deny rules get the symmetric extension: if the full-command
 // match misses, every top-level segment (split on `;`, `&&`, `||`, `|`,
-// `&`, newline) is also tested. That closes `do_evil; rm -rf /` evading
-// `bash(rm -rf *)` — the deny still fires on the trailing segment.
-// Residual gap (not closed here): command substitution like
-// `$(rm -rf /)` and backtick equivalents still bypass; for adversarial
-// inputs, an isolating backend (`[backend] type = "podman"` or
-// `"lima"`) is the real boundary, not deny rules.
+// `&`, newline) is tested both raw AND in a normalized form that defeats
+// the cheap lexical evasions a literal pattern would otherwise miss:
+//
+//	rm  -rf /      duplicated/odd whitespace  → collapsed
+//	/bin/rm -rf /  absolute / relative path   → basename (rm)
+//	\rm / r\m      shell-escape backslashes   → stripped
+//	"rm" -rf /     quoted command word        → unquoted
+//	$(rm -rf /)    command substitution       → body re-split + tested
+//	`rm -rf /`     backtick substitution      → body re-split + tested
+//
+// So `do_evil; /bin/\rm -rf /` still trips `bash(rm -rf *)`. Deny is
+// best-effort by design — it raises the bar against accidental and
+// casual evasion, not a determined adversary. Residual gaps NOT closed
+// here: case-folded binaries (not reachable via a case-sensitive $PATH
+// on the supported platforms), process substitution `<(...)`, and
+// arbitrary interpreter indirection (`sh -c '...'`, `xargs`, `env`).
+// For adversarial inputs an isolating backend (`[backend] type =
+// "podman"` or `"lima"`) is the real boundary, not deny rules.
 func (al *Allowlist) Match(tool, arg string) (matched bool, kind Kind) {
 	for _, p := range al.patterns {
 		if p.Tool != "*" && p.Tool != tool {
@@ -108,19 +127,104 @@ func (al *Allowlist) Match(tool, arg string) (matched bool, kind Kind) {
 			}
 			return true, p.Kind
 		}
-		// Bash deny: re-test against each top-level segment. Allow/ask
+		// Bash deny: re-test against each top-level segment (and each
+		// command-substitution body), raw and normalized. Allow/ask
 		// stay full-command-match-only because their semantics ("user
 		// explicitly opted into this exact pattern" / "always confirm")
-		// shouldn't fire on a fragment of an unrelated command.
+		// shouldn't fire on a fragment of an unrelated command — and
+		// being lenient there fails safe, where being lenient on deny
+		// would not.
 		if p.Kind == KindDeny && tool == "bash" {
-			for _, seg := range bashSplitTopLevel(arg) {
-				if matchArg(tool, p.Arg, seg) {
+			for _, seg := range bashDenySegments(arg) {
+				if matchArg(tool, p.Arg, seg) || matchArg(tool, p.Arg, normalizeBashSegment(seg)) {
 					return true, KindDeny
 				}
 			}
 		}
 	}
 	return false, KindAllow
+}
+
+// bashDenySegments returns every command fragment a deny rule should be
+// tested against: the top-level segments of `cmd`, plus the top-level
+// segments of each command-substitution body it contains (so a denied
+// command hidden in `$(...)` / backticks is still caught). One level of
+// substitution nesting is unwrapped recursively.
+func bashDenySegments(cmd string) []string {
+	segs := bashSplitTopLevel(cmd)
+	for _, body := range bashSubstitutions(cmd) {
+		segs = append(segs, bashSplitTopLevel(body)...)
+	}
+	return segs
+}
+
+// normalizeBashSegment rewrites a single command segment into a
+// canonical form for DENY matching by normalizing argv[0] — the command
+// word — and collapsing whitespace. It strips shell-escape backslashes
+// (`\rm`, `r\m`), surrounding quotes (`"rm"`), and any leading path
+// (`/bin/rm`, `./rm`) so the bare binary name is what the pattern sees;
+// the rest of the segment is preserved so the pattern's argument part
+// still matches. Only used additively (raw is tested too), so a segment
+// it mangles simply fails to match rather than producing a false deny.
+func normalizeBashSegment(seg string) string {
+	fields := strings.Fields(seg) // collapses runs of whitespace
+	if len(fields) == 0 {
+		return ""
+	}
+	arg0 := fields[0]
+	arg0 = strings.ReplaceAll(arg0, "\\", "") // \rm, r\m → rm
+	arg0 = strings.Trim(arg0, `'"`)           // "rm", 'rm' → rm
+	if i := strings.LastIndexByte(arg0, '/'); i >= 0 {
+		arg0 = arg0[i+1:] // /bin/rm, ./rm → rm
+	}
+	fields[0] = arg0
+	return strings.Join(fields, " ")
+}
+
+// bashSubstitutions extracts the bodies of command substitutions —
+// `$(...)` (paren-balanced, so nested `$(...)` is captured whole and
+// re-walked) and backtick “ `...` “ — from a bash string. Single-
+// quoted regions are skipped, since substitution does not execute there;
+// double quotes are NOT skipped, since it does. Best-effort, not a
+// parser: it exists so a denied command tucked inside a substitution is
+// still surfaced for deny matching.
+func bashSubstitutions(cmd string) []string {
+	var out []string
+	inSingle := false
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if inSingle {
+			if c == '\'' {
+				inSingle = false
+			}
+			continue
+		}
+		switch {
+		case c == '\'':
+			inSingle = true
+		case c == '$' && i+1 < len(cmd) && cmd[i+1] == '(':
+			depth, j := 1, i+2
+			for ; j < len(cmd) && depth > 0; j++ {
+				if cmd[j] == '(' {
+					depth++
+				} else if cmd[j] == ')' {
+					depth--
+				}
+			}
+			if depth == 0 {
+				body := cmd[i+2 : j-1]
+				out = append(out, body)
+				out = append(out, bashSubstitutions(body)...) // nested $(...)
+				i = j - 1
+			}
+		case c == '`':
+			if j := strings.IndexByte(cmd[i+1:], '`'); j >= 0 {
+				out = append(out, cmd[i+1:i+1+j])
+				i = i + 1 + j
+			}
+		}
+	}
+	return out
 }
 
 // bashShellMetachars are the characters whose presence in a bash

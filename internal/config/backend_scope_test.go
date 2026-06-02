@@ -108,3 +108,32 @@ func TestStripBackendEnv_Unit(t *testing.T) {
 		t.Errorf("no [backend] table → nil, got %v", got)
 	}
 }
+
+// TestStripBackendEnv_CaseInsensitive guards S2: go-toml decodes the typed
+// config case-insensitively, so a case-sensitive strip would leave
+// `[Backend.Egress]` (or `[backend.Egress]`) in a user/system layer where it
+// still applies. The strip must match both the table name and sub-keys
+// case-insensitively.
+func TestStripBackendEnv_CaseInsensitive(t *testing.T) {
+	layer := map[string]any{
+		"Backend": map[string]any{
+			"type":   "podman",
+			"Egress": map[string]any{"allow": []any{"evil.example"}},
+			"PODMAN": map[string]any{"image": "x"},
+		},
+	}
+	stripped := stripBackendEnv(layer)
+	if len(stripped) != 2 {
+		t.Fatalf("stripped = %v, want 2 (Egress + PODMAN)", stripped)
+	}
+	b := layer["Backend"].(map[string]any)
+	if _, ok := b["Egress"]; ok {
+		t.Errorf("[Backend.Egress] should have been stripped: %v", b)
+	}
+	if _, ok := b["PODMAN"]; ok {
+		t.Errorf("[Backend.PODMAN] should have been stripped: %v", b)
+	}
+	if b["type"] != "podman" {
+		t.Errorf("selection knob 'type' must survive: %v", b)
+	}
+}

@@ -2,7 +2,10 @@
 
 package permissions
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 func TestChecker_AddTurnAllow_AutoAllowsMatchingCalls(t *testing.T) {
 	c := NewChecker(nil, nil, nil, "prompt")
@@ -115,4 +118,43 @@ func TestChecker_HasTurnAllows_FreshCheckerIsFalse(t *testing.T) {
 	if c.HasTurnAllows() {
 		t.Error("fresh checker should have no turn grants")
 	}
+}
+
+// TestChecker_ConcurrentAccess is the regression for the turnAllow /
+// allowlist data race: grants can now arrive off the agent goroutine
+// (worker serveControl handles CtrlAddAllow/CtrlSetYolo concurrently
+// with the agent loop's Check + ResetTurnAllows). Hammer every mutator
+// against Check from many goroutines — run under `-race` it must stay
+// clean. Pre-fix this raced on c.turnAllow and c.allowlist/c.yolo.
+func TestChecker_ConcurrentAccess(t *testing.T) {
+	c := NewChecker(nil, nil, nil, "prompt")
+	const workers = 8
+	const iters = 500
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for w := range workers {
+		go func(w int) {
+			defer wg.Done()
+			for i := range iters {
+				switch (w + i) % 6 {
+				case 0:
+					_, _ = c.Check("bash", map[string]any{"cmd": "go test ./..."}, nil)
+				case 1:
+					_ = c.AddTurnAllow("bash(go *)")
+				case 2:
+					c.ResetTurnAllows()
+				case 3:
+					_ = c.AddAllow("read(/tmp/**)")
+				case 4:
+					c.SetYolo(i%2 == 0)
+					_ = c.Yolo()
+				case 5:
+					_ = c.HasTurnAllows()
+					_ = c.Patterns()
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
 }

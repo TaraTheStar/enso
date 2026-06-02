@@ -47,6 +47,7 @@ import (
 
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/exestage"
+	"github.com/TaraTheStar/enso/internal/backend/seal"
 	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/paths"
 )
@@ -495,10 +496,11 @@ func (b *Backend) buildVMConfig(cwd, exeMount string) string {
 	//      cosmetic, so it is best-effort and never fails the boot (its
 	//      own entry; cannot strand the seal even if it somehow errors).
 	//   2. iptables bootstrap — sealed + Alpine only. The Alpine cloud
-	//      image ships no iptables, but Start→sealGuestEgress needs it
-	//      or it REFUSES to launch. Ubuntu/Debian images already carry
-	//      it, so this is skipped there. It is a separate, earlier step
-	//      than user init so a broken user init can't strand the seal.
+	//      image ships no ip[6]tables, but Start→sealGuestEgress needs
+	//      both (the seal default-denies v4 AND v6, fail-closed) or it
+	//      REFUSES to launch. Ubuntu/Debian images already carry them, so
+	//      this is skipped there. It is a separate, earlier step than user
+	//      init so a broken user init can't strand the seal.
 	//   3. user [backend.lima] init — all lines in one script so a
 	//      `cd`/env set carries across them.
 	var scripts []string
@@ -506,7 +508,9 @@ func (b *Backend) buildVMConfig(cwd, exeMount string) string {
 		scripts = append(scripts, bootSpeedupScript)
 	}
 	if b.Sealed && alpine {
-		scripts = append(scripts, "apk add --no-cache iptables")
+		// ip6tables too: the seal's v6 default-deny is fail-closed, so the
+		// binary must exist or Start refuses to launch.
+		scripts = append(scripts, "apk add --no-cache iptables ip6tables")
 	}
 	if len(b.Init) > 0 {
 		scripts = append(scripts, strings.Join(b.Init, "\n"))
@@ -589,24 +593,11 @@ func guestProxyURL(hostURL string) string {
 // every task with a fresh proxy port is safe. `-w` waits for the xtables
 // lock; conntrack matches the established return path.
 func sealScript(proxyHostport string) string {
-	allowProxy := ""
-	if proxyHostport != "" {
-		host, port := proxyHostport, ""
-		if i := strings.LastIndex(proxyHostport, ":"); i >= 0 {
-			host, port = proxyHostport[:i], proxyHostport[i+1:]
-		}
-		if port != "" {
-			allowProxy = "iptables -w -A ENSO_EGRESS -p tcp -d " + host +
-				" --dport " + port + " -j ACCEPT\n"
-		}
-	}
-	return "set -e\n" +
-		"iptables -w -F ENSO_EGRESS 2>/dev/null || iptables -w -N ENSO_EGRESS\n" +
-		"iptables -w -A ENSO_EGRESS -o lo -j ACCEPT\n" +
-		"iptables -w -A ENSO_EGRESS -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT\n" +
-		allowProxy +
-		"iptables -w -A ENSO_EGRESS -j REJECT --reject-with icmp-port-unreachable\n" +
-		"iptables -w -C OUTPUT -j ENSO_EGRESS 2>/dev/null || iptables -w -I OUTPUT 1 -j ENSO_EGRESS\n"
+	// set -e means a missing ip6tables (or any rule failure) aborts the
+	// whole seal, so Start REFUSES rather than running with an open path —
+	// fail-closed. The Alpine bootstrap installs ip[6]tables for this.
+	// The chain program itself is shared with podman (internal/backend/seal).
+	return "set -e\n" + seal.Rules(proxyHostport)
 }
 
 // sealGuestEgress applies sealScript inside the guest as root (Lima's

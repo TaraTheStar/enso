@@ -60,7 +60,7 @@ func TestAutoLabel_FirstUserMessage(t *testing.T) {
 	}
 
 	// First user message auto-derives the label.
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "Fix the flaky auth test"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "Fix the flaky auth test"}, ""); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	want := "fix-the-flaky-auth-test"
@@ -70,7 +70,7 @@ func TestAutoLabel_FirstUserMessage(t *testing.T) {
 	}
 
 	// Subsequent user messages don't overwrite.
-	if err := w.AppendMessage(llm.Message{Role: "user", Content: "Now do something else"}, ""); err != nil {
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "Now do something else"}, ""); err != nil {
 		t.Fatalf("append 2: %v", err)
 	}
 	got, _ = w.Label()
@@ -93,20 +93,20 @@ func TestAutoLabel_SkipsNonUserAndSubagent(t *testing.T) {
 	}
 
 	// Assistant + tool messages don't trigger auto-label.
-	_ = w.AppendMessage(llm.Message{Role: "assistant", Content: "I'll start by reading"}, "")
-	_ = w.AppendMessage(llm.Message{Role: "tool", Content: "ok", ToolCallID: "x"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "assistant", Content: "I'll start by reading"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "tool", Content: "ok", ToolCallID: "x"}, "")
 	if got, _ := w.Label(); got != "" {
 		t.Errorf("after non-user messages: got %q, want empty", got)
 	}
 
 	// Sub-agent user messages don't trigger top-level auto-label.
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "sub-agent prompt"}, "sub-1")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "sub-agent prompt"}, "sub-1")
 	if got, _ := w.Label(); got != "" {
 		t.Errorf("after sub-agent user: got %q, want empty (must only fire on top-level)", got)
 	}
 
 	// Top-level user message finally triggers it.
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "actual top-level prompt"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "actual top-level prompt"}, "")
 	if got, _ := w.Label(); got != "actual-top-level-prompt" {
 		t.Errorf("after top-level user: got %q", got)
 	}
@@ -126,11 +126,11 @@ func TestAutoLabel_EmptyContentLeavesUnset(t *testing.T) {
 	}
 	// Pure-punctuation content slugifies to empty; label stays unset so
 	// the *next* substantive message wins.
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "???"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "???"}, "")
 	if got, _ := w.Label(); got != "" {
 		t.Errorf("after punct-only: got %q, want empty", got)
 	}
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "now a real one"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "now a real one"}, "")
 	if got, _ := w.Label(); got != "now-a-real-one" {
 		t.Errorf("after real msg: got %q", got)
 	}
@@ -149,7 +149,7 @@ func TestSetLabel_OverridesAndNormalizes(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Auto-label first.
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "investigate the build"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "investigate the build"}, "")
 
 	// /rename overrides regardless of existing label and applies the
 	// same slug normalisation as auto-derivation.
@@ -170,7 +170,7 @@ func TestSetLabel_OverridesAndNormalizes(t *testing.T) {
 		t.Errorf("after clear: got %q, want empty", got)
 	}
 	// After clearing, the *next* user message re-arms auto-derivation.
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "round two"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "round two"}, "")
 	got, _ = w.Label()
 	if got != "round-two" {
 		t.Errorf("after re-arm: got %q, want round-two", got)
@@ -189,7 +189,7 @@ func TestLoadAndListRecent_RoundtripLabel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = w.AppendMessage(llm.Message{Role: "user", Content: "Run the deploy script"}, "")
+	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "Run the deploy script"}, "")
 
 	state, err := Load(s, w.SessionID())
 	if err != nil {

@@ -66,9 +66,22 @@ func (a *ToolCallAccumulator) Finalize() []ToolCall {
 	result := make([]ToolCall, 0, len(a.calls))
 	for _, idx := range idxs {
 		call := a.calls[idx]
-		if call.ID != "" && call.Function.Name != "" {
-			result = append(result, *call)
+		// A call with no name is noise (e.g. a stray delta with only an
+		// index) — drop it. But a named call that never carried an id is
+		// a real tool call from a server that omits ids (some
+		// OpenAI-compatible local backends do): dropping it would make
+		// the model's tool call silently vanish, stalling the turn.
+		// Synthesise a deterministic id from the delta index instead —
+		// deterministic so the re-serialised assistant message stays
+		// byte-stable across turns (prefix-cache safe, same rationale as
+		// the index sort above).
+		if call.Function.Name == "" {
+			continue
 		}
+		if call.ID == "" {
+			call.ID = fmt.Sprintf("call_%d", idx)
+		}
+		result = append(result, *call)
 	}
 	return result
 }

@@ -409,7 +409,10 @@ func (a *Agent) effectiveContextWindow(p *llm.Provider) int {
 // will be on the next API call.
 func (a *Agent) estimateTokens() int {
 	if u := a.lastUsage.Load(); u != nil && !u.Empty() {
-		base := u.InputTokens + u.CacheReadTokens + u.CacheWriteTokens
+		// EffectiveInputTokens normalizes the per-provider cache accounting
+		// (OpenAI/Gemini fold cached reads into InputTokens; summing would
+		// double-count and trigger premature compaction). See messages.go.
+		base := u.EffectiveInputTokens()
 		return base + a.tokensAppendedSinceLastUsage()
 	}
 	return llm.Estimate(a.History)
@@ -445,11 +448,13 @@ func (a *Agent) LastUsage() llm.MessageUsage {
 }
 
 // stampUsage records provider-reported usage for the assistant message
-// at History index historyIdx. No-op when usage is empty (provider
-// didn't supply numbers — keep lastUsage at whatever it was and don't
-// pollute messageUsage with zero rows). Updates cumIn/cumOut from the
-// real values; persists via the Writer when available.
-func (a *Agent) stampUsage(historyIdx int, usage llm.MessageUsage) {
+// at History index historyIdx, persisted against persistSeq (the value
+// returned by the appendMessage that wrote the row — 0 when there's no
+// Writer). No-op when usage is empty (provider didn't supply numbers —
+// keep lastUsage at whatever it was and don't pollute messageUsage with
+// zero rows). Updates cumIn/cumOut from the real values; persists via the
+// Writer when available.
+func (a *Agent) stampUsage(historyIdx, persistSeq int, usage llm.MessageUsage) {
 	if usage.Empty() {
 		return
 	}
@@ -457,13 +462,14 @@ func (a *Agent) stampUsage(historyIdx int, usage llm.MessageUsage) {
 	a.messageUsage[historyIdx] = usage
 	a.messageUsageMu.Unlock()
 	a.lastUsage.Store(&usage)
-	// Cumulative-spend: real numbers. CacheRead/CacheWrite count
-	// against the input side; reasoning rides on output.
-	a.cumIn.Add(int64(usage.InputTokens + usage.CacheReadTokens + usage.CacheWriteTokens))
+	// Cumulative-spend: real numbers. EffectiveInputTokens normalizes the
+	// prompt side across providers (avoids the OpenAI/Gemini cache
+	// double-count); reasoning rides on output.
+	a.cumIn.Add(int64(usage.EffectiveInputTokens()))
 	a.cumOut.Add(int64(usage.OutputTokens + usage.ReasoningTokens))
 	a.refreshEstimate()
 	if a.Writer != nil {
-		if err := a.Writer.AppendMessageUsage(usage, a.AgentCtx.AgentID); err != nil {
+		if err := a.Writer.AppendMessageUsage(persistSeq, usage, a.AgentCtx.AgentID); err != nil {
 			a.AgentCtx.Logger.Error("session: append usage", "err", err)
 		}
 	}
@@ -1184,8 +1190,8 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		return false, nil
 	}
 
-	a.appendMessage(asst)
-	a.stampUsage(len(a.History)-1, usage)
+	seq := a.appendMessage(asst)
+	a.stampUsage(len(a.History)-1, seq, usage)
 	a.Bus.Publish(bus.Event{Type: bus.EventAssistantDone})
 
 	if len(toolCalls) == 0 {
@@ -1251,8 +1257,8 @@ func (a *Agent) maybeRecover(p *llm.Provider, finishReason, content string, asst
 			return false, false, nil
 		}
 		a.recoverAttempts++
-		a.appendMessage(asst)
-		a.stampUsage(len(a.History)-1, usage)
+		seq := a.appendMessage(asst)
+		a.stampUsage(len(a.History)-1, seq, usage)
 		a.Bus.Publish(bus.Event{Type: bus.EventAssistantDone})
 		a.appendUserMessage(recoveryContinueNudge)
 		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
@@ -1298,14 +1304,22 @@ func (a *Agent) appendUserMessage(content string) {
 // appendMessage persists the message (if a Writer is configured) before
 // updating in-memory history. The synchronous persist-before-render order
 // keeps a crashed process from losing state observed by the user.
-func (a *Agent) appendMessage(msg llm.Message) {
+//
+// Returns the persisted message's per-session seq (0 when no Writer is
+// configured or the append failed). Callers that stamp usage must pass
+// this seq to stampUsage so the usage attaches to the right row even when
+// a concurrent sub-agent shares the writer.
+func (a *Agent) appendMessage(msg llm.Message) int {
+	seq := 0
 	if a.Writer != nil {
-		if err := a.Writer.AppendMessage(msg, a.AgentCtx.AgentID); err != nil {
+		var err error
+		if seq, err = a.Writer.AppendMessage(msg, a.AgentCtx.AgentID); err != nil {
 			a.AgentCtx.Logger.Error("session: append message", "err", err)
 		}
 	}
 	a.History = append(a.History, msg)
 	a.refreshEstimate()
+	return seq
 }
 
 // executeToolCall gates one call through the permission checker and runs
