@@ -320,6 +320,17 @@ const (
 	MsgPersistMessage      MsgKind = "persist_message"       // worker -> host (wire.PersistMessage)
 	MsgPersistMessageUsage MsgKind = "persist_message_usage" // worker -> host (wire.PersistMessageUsage)
 	MsgPersistToolCall     MsgKind = "persist_tool_call"     // worker -> host (wire.PersistToolCall)
+
+	// MsgCheckpoint signals a per-turn workspace checkpoint for /rewind on
+	// an ISOLATED backend, whose agent FS is the overlay's `merged` dir on
+	// the HOST (not reachable from inside the guest). The worker fires it
+	// from OnUserTurn — synchronously after shipping the user message's
+	// MsgPersistMessage, before any inference — so the host snapshots the
+	// overlay at the just-applied user turn. Bodyless: the host uses its
+	// OWN last-applied top-level seq, since the guest's remoteWriter seq is
+	// relative to the worker's start and diverges on resume. Best-effort
+	// (the LOCAL backend snapshots worker-side instead and never sends it).
+	MsgCheckpoint MsgKind = "checkpoint" // worker -> host: snapshot the overlay at the current user turn
 )
 
 // Envelope is the single wire unit. Body holds the kind-specific

@@ -29,6 +29,7 @@ import (
 	"github.com/TaraTheStar/enso/internal/backend/local"
 	"github.com/TaraTheStar/enso/internal/backend/podman"
 	"github.com/TaraTheStar/enso/internal/backend/wire"
+	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/llm"
@@ -226,6 +227,18 @@ type Session struct {
 	// local backend (the worker writes the shared host DB itself) and
 	// ephemeral sessions.
 	writer *session.Writer
+
+	// Per-turn /rewind checkpointing for an ISOLATED backend (WithCheckpointer).
+	// The worker's MsgCheckpoint signals snapshotting ckptMergedDir (the
+	// overlay's `merged` dir, which lives host-side) into the session's
+	// checkpoint store at the just-applied top-level user turn. All nil/zero
+	// for the local backend (the worker snapshots itself) and when no overlay
+	// is in use. ckptMu serializes snapshots so concurrent turns can't race
+	// the store/disk; the copy itself runs off the Channel loop goroutine.
+	ckptStore     *session.Store
+	ckptMergedDir string
+	ckptRetain    int
+	ckptMu        sync.Mutex
 }
 
 // CapabilityBroker authorizes a network-sealed worker's tier-3
@@ -252,6 +265,22 @@ func WithBroker(b CapabilityBroker) Option {
 // backend (worker writes the shared DB directly) or ephemeral runs.
 func WithWriter(w *session.Writer) Option {
 	return func(s *Session) { s.writer = w }
+}
+
+// WithCheckpointer enables host-side per-turn /rewind checkpointing for
+// an ISOLATED backend whose agent works in an overlay. mergedDir is the
+// overlay's `merged` dir (workspace.Overlay.Copy) on the host; on each
+// MsgCheckpoint the host snapshots it into the session's checkpoint store
+// and prunes to `retain` most recent. Not set for the local backend (the
+// worker snapshots the shared project tree itself) or when no overlay is
+// in use (then there is no host-visible agent FS to snapshot — only
+// conversation rewind works). Requires WithWriter (the same session).
+func WithCheckpointer(store *session.Store, mergedDir string, retain int) Option {
+	return func(s *Session) {
+		s.ckptStore = store
+		s.ckptMergedDir = mergedDir
+		s.ckptRetain = retain
+	}
 }
 
 // denyBroker is the default policy: deny all, with an auditable reason.
@@ -488,6 +517,31 @@ func (s *Session) finish(err error) {
 	s.doneOnce.Do(func() { s.done <- err; close(s.done) })
 }
 
+// captureCheckpoint snapshots the isolated overlay's `merged` dir for the
+// given top-level user-turn seq, off the worker's MsgCheckpoint signal.
+// It runs in its own goroutine so the sole Channel reader never blocks on
+// a tree copy (the snapshot has the whole inference round-trip to finish
+// before the agent's first tool edit reaches `merged`), and is serialized
+// by ckptMu so back-to-back turns don't race the store/disk. Best-effort:
+// a failure logs and is dropped — checkpointing is recovery, never
+// load-bearing. A no-op unless WithCheckpointer + WithWriter are set.
+func (s *Session) captureCheckpoint(seq int) {
+	if s.ckptStore == nil || s.ckptMergedDir == "" || s.writer == nil || seq <= 0 {
+		return
+	}
+	go func() {
+		s.ckptMu.Lock()
+		defer s.ckptMu.Unlock()
+		err := session.CaptureCheckpoint(s.ckptStore, s.writer, seq, s.ckptRetain,
+			func(ctx context.Context, dst string) error {
+				return workspace.SnapshotTree(ctx, s.ckptMergedDir, dst)
+			})
+		if err != nil {
+			slog.Warn("host: checkpoint capture failed", "seq", seq, "err", err)
+		}
+	}()
+}
+
 // loop is the sole reader of the Channel. It never blocks on agent
 // work: inference and permission service run in their own goroutines.
 func (s *Session) loop(ctx context.Context, ready chan<- error) {
@@ -558,6 +612,15 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 					_ = s.writer.AppendToolCall(pt.CallID, pt.Name, pt.Args, pt.LLMOutput, pt.FullOutput, pt.Status)
 				}
 			}
+
+		case backend.MsgCheckpoint:
+			// An isolated worker just persisted a genuine user turn and
+			// asked us to snapshot the overlay it's working in. Use OUR
+			// last-applied top-level seq (the worker's remoteWriter seq is
+			// relative and would diverge on resume). The user message was
+			// applied immediately before this envelope (ordered seam), so
+			// lastSeqByAgent[""] is exactly that turn's host DB seq.
+			s.captureCheckpoint(lastSeqByAgent[""])
 
 		case backend.MsgTelemetry:
 			var tw wire.Telemetry
