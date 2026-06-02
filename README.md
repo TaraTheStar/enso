@@ -261,7 +261,8 @@ prompt). Run `/prompt` in the TUI to see the per-layer breakdown.
 | Ctrl-Left / Ctrl-Right | Word back / word forward |
 | Left / Right | Move the cursor one character |
 | Up / Down | Move the cursor a visual row through multi-line / soft-wrapped input (top row Up → buffer start, bottom row Down → end) |
-| `@` (at token start) | Open file picker — type to filter, Enter inserts the path |
+| `@` (at token start) | Open file picker — type to filter, Enter inserts the path as an `@<path>` mention (image paths are attached for vision-capable models) |
+| `/` (on empty line) | Open the slash-command palette — filter and insert any registered command |
 | Permission prompt: `y` / `n` / `a` / `t` | Allow / Deny / Allow + Remember / Allow for this turn only |
 
 When `[ui] editor_mode = "vim"` is set, the input runs a single-line
@@ -277,10 +278,11 @@ in either mode.
 | `/yolo on\|off` | Toggle auto-allow mode |
 | `/tools` | List registered tools (built-ins + MCP + LSP) |
 | `/info` | Print the active provider, model, session id, cwd, and config search paths |
-| `/sessions` | List recent sessions (resume with `--session <id>`; Ctrl-R is the overlay version) |
+| `/sessions [--all]` | List recent sessions — current directory by default, `--all` for every directory (resume with `--session <id>`; Ctrl-R is the overlay version) |
 | `/rename [<label>]` | Show or override the session's display label (no arg prints current; `/rename <text>` overrides) |
 | `/export [-o <file>]` | Export this session to markdown (stdout by default) |
 | `/fork` | Branch this session into a new one and print the new id |
+| `/rewind` | Undo to an earlier turn — restore files and/or conversation |
 | `/stats [--days N]` | Token / message / tool aggregates across sessions |
 | `/find [-e] <pattern>` | Search this session's transcript (`-e` for regex) |
 | `/grep [--all] [--regex] <pattern>` | Search past sessions in the local store |
@@ -359,6 +361,8 @@ Headline features:
 
 - Scrollback-native interactive TUI (Bubble Tea v2 + Lipgloss + Glamour for markdown), with streaming, tool-calling, and an alt-screen session-inspector overlay (Ctrl-Space).
 - Sessions + crash resume + auto-compaction that reserves the model's output budget (triggers near `context_window − max_tokens − margin`, and self-corrects if the server reports a smaller real limit).
+- `/rewind` to undo to an earlier turn — restore the conversation, the workspace files, or both — backed by per-turn workspace checkpoints (`[checkpoints]`, on by default; `.git` is never touched).
+- Multimodal input — attach an image (PNG/JPEG/GIF/WebP, ≤10 MiB) by `@`-mentioning its path; resolved host-side so isolated backends receive it, and the `read` tool reads images too.
 - Permission allowlist with prompt-on-miss (`y` / `n` / `a` / `t` decisions — turn-scoped grants land in `t`); `--yolo` for unattended runs. Bash deny rules are segment-aware so `bash(rm -rf *)` catches chained variants like `cd / && rm -rf *`.
 - Background `bash` jobs (`run_in_background` + `bash_output` / `bash_kill`) for dev servers, watchers, and long builds, plus foreground tool-call timeouts (`[bash] command_timeout` and `[mcp.<name>] call_timeout`, default 120s) so a runaway command can't hang the turn.
 - Generation guards for local models — a `max_tokens` runaway backstop, a mid-stream loop detector, and a stall watchdog, with turn-level auto-recovery (`[providers.<name>.generation]`).
