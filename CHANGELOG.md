@@ -4,6 +4,172 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.11.0] - 2026-06-02
+
+### Added
+
+- **`/rewind` — undo to an earlier turn.** A new slash command opens an
+  overlay to roll the session back to any earlier turn. Stage one picks
+  the turn (each per-turn checkpoint shows its turn number, a preview of
+  that turn's message, and a relative timestamp; defaults to the most
+  recent). Stage two picks what to restore: **[1]** code + conversation,
+  **[2]** conversation only (keep files), or **[3]** code only (keep
+  conversation). Restoring code mirrors the workspace snapshot taken just
+  before that turn back over the working tree — reverting modified files
+  and deleting files added since — while never touching `.git` (history
+  is left to git). Before truncating the conversation the prior thread is
+  preserved as a forked session (the overlay prints how to resume it
+  with `enso --session <id>`), and the rewound-away message is
+  pre-filled into the input so it can be re-sent or edited. Unavailable
+  under `--ephemeral`.
+- **Per-turn workspace checkpoints.** On every genuine user turn (not
+  auto-recovery nudges or sub-agent runs) enso snapshots the project tree
+  before any inference runs, so `/rewind` can restore exact prior state.
+  Snapshots live under `$XDG_STATE_HOME/enso/checkpoints/<session>/<seq>/`
+  and use `cp -a --reflink=auto` — near-free on copy-on-write
+  filesystems, a real copy otherwise. Tunable via a new `[checkpoints]`
+  block: `disabled` (bool, default `false` — checkpointing is on by
+  default) and `retain` (int, default `20` per session; older snapshots'
+  DB rows and on-disk trees are pruned). On isolated backends snapshots
+  capture the overlay's host-side tree, so only conversation rewind is
+  available when no overlay is in use. `enso prune` now also sweeps
+  orphaned snapshot trees left by discarded sessions and honours
+  `--older-than`.
+- **Multimodal image input.** Attach an image to a message by typing an
+  `@path` mention pointing at an image file (e.g. `look at @diagram.png`);
+  the `@` file picker now inserts `@<path>` mentions. Supported formats
+  are PNG, JPEG, GIF, and WebP up to 10 MiB each; other paths stay plain
+  text. Images are resolved host-side and crossed to isolated workers as
+  bytes, so sealed backends that can't see your filesystem still receive
+  them, and a `📎 attached` notice is shown in scrollback. The `read`
+  tool likewise now reads images: handing it an image path shows the
+  image directly to a vision-capable model.
+- **Slash-command palette.** Typing `/` on an empty input line opens a
+  filtered, navigable list of every registered command (built-ins, user
+  and project commands, and loaded skills) with one-line descriptions —
+  prefix matches first, then substring. Type to filter, arrows or
+  `Ctrl+P`/`Ctrl+N` to move, `Enter`/`Tab` to insert, `Esc` to dismiss.
+  A discoverability surface over the existing commands; no commands were
+  added or removed.
+- **Live status-line badges.** The status line now always shows context
+  usage (`ctx N%`, brightening past 80% as a pre-compaction heads-up) and
+  session usage — cumulative spend (`$0.0123`) on a priced provider or
+  cumulative tokens (`Σ 15k`) on a free/local one — so `/context` and
+  `/cost` are no longer needed for an at-a-glance read.
+- **"esc to interrupt" hint.** While a turn is in flight with an empty
+  input line, the status line shows `· esc to interrupt`, then `· press
+  esc again to stop` once armed (a two-stage chord). Suppressed during a
+  pending permission/egress prompt, where `Esc` means deny.
+- **Scrollable overlays.** The `@` file picker, the `/` slash palette,
+  and the recent-sessions overlay now scroll with the selection on short
+  terminals — with an `↑N ↓M more` footer — instead of overflowing.
+- **Large-file streaming in `read`.** Files over 10 MiB now stream a
+  bounded window (10 MiB / 50,000-line caps) instead of being slurped
+  whole, preventing OOM on multi-gigabyte files and logs; the result
+  reports a range like `lines 1-N (large file, <size>, capped)`.
+  Pathologically long lines are clipped rather than erroring.
+
+### Changed
+
+- **Resume and `/sessions` are now scoped to the current directory.**
+  `/sessions` lists only sessions started in the current directory by
+  default (pass `--all` for every directory, mirroring `/grep`), and
+  `--continue` resumes the most recent session in the current directory.
+- **Resume and `/transcript` replay tools and reasoning.** Resumed
+  sessions and transcript replay now reconstruct tool calls and assistant
+  chain-of-thought into scrollback instead of showing only user/assistant
+  prose. The reasoning is persisted for replay only and is never sent
+  back to the model.
+- **Quitting now requires confirmation.** An idle `Ctrl+C`, and `Ctrl+D`
+  on an empty line, now need a confirming second press within 3 seconds
+  so a reflexive tap no longer discards the session.
+- **"Remember" rules for `read`/`grep`/`glob` are project-scoped.**
+  Previously "Allow + Remember" derived `<tool>(**)`, which matched
+  `/etc/passwd`, `~/.ssh`, and enso's own config. Now a path inside the
+  session cwd yields `<tool>(<cwd>/**)`, a path outside cwd yields an
+  exact-path rule, and `glob` remembers the exact pattern you ran —
+  remembering a read no longer silently grants whole-filesystem access.
+- **"Always"/"Turn" grants reach the worker's enforcing checker.** On the
+  local backend, "Allow + Remember" / "Allow for turn" now RPC the grant
+  to the worker-side checker before the decision is sent, so the next
+  call is actually gated by the new rule; only true attach mode (no wire
+  path) degrades to allow-once with a notice.
+- **Security config arrays are unioned across config tiers, not
+  replaced.** `permissions.allow`/`ask`/`deny` and `web_fetch.allow_hosts`
+  now merge (deduped, grow-only) across layers, so a higher-priority
+  layer can no longer wipe a more-trusted tier's deny list with
+  `deny = []`. Deny still wins in matching.
+- **`config.local.toml` is now trust-gated.** `.enso/config.local.toml`
+  is trust-prompted like `config.toml` (a hostile repo can commit one and
+  it loads at higher priority); enso's own config writes record the new
+  hash as trusted so they don't re-prompt. The user/system-layer strip of
+  project-only `[backend.podman|lima|egress]` env is now case-insensitive.
+- **Bash deny rules are much harder to evade.** Deny matching now tests
+  each command segment both raw and normalized — collapsed whitespace,
+  path-to-basename (`/bin/rm` → `rm`), removed shell-escapes
+  (`\rm`, `r\m`), unquoted command words (`"rm"`), and re-split command
+  substitution bodies (`$(...)`, backticks). So `bash(rm -rf *)` now also
+  catches `do_evil; /bin/\rm -rf /` and `$(rm -rf /)`. Interpreter
+  indirection (`eval`, `sh -c`, `xargs`) and here-docs remain out of
+  scope.
+- **Allowlist path matching cleans `..` traversal.** Patterns and paths
+  are `filepath.Clean`ed before matching, so `read(/repo/**)` no longer
+  matches `/repo/../etc/passwd`.
+- **`read` rejects directories** up front with `read <path>: is a
+  directory` instead of failing later, and refuses oversized images with
+  `[image too large to inline]` rather than emitting binary.
+
+### Fixed
+
+- **`bash` no longer exposes credentials to the model.** The local-backend
+  `bash` child environment is now credential-scrubbed: every `ENSO_*` var
+  and any name containing `API_KEY`/`SECRET`/`TOKEN`/`PASSWORD`/
+  `CREDENTIAL`/`PRIVATE_KEY`/`ACCESS_KEY` is dropped, so the model can't
+  `echo $OPENAI_API_KEY`. `PATH`/`HOME`/`LANG`/toolchain vars survive.
+  Genuine tokens like `GITHUB_TOKEN` are hidden too — use a credential
+  helper.
+- **SSRF protection on the host egress proxy.** The egress proxy now
+  resolves each target once, refuses to connect if any resolved IP is a
+  denied class (loopback, RFC1918/ULA, link-local incl. the
+  `169.254.169.254` cloud-metadata address, CGNAT, broadcast, multicast),
+  then dials the pinned IP literal (DNS-rebind defense). This stops a
+  sealed worker under `--yolo` from relaying through the proxy into
+  host-loopback or cloud metadata; explicitly allowlisted targets (e.g.
+  your host-loopback model server) are exempt, `AllowAll` is not. The
+  classification is shared with `web_fetch` via a new `internal/netsec`
+  package.
+- **Tool-call order is now deterministic for prefix-cache stability.**
+  Completed tool calls are returned in streamed-delta-index order rather
+  than Go's randomized map order. Reordering multi-call turns diverged the
+  re-serialised assistant message from the server's cached KV and forced a
+  full prompt reprocess; sorting keeps the llama.cpp prefix cache intact
+  across turns.
+- **Vertex/Gemini parallel tool calls no longer collide.** Gemini omits
+  tool-call IDs, so two parallel calls to the same tool both got
+  `call_<name>` and results could be mis-matched (also breaking
+  compaction boundaries and cross-provider `/model` swaps). IDs are now
+  synthesised as `call_<name>_<idx>` from a per-stream counter.
+- **Session message-sequence races.** The shared session `Writer` could
+  hand out the same `seq` from an unlocked `seq++` across the agent,
+  sub-agents, and the persistence goroutine, colliding on the
+  `(session_id, seq)` key and silently dropping a message. Counters are
+  now mutex-guarded and token usage is attributed to an explicit `seq`.
+- **Migration framework hardened.** The migration version is now the
+  filename's numeric prefix rather than its sorted position (so adding,
+  removing, or gapping files can't shift versions and re-run or skip a
+  migration), duplicate versions are rejected, and each migration body and
+  its `user_version` bump run in one transaction so a mid-file failure
+  rolls back cleanly.
+- **`edit` rejects an empty `old_string`** (`edit: old_string must not be
+  empty`) instead of splicing `new_string` between every byte under
+  `replace_all`.
+- **Malformed permission patterns no longer panic.** A pattern with `(`
+  but no closing `)` (e.g. `bash(rm`) now errors with "missing closing
+  ')'" instead of panicking.
+- **The `@` file picker no longer drops typed text.** Cancelling the
+  picker (Esc, or Enter with no match) restores the typed `@<filter>`
+  text as literal input instead of discarding it.
+
 ## [v2.10.1] - 2026-05-30
 
 ### Added
@@ -1035,6 +1201,7 @@ First public release.
 - Private vulnerability reporting via GitHub Security Advisories;
   see [`SECURITY.md`](SECURITY.md).
 
+[v2.11.0]: https://github.com/TaraTheStar/enso/compare/v2.10.1...v2.11.0
 [v2.10.1]: https://github.com/TaraTheStar/enso/compare/v2.10.0...v2.10.1
 [v2.10.0]: https://github.com/TaraTheStar/enso/compare/v2.9.0...v2.10.0
 [v2.9.0]: https://github.com/TaraTheStar/enso/compare/v2.8.0...v2.9.0

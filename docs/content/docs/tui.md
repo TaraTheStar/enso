@@ -54,10 +54,11 @@ INSERT, `h l 0 $ w b x` for navigation and edit.
 | `/yolo on\|off`                        | Toggle auto-allow for the rest of the session.                  |
 | `/tools`                               | List tools currently registered (built-ins + MCP + LSP).        |
 | `/info`                                | Print active provider / model / session id / cwd / config search paths. |
-| `/sessions`                            | Recent sessions, inline. `Ctrl-R` opens the overlay version.    |
+| `/sessions [--all]`                    | Recent sessions, inline (current directory by default; `--all` for every directory). `Ctrl-R` opens the overlay version. |
 | `/rename [<label>]`                    | Show or override the session's display label (no arg prints the current label). |
 | `/export [-o <file>]`                  | Export this session to markdown (stdout by default).            |
 | `/fork`                                | Branch this session into a new one and print the new id.        |
+| `/rewind`                              | Undo to an earlier turn — restore files and/or conversation (overlay turn picker). |
 | `/stats [--days N]`                    | Token / message / tool aggregates across stored sessions.       |
 | `/find [-e] <pattern>`                 | Search this session's transcript (substring; `-e` for regex).   |
 | `/grep [--all] [--regex] <pattern>`    | Search past sessions in the local store (cwd-scoped by default). |
@@ -120,7 +121,42 @@ Typing `@` at a token boundary (start of input, after a space, or
 after a newline) pops a fuzzy file picker. The walker covers the
 project cwd plus any directories listed under
 `[permissions] additional_directories`. `.ensoignore` filters apply.
-Enter inserts the path; Esc dismisses.
+Enter inserts the path as an `@<path>` mention; Esc dismisses (and
+restores any text you had typed after the `@`).
+
+### Image input
+
+If an `@<path>` mention points at an image file — PNG, JPEG, GIF, or
+WebP, up to 10 MiB — its bytes are attached to the message and shown to
+a vision-capable model, while the `@path` text stays as a human-readable
+reference (e.g. `look at @diagram.png`). A `📎 attached` notice confirms
+the attachment in scrollback. Images are resolved on the host, so
+isolated (podman/lima) backends that can't see your filesystem still
+receive them. The `read` tool reads images the same way.
+
+## Rewind
+
+`/rewind` opens an overlay to roll the session back to an earlier turn.
+First pick the turn — each per-turn checkpoint shows its turn number, a
+preview of that turn's message, and a relative timestamp (the most
+recent is selected by default). Then choose what to restore:
+
+- **[1]** code + conversation
+- **[2]** conversation only (keep files)
+- **[3]** code only (keep conversation)
+
+Restoring code mirrors the workspace snapshot taken just before that
+turn back over the working tree — reverting modified files and deleting
+files added since — without ever touching `.git`. Before the
+conversation is truncated the prior thread is preserved as a forked
+session (the overlay prints how to resume it with `enso --session
+<id>`), and the rewound-away message is pre-filled into the input so you
+can re-send or edit it.
+
+Per-turn checkpointing is on by default and configured under the
+[`[checkpoints]`]({{< relref "../config/reference.md" >}}) block. `/rewind` is
+unavailable under `--ephemeral`, and on isolated backends only
+conversation rewind is available when no workspace overlay is in use.
 
 ## Theming
 
