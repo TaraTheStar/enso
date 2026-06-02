@@ -72,6 +72,10 @@ type slashCtx struct {
 
 	out  strings.Builder
 	quit bool
+	// openRewind, when set by the /rewind handler, tells the model to open
+	// the rewind overlay after dispatch returns (a handler can't mutate
+	// the model directly). Read + cleared in the enter handler.
+	openRewind bool
 }
 
 // printf appends formatted output that the dispatcher will surface as a

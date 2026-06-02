@@ -377,14 +377,23 @@ func (o *Overlay) applyPaths(ctx context.Context, rels []string) error {
 //     dst itself need not exist (we're often creating it); we walk up to
 //     the first ancestor that does.
 func (o *Overlay) containedDst(rel string) (string, error) {
-	dst := filepath.Join(o.Project, rel)
+	return containedPath(o.Project, rel)
+}
 
-	rl, err := filepath.Rel(o.Project, dst)
+// containedPath is the free-function form of containedDst: it resolves
+// rel under root with the same two-layer (lexical + symlink) escape
+// guard, returning the absolute destination or an error. Shared with the
+// checkpoint snapshot/restore engine (RestoreTree), which mirrors files
+// back over an arbitrary project root.
+func containedPath(root, rel string) (string, error) {
+	dst := filepath.Join(root, rel)
+
+	rl, err := filepath.Rel(root, dst)
 	if err != nil || rl == ".." || strings.HasPrefix(rl, ".."+string(os.PathSeparator)) {
 		return "", fmt.Errorf("workspace: refusing path outside project: %s", rel)
 	}
 
-	rootResolved, err := filepath.EvalSymlinks(o.Project)
+	rootResolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return "", fmt.Errorf("workspace: resolve project root: %w", err)
 	}
@@ -402,7 +411,7 @@ func (o *Overlay) containedDst(rel string) (string, error) {
 		// parent doesn't exist yet — climb to the next existing ancestor.
 		if parent == anc {
 			// Reached the filesystem root without finding an existing
-			// ancestor (shouldn't happen: o.Project exists), fail closed.
+			// ancestor (shouldn't happen: root exists), fail closed.
 			return "", fmt.Errorf("workspace: cannot resolve ancestor of %s", rel)
 		}
 		anc = parent

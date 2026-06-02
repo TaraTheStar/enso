@@ -103,7 +103,8 @@ func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.O
 	// non-interactive, so at task end Resolve keeps the diverged copy
 	// and prints how to apply it — never silently commits or destroys
 	// the agent's work. Backend-specific wiring lives in one helper.
-	if ov, err := host.SetupWorkspaceOverlay(context.Background(), b, cfg, cwd, os.Stderr); err != nil {
+	ov, err := host.SetupWorkspaceOverlay(context.Background(), b, cfg, cwd, os.Stderr)
+	if err != nil {
 		return fmt.Errorf("workspace: %w", err)
 	} else if ov != nil {
 		defer func() { _ = workspace.Resolve(context.Background(), ov, false, nil, os.Stderr) }()
@@ -192,6 +193,13 @@ func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.O
 			return fmt.Errorf("attach writer: %w", aerr)
 		}
 		bopts = append(bopts, host.WithWriter(writer))
+		// Isolated-backend /rewind checkpointing (parity with the worker's
+		// local self-snapshot): when the agent works in an overlay, the
+		// host snapshots its `merged` dir per user turn so a later resume
+		// can /rewind. Local has no overlay (ov == nil).
+		if ov != nil && !cfg.Checkpoints.Disabled {
+			bopts = append(bopts, host.WithCheckpointer(store, ov.Copy, cfg.Checkpoints.RetainOrDefault()))
+		}
 	}
 
 	busInst := bus.New()

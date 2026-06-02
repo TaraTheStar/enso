@@ -46,6 +46,7 @@ func registerBuiltins(reg *slash.Registry, sc *slashCtx) {
 	reg.Register(&renameCmd{sc: sc})
 	reg.Register(&exportCmd{sc: sc})
 	reg.Register(&forkCmd{sc: sc})
+	reg.Register(&rewindCmd{sc: sc})
 	reg.Register(&statsCmd{sc: sc})
 	reg.Register(&findSlashCmd{sc: sc})
 	reg.Register(&grepSlashCmd{sc: sc})
@@ -665,6 +666,27 @@ func (c *forkCmd) Run(ctx context.Context, args string) error {
 		return fmt.Errorf("fork: %w", err)
 	}
 	c.sc.printf("fork: new session %s — resume with `enso --session %s`", newID, newID)
+	return nil
+}
+
+// /rewind
+
+type rewindCmd struct{ sc *slashCtx }
+
+func (c *rewindCmd) Name() string { return "rewind" }
+func (c *rewindCmd) Description() string {
+	return "undo to an earlier turn — restore files and/or conversation"
+}
+func (c *rewindCmd) Run(ctx context.Context, args string) error {
+	if c.sc.store == nil || c.sc.writer == nil {
+		c.sc.printf("rewind: unavailable (running --ephemeral)")
+		return nil
+	}
+	// The handler can't open the alt-screen overlay itself; it flags the
+	// model, which opens it after dispatch (mirrors how the model reads
+	// sc.quit). The picker lists per-turn checkpoints; selection drives
+	// the restore + re-exec in run.go.
+	c.sc.openRewind = true
 	return nil
 }
 

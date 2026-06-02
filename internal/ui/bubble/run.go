@@ -268,6 +268,13 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 			}
 		}
 		bopts = append(bopts, host.WithWriter(writer))
+		// Isolated-backend /rewind checkpointing: when the agent works in
+		// an overlay (podman/lima), the host snapshots its `merged` dir per
+		// user turn (the guest can't reach it). Local has no overlay here
+		// (overlayWS == nil) — the worker snapshots the real tree itself.
+		if overlayWS != nil && !cfg.Checkpoints.Disabled {
+			bopts = append(bopts, host.WithCheckpointer(store, overlayWS.Copy, cfg.Checkpoints.RetainOrDefault()))
+		}
 	}
 
 	sess, err := host.Start(ctx, b, spec, providers, busInst, bopts...)
@@ -459,7 +466,16 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		},
 		sessions:   &sessionsOverlayData{store: store, cwd: cwd},
 		palette:    &slashPaletteData{reg: slashReg},
+		rewind:     &rewindOverlayData{store: store, sessionID: sessionID},
 		cancelTurn: sess.Cancel,
+	}
+	// Re-drop a rewound turn's prompt: a /rewind of the conversation
+	// re-execs into this session with the rewound-away text staged in an
+	// env var, so the resumed input box pre-fills it (the user re-sends or
+	// edits). Consume it once so it doesn't leak into a later re-exec.
+	if v := os.Getenv(rewindPromptEnv); v != "" {
+		m.input.insertString(v)
+		_ = os.Unsetenv(rewindPromptEnv)
 	}
 	// The enforcing checker is worker-side; dispChecker is its host
 	// display mirror. "always"/"turn" grants from the modal apply to
@@ -518,6 +534,13 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 
 	if runErr != nil {
 		return fmt.Errorf("bubble: %w", runErr)
+	}
+	if m.pendingRewind != nil {
+		// Restore files and/or conversation, then re-exec into this
+		// (possibly truncated) session. Done after teardown so no live
+		// worker races the FS restore and the reloaded worker sees the
+		// truncated history. Never returns on success (syscall.Exec).
+		return performRewind(*m.pendingRewind, store, sessionID, cwd)
 	}
 	if m.pendingSwitch != "" {
 		return execIntoSession(m.pendingSwitch)
