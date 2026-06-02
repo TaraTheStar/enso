@@ -31,9 +31,16 @@ type InferenceRequest struct {
 // an isolated worker asks the host to append to the host DB. Mirrors
 // session.Writer.AppendMessage(msg, agentID) — AgentID is "" for the
 // top-level agent, the sub-agent's id otherwise.
+//
+// Reasoning rides as an EXPLICIT field rather than inside Msg because
+// llm.Message.Reasoning is `json:"-"` (kept out of every provider wire
+// shape) and so would not survive Msg's MarshalJSON. Carrying it
+// alongside lets the host re-attach it before its AppendMessage, so the
+// replay-only chain-of-thought reaches the host DB in isolated mode too.
 type PersistMessage struct {
-	Msg     llm.Message `json:"msg"`
-	AgentID string      `json:"agent_id,omitempty"`
+	Msg       llm.Message `json:"msg"`
+	AgentID   string      `json:"agent_id,omitempty"`
+	Reasoning string      `json:"reasoning,omitempty"`
 }
 
 // PersistToolCall is the body of MsgPersistToolCall: mirrors

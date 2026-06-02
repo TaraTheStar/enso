@@ -52,7 +52,7 @@ func Fork(s *Store, srcID string) (string, error) {
 	// is "continue this conversation from here", not "branch the entire
 	// agent tree".
 	rows, err := tx.Query(
-		`SELECT seq, role, content, tool_call_id, name, tool_calls
+		`SELECT seq, role, content, tool_call_id, name, tool_calls, reasoning
 		 FROM messages WHERE session_id = ? AND agent_id = '' ORDER BY seq ASC`, srcID,
 	)
 	if err != nil {
@@ -61,8 +61,8 @@ func Fork(s *Store, srcID string) (string, error) {
 	defer rows.Close()
 
 	insert, err := tx.Prepare(
-		`INSERT INTO messages(session_id, seq, role, content, tool_call_id, name, tool_calls, agent_id)
-		 VALUES(?, ?, ?, ?, ?, ?, ?, '')`,
+		`INSERT INTO messages(session_id, seq, role, content, tool_call_id, name, tool_calls, agent_id, reasoning)
+		 VALUES(?, ?, ?, ?, ?, ?, ?, '', ?)`,
 	)
 	if err != nil {
 		return "", fmt.Errorf("fork: prepare insert: %w", err)
@@ -72,12 +72,12 @@ func Fork(s *Store, srcID string) (string, error) {
 	newSeq := 0
 	for rows.Next() {
 		var srcSeq int
-		var role, content, toolCallID, name, toolCalls string
-		if err := rows.Scan(&srcSeq, &role, &content, &toolCallID, &name, &toolCalls); err != nil {
+		var role, content, toolCallID, name, toolCalls, reasoning string
+		if err := rows.Scan(&srcSeq, &role, &content, &toolCallID, &name, &toolCalls, &reasoning); err != nil {
 			return "", fmt.Errorf("fork: scan: %w", err)
 		}
 		newSeq++
-		if _, err := insert.Exec(newID, newSeq, role, content, toolCallID, name, toolCalls); err != nil {
+		if _, err := insert.Exec(newID, newSeq, role, content, toolCallID, name, toolCalls, reasoning); err != nil {
 			return "", fmt.Errorf("fork: insert message: %w", err)
 		}
 	}

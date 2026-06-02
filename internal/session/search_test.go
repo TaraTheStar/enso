@@ -279,7 +279,7 @@ func TestListRecentWithStats_CountsAndTokens(t *testing.T) {
 	_, _ = w.AppendMessage(llm.Message{Role: "assistant", Content: strings.Repeat("b", 40)}, "") // 10 tok
 	_, _ = w.AppendMessage(llm.Message{Role: "user", Content: "sub-agent talk"}, "sub-1")        // excluded
 
-	got, err := ListRecentWithStats(s, 10)
+	got, err := ListRecentWithStats(s, "", 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -301,7 +301,7 @@ func TestListRecentWithStats_EmptySessionFilteredOut(t *testing.T) {
 	s := openTestStore(t)
 	_, _ = NewSession(s, "m", "p", "/proj/x")
 
-	got, err := ListRecentWithStats(s, 10)
+	got, err := ListRecentWithStats(s, "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,12 +323,83 @@ func TestListRecentWithStats_OrderedDescByUpdatedAt(t *testing.T) {
 	if _, err := s.DB.Exec(`UPDATE sessions SET updated_at = 200 WHERE id = ?`, wB.SessionID()); err != nil {
 		t.Fatal(err)
 	}
-	got, err := ListRecentWithStats(s, 10)
+	got, err := ListRecentWithStats(s, "", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || got[0].ID != wB.SessionID() {
 		t.Errorf("expected newer first, got %+v", got)
+	}
+}
+
+// TestListRecent_CwdScope: a non-empty cwd filters the list to sessions
+// started in that directory; "" lists every directory's sessions.
+func TestListRecent_CwdScope(t *testing.T) {
+	s := openTestStore(t)
+	if _, err := NewSession(s, "m", "p", "/proj/a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSession(s, "m", "p", "/proj/a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewSession(s, "m", "p", "/proj/b"); err != nil {
+		t.Fatal(err)
+	}
+
+	scoped, err := ListRecent(s, "/proj/a", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) != 2 {
+		t.Fatalf("cwd-scoped: want 2 sessions in /proj/a, got %d", len(scoped))
+	}
+	for _, info := range scoped {
+		if info.Cwd != "/proj/a" {
+			t.Errorf("scoped list leaked a foreign cwd: %q", info.Cwd)
+		}
+	}
+
+	all, err := ListRecent(s, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("unscoped: want all 3 sessions, got %d", len(all))
+	}
+
+	// A directory with no sessions returns an empty list, not an error.
+	none, err := ListRecent(s, "/proj/none", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(none) != 0 {
+		t.Fatalf("empty-dir: want 0 sessions, got %d", len(none))
+	}
+}
+
+// TestListRecentWithStats_CwdScope mirrors TestListRecent_CwdScope for
+// the stats variant (which also carries the HAVING msg_count > 0 gate).
+func TestListRecentWithStats_CwdScope(t *testing.T) {
+	s := openTestStore(t)
+	wA, _ := NewSession(s, "m", "p", "/proj/a")
+	wB, _ := NewSession(s, "m", "p", "/proj/b")
+	_, _ = wA.AppendMessage(llm.Message{Role: "user", Content: "hi from A"}, "")
+	_, _ = wB.AppendMessage(llm.Message{Role: "user", Content: "hi from B"}, "")
+
+	scoped, err := ListRecentWithStats(s, "/proj/a", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scoped) != 1 || scoped[0].Cwd != "/proj/a" {
+		t.Fatalf("cwd-scoped stats: want 1 row in /proj/a, got %+v", scoped)
+	}
+
+	all, err := ListRecentWithStats(s, "", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("unscoped stats: want 2 rows, got %d", len(all))
 	}
 }
 

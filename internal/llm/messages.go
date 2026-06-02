@@ -50,6 +50,16 @@ type Message struct {
 	// audit traces. Adapters MUST filter these out during serialization;
 	// FilterForRequest centralises that walk.
 	Ignored bool `json:"-"`
+
+	// Reasoning holds the assistant turn's chain-of-thought, captured for
+	// REPLAY ONLY. It is `json:"-"` and deliberately absent from every
+	// MarshalJSON path (the explicit alias structs never reference it), so
+	// it is NEVER sent back to a provider — the model re-derives its
+	// reasoning each turn, and resending bloats context. Persisted to the
+	// session store so a resumed session / /transcript can show the
+	// thinking the user saw live; empty on every non-assistant message and
+	// on providers that don't surface a reasoning channel.
+	Reasoning string `json:"-"`
 }
 
 // FilterForRequest returns msgs with Ignored entries removed. Provider

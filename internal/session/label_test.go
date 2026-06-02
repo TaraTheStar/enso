@@ -199,7 +199,7 @@ func TestLoadAndListRecent_RoundtripLabel(t *testing.T) {
 		t.Errorf("Load: label = %q", state.Info.Label)
 	}
 
-	infos, err := ListRecent(s, 10)
+	infos, err := ListRecent(s, "", 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestLoadAndListRecent_RoundtripLabel(t *testing.T) {
 		}(), infos)
 	}
 
-	withStats, err := ListRecentWithStats(s, 10)
+	withStats, err := ListRecentWithStats(s, "", 10)
 	if err != nil {
 		t.Fatalf("list with stats: %v", err)
 	}

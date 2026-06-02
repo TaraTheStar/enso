@@ -154,7 +154,7 @@ func runConformance(t *testing.T, ociRuntime string) {
 	}
 	defer sess.Close()
 
-	if err := sess.Submit("ping"); err != nil {
+	if err := sess.Submit("ping", nil); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	select {

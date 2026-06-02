@@ -3,7 +3,9 @@
 package session
 
 import (
+	"encoding/json"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/TaraTheStar/enso/internal/llm"
@@ -66,6 +68,68 @@ func TestMessageFlags_RoundTrip(t *testing.T) {
 	}
 	if !state.History[2].Ignored {
 		t.Errorf("Ignored flag lost in round trip on audit row")
+	}
+}
+
+// TestMessageReasoning_RoundTrip pins the replay-only reasoning
+// contract: an assistant turn's chain-of-thought survives an
+// AppendMessage → Load cycle so a resumed session can replay it.
+func TestMessageReasoning_RoundTrip(t *testing.T) {
+	tmp := t.TempDir()
+	s, err := OpenAt(filepath.Join(tmp, "reasoning.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	w, err := NewSession(s, "model-x", "prov-y", "/cwd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := w.SessionID()
+
+	if _, err := w.AppendMessage(llm.Message{Role: "user", Content: "what is 2+2?"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.AppendMessage(llm.Message{
+		Role:      "assistant",
+		Content:   "4",
+		Reasoning: "The user is asking basic arithmetic. 2 + 2 = 4.",
+	}, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := Load(s, id)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(state.History) != 2 {
+		t.Fatalf("history len: got %d, want 2", len(state.History))
+	}
+	if state.History[0].Reasoning != "" {
+		t.Errorf("user row should carry no reasoning, got %q", state.History[0].Reasoning)
+	}
+	if got := state.History[1].Reasoning; got != "The user is asking basic arithmetic. 2 + 2 = 4." {
+		t.Errorf("assistant reasoning lost in round trip: got %q", got)
+	}
+}
+
+// TestMessageReasoning_NotSentToProvider is the load-bearing invariant:
+// reasoning is `json:"-"` and absent from MarshalJSON, so it never
+// reaches a provider's wire payload (resending bloats context — the
+// model re-derives its reasoning each turn).
+func TestMessageReasoning_NotSentToProvider(t *testing.T) {
+	m := llm.Message{Role: "assistant", Content: "4", Reasoning: "secret chain of thought"}
+	b, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "secret chain of thought") || strings.Contains(string(b), "reasoning") {
+		t.Fatalf("reasoning leaked into provider wire payload: %s", b)
+	}
+	// Sanity: the content the model SHOULD see is still there.
+	if !strings.Contains(string(b), `"4"`) {
+		t.Fatalf("content missing from wire payload: %s", b)
 	}
 }
 

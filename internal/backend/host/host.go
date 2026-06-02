@@ -455,8 +455,10 @@ func (s *Session) send(env backend.Envelope) error {
 }
 
 // Submit feeds a user message to the worker (interactive specs).
-func (s *Session) Submit(text string) error {
-	body, err := backend.NewBody(backend.InputBody{Text: text})
+// images carries any user-attached image bytes (resolved host-side from
+// `@path` mentions); nil/empty for a plain text turn.
+func (s *Session) Submit(text string, images []backend.InputImage) error {
+	body, err := backend.NewBody(backend.InputBody{Text: text, Images: images})
 	if err != nil {
 		return err
 	}
@@ -528,6 +530,10 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 			if s.writer != nil {
 				var pm wire.PersistMessage
 				if json.Unmarshal(env.Body, &pm) == nil {
+					// Reasoning is `json:"-"` on llm.Message so it doesn't
+					// survive pm.Msg's unmarshal; re-attach from the explicit
+					// wire field before persisting (replay-only chain-of-thought).
+					pm.Msg.Reasoning = pm.Reasoning
 					if seq, err := s.writer.AppendMessage(pm.Msg, pm.AgentID); err == nil {
 						lastSeqByAgent[pm.AgentID] = seq
 					}

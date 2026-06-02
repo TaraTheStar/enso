@@ -285,12 +285,12 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 	wg.Add(1)
 	go func() { defer wg.Done(); s.forwardBus(busSub) }()
 
-	// Input: a buffered chan string feeding agent.Run. Non-interactive
-	// runs get the single prompt then a closed channel so the agent
-	// exits when quiescent; interactive runs stay open for MsgInput.
-	inputCh := make(chan string, 16)
+	// Input: a buffered chan feeding agent.Run. Non-interactive runs get
+	// the single prompt then a closed channel so the agent exits when
+	// quiescent; interactive runs stay open for MsgInput.
+	inputCh := make(chan agent.UserInput, 16)
 	if spec.Prompt != "" {
-		inputCh <- spec.Prompt
+		inputCh <- agent.UserInput{Text: spec.Prompt}
 	}
 	if !spec.Interactive {
 		close(inputCh)
@@ -324,7 +324,7 @@ type seam struct {
 	checker   *permissions.Checker // the REAL enforcing checker (CtrlSetYolo)
 	cancelAll context.CancelFunc
 
-	inputCh   chan string // non-nil only for interactive specs
+	inputCh   chan agent.UserInput // non-nil only for interactive specs
 	inputOnce sync.Once
 
 	mu       sync.Mutex
@@ -416,7 +416,7 @@ func (rw *remoteWriter) AppendMessage(msg llm.Message, agentID string) (int, err
 	rw.seq++
 	seq := rw.seq
 	rw.seqMu.Unlock()
-	body, err := backend.NewBody(wire.PersistMessage{Msg: msg, AgentID: agentID})
+	body, err := backend.NewBody(wire.PersistMessage{Msg: msg, AgentID: agentID, Reasoning: msg.Reasoning})
 	if err != nil {
 		return 0, err
 	}
@@ -459,7 +459,7 @@ func (s *seam) nextCorr(prefix string) string {
 
 // demux is the sole consumer of ch.Recv(). It must never block on agent
 // work; response delivery uses buffered channels.
-func (s *seam) demux(ctx context.Context, inputCh chan string, interactive bool) {
+func (s *seam) demux(ctx context.Context, inputCh chan agent.UserInput, interactive bool) {
 	for {
 		env, err := s.ch.Recv()
 		if err != nil {
@@ -474,8 +474,12 @@ func (s *seam) demux(ctx context.Context, inputCh chan string, interactive bool)
 			}
 			var in backend.InputBody
 			if json.Unmarshal(env.Body, &in) == nil {
+				ui := agent.UserInput{Text: in.Text}
+				for _, img := range in.Images {
+					ui.Parts = append(ui.Parts, llm.NewImagePart(img.MIME, img.Data))
+				}
 				select {
-				case inputCh <- in.Text:
+				case inputCh <- ui:
 				case <-ctx.Done():
 					return
 				}

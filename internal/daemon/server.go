@@ -101,7 +101,7 @@ type sessionState struct {
 	writer    *session.Writer
 	cancel    context.CancelFunc
 	createdAt time.Time
-	inputCh   chan string
+	inputCh   chan agent.UserInput
 	server    *Server // back-ref so per-session goroutines can read live config
 
 	mu   sync.Mutex
@@ -460,7 +460,7 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 		writer:       writer,
 		cancel:       cancel,
 		createdAt:    time.Now(),
-		inputCh:      make(chan string, 16),
+		inputCh:      make(chan agent.UserInput, 16),
 		pendingPerms: make(map[string]chan permissions.Decision),
 		server:       s,
 	}
@@ -502,7 +502,7 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 	s.sessions[id] = state
 	s.mu.Unlock()
 
-	state.inputCh <- req.Prompt
+	state.inputCh <- agent.UserInput{Text: req.Prompt}
 
 	if err := WriteMessage(conn, KindSession, SessionInfo{
 		ID:        id,
@@ -520,7 +520,7 @@ func (s *Server) onSubmit(req SubmitReq) error {
 	if state == nil {
 		return fmt.Errorf("unknown session %q", req.SessionID)
 	}
-	state.inputCh <- req.Message
+	state.inputCh <- agent.UserInput{Text: req.Message}
 	return nil
 }
 

@@ -56,7 +56,7 @@ func Load(s *Store, sessionID string) (*State, error) {
 	// resumed conversation isn't polluted with workflow / spawn_agent
 	// transcripts. Use LoadAgentTranscript for those.
 	rows, err := s.DB.Query(
-		`SELECT role, content, tool_call_id, name, tool_calls, synthetic, ignored
+		`SELECT role, content, tool_call_id, name, tool_calls, synthetic, ignored, reasoning
 		 FROM messages WHERE session_id = ? AND agent_id = '' ORDER BY seq ASC`, sessionID,
 	)
 	if err != nil {
@@ -70,7 +70,7 @@ func Load(s *Store, sessionID string) (*State, error) {
 		var toolCallsJSON string
 		var synthetic, ignored int
 		if err := rows.Scan(&m.Role, &m.Content, &m.ToolCallID, &m.Name, &toolCallsJSON,
-			&synthetic, &ignored); err != nil {
+			&synthetic, &ignored, &m.Reasoning); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		if toolCallsJSON != "" {
@@ -150,7 +150,7 @@ func Load(s *Store, sessionID string) (*State, error) {
 // the regular Load only returns top-level rows.
 func LoadAgentTranscript(s *Store, sessionID, agentID string) ([]llm.Message, error) {
 	rows, err := s.DB.Query(
-		`SELECT role, content, tool_call_id, name, tool_calls, synthetic, ignored
+		`SELECT role, content, tool_call_id, name, tool_calls, synthetic, ignored, reasoning
 		 FROM messages WHERE session_id = ? AND agent_id = ? ORDER BY seq ASC`,
 		sessionID, agentID,
 	)
@@ -165,7 +165,7 @@ func LoadAgentTranscript(s *Store, sessionID, agentID string) ([]llm.Message, er
 		var toolCallsJSON string
 		var synthetic, ignored int
 		if err := rows.Scan(&m.Role, &m.Content, &m.ToolCallID, &m.Name, &toolCallsJSON,
-			&synthetic, &ignored); err != nil {
+			&synthetic, &ignored, &m.Reasoning); err != nil {
 			return nil, fmt.Errorf("scan transcript: %w", err)
 		}
 		if toolCallsJSON != "" {

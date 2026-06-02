@@ -453,6 +453,23 @@ func formatWindow(n int) string {
 	}
 }
 
+// fmtCost renders a cumulative dollar amount with adaptive precision:
+// a sub-cent session needs more digits to read as non-zero, while a
+// large bill stays glanceable. Mirrors how a human reads spend —
+// fractions of a cent when tiny, whole dollars when big.
+func fmtCost(d float64) string {
+	switch {
+	case d >= 100:
+		return fmt.Sprintf("$%.0f", d)
+	case d >= 1:
+		return fmt.Sprintf("$%.2f", d)
+	case d >= 0.01:
+		return fmt.Sprintf("$%.3f", d)
+	default:
+		return fmt.Sprintf("$%.4f", d)
+	}
+}
+
 // percentOf returns "N%" or "" when the window is unconfigured.
 func percentOf(used, window int) string {
 	if window <= 0 {
@@ -467,22 +484,38 @@ type sessionsCmd struct{ sc *slashCtx }
 
 func (c *sessionsCmd) Name() string { return "sessions" }
 func (c *sessionsCmd) Description() string {
-	return "list recent sessions (resume by re-running with --session <id>)"
+	return "list recent sessions in this directory (--all for every directory)"
 }
 func (c *sessionsCmd) Run(ctx context.Context, args string) error {
 	if c.sc.store == nil {
 		c.sc.printf("sessions: store unavailable (running --ephemeral)")
 		return nil
 	}
-	infos, err := session.ListRecent(c.sc.store, 20)
+	// Scope to the current project directory by default (the usual
+	// "what was I doing here" case); --all lists every directory's
+	// sessions — same convention as /grep.
+	all := strings.TrimSpace(args) == "--all"
+	scope := c.sc.cwd
+	if all {
+		scope = ""
+	}
+	infos, err := session.ListRecent(c.sc.store, scope, 20)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
 	if len(infos) == 0 {
-		c.sc.printf("no sessions yet")
+		if all {
+			c.sc.printf("no sessions yet")
+		} else {
+			c.sc.printf("no sessions in this directory yet (/sessions --all for every directory)")
+		}
 		return nil
 	}
-	c.sc.printf("Recent sessions:")
+	if all {
+		c.sc.printf("Recent sessions (all directories):")
+	} else {
+		c.sc.printf("Recent sessions in %s:", c.sc.cwd)
+	}
 	for _, info := range infos {
 		flag := ""
 		if info.Interrupted {
@@ -1330,10 +1363,12 @@ func (c *transcriptCmd) Run(ctx context.Context, args string) error {
 	return nil
 }
 
-// printMessages dumps a transcript using the shared block renderer
-// so it looks identical to live conversation output. Tool-call and
-// reasoning messages from history are skipped — same simplification
-// as run.go's replayHistory.
+// printMessages dumps a transcript using the shared block renderer so
+// it looks identical to live conversation output. Tool calls and
+// reasoning are reconstructed from the captured history (historyBlocks)
+// — same as run.go's replayHistory: tool calls from the persisted
+// tool_calls + result rows, reasoning from each assistant message's
+// captured chain-of-thought.
 func (c *transcriptCmd) printMessages(id string, msgs []llm.Message) {
 	short := id
 	if len(short) > 12 {
@@ -1341,23 +1376,7 @@ func (c *transcriptCmd) printMessages(id string, msgs []llm.Message) {
 	}
 	c.sc.printf("Transcript %s — %d message%s:", short, len(msgs), plural(len(msgs)))
 	c.sc.printf("")
-	for _, msg := range msgs {
-		var b blocks.Block
-		switch msg.Role {
-		case "user":
-			if msg.Content == "" {
-				continue
-			}
-			b = &blocks.User{Text: msg.Content}
-		case "assistant":
-			if msg.Content == "" {
-				continue
-			}
-			b = &blocks.Assistant{Text: msg.Content}
-		}
-		if b == nil {
-			continue
-		}
+	for _, b := range historyBlocks(msgs) {
 		if s := renderBlock(b, 0, true); s != "" {
 			c.sc.printf("%s", s)
 		}
