@@ -18,7 +18,7 @@ require (
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/net v0.55.0
-	google.golang.org/genai v1.58.0
+	google.golang.org/genai v1.59.0
 	modernc.org/sqlite v1.50.1
 )
 
