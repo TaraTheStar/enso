@@ -588,6 +588,17 @@ func runWorkflow(name string, argParts []string) error {
 		// pipe it cleanly even if intermediate roles printed to stderr.
 		_ = res.Last
 	}
+	// Note any roles a conditional edge skipped — their output never streamed,
+	// so without this they'd silently vanish from the run.
+	var skipped []string
+	for _, role := range wf.RoleOrder {
+		if res.Skipped[role] {
+			skipped = append(skipped, role)
+		}
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(os.Stderr, "(skipped: %s)\n", strings.Join(skipped, ", "))
+	}
 	return nil
 }
 

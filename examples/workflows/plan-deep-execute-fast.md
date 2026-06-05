@@ -98,3 +98,14 @@ Report one of:
 If you find that the plan itself was flawed (rather than the
 execution), say so explicitly — that's a signal to re-plan, not just
 re-execute.
+
+End your message with a fenced JSON block carrying the machine-readable
+verdict, so a gated variant of this workflow could route on it:
+
+```json
+{"verdict": "LGTM", "reason": "one-line justification"}
+```
+
+Use `"LGTM"` only when the changes match the request and the plan;
+otherwise `"changes-requested"`. (See `gated-ship.md` for a workflow that
+routes ship-vs-escalate on `.review.verdict`.)
