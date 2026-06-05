@@ -432,6 +432,14 @@ type ContextPruneConfig struct {
 	// most recent user message; falls back to head/tail otherwise.
 	// Default false.
 	SmartTruncate bool `toml:"smart_truncate"`
+
+	// Compress gates command-aware + structural output compression
+	// (R1/R2/H5): declarative per-command filters that strip passing-test
+	// / progress / lockfile-diff noise before the output caps run. Default
+	// true. Set false to revert to plain head/tail truncation. The raw
+	// output is always spilled regardless, so nothing compression drops is
+	// unrecoverable.
+	Compress *bool `toml:"compress"`
 }
 
 // OutputCapsConfig holds per-tool LLMOutput truncation thresholds.
@@ -491,12 +499,16 @@ func (c ContextPruneConfig) Resolve() ResolvedPruneConfig {
 		StaleAfter:        c.StaleAfter,
 		PinnedPaths:       c.PinnedPaths,
 		SmartTruncate:     c.SmartTruncate,
+		Compress:          true,
 		ToolRetention:     map[string]int{},
 		OutputCapDefault:  2000,
 		OutputCapsPerTool: map[string]int{},
 	}
 	if c.Enabled != nil {
 		out.Enabled = *c.Enabled
+	}
+	if c.Compress != nil {
+		out.Compress = *c.Compress
 	}
 	for k, v := range c.ToolRetention {
 		if v > 0 {
@@ -537,11 +549,14 @@ func (c ContextPruneConfig) Resolve() ResolvedPruneConfig {
 
 // ResolvedPruneConfig is the post-defaulting shape the agent uses.
 type ResolvedPruneConfig struct {
-	Enabled           bool
-	StaleAfter        int
-	ToolRetention     map[string]int
-	PinnedPaths       []string
-	SmartTruncate     bool
+	Enabled       bool
+	StaleAfter    int
+	ToolRetention map[string]int
+	PinnedPaths   []string
+	SmartTruncate bool
+	// Compress gates command-aware + structural output compression
+	// (R1/R2/H5). Default true via Resolve().
+	Compress          bool
 	OutputCapDefault  int
 	OutputCapsPerTool map[string]int
 	// OutputMaxBytes / OutputMaxLineLength are 0 when unset; the

@@ -381,6 +381,13 @@ type PrefixBreakdown struct {
 	Conversation int // user + assistant messages
 }
 
+// CompressionSaved returns the cumulative tokens saved this session by
+// output compression + truncation (H11). 0 when compression is disabled or
+// nothing has been trimmed yet. Surfaced by /context.
+func (a *Agent) CompressionSaved() int64 {
+	return a.compression.Saved()
+}
+
 // PrefixBreakdown classifies every message in History and returns a
 // per-category token count. Safe to call at any time; reads History
 // directly so it reflects post-prune state.

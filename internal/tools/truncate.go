@@ -4,6 +4,7 @@ package tools
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -20,21 +21,43 @@ import (
 // is returned unchanged — falling back to today's behaviour rather
 // than dragging unfetchable recovery noise into the model context.
 func truncateWithRecovery(ac *AgentContext, toolName, content string) (model, full string) {
+	return truncateWithRecoverySplit(ac, toolName, content, content)
+}
+
+// truncateWithRecoverySplit is the spill-decoupled form (Q2). It caps
+// modelContent (which may already be a compressed view of the raw output)
+// but spills spillContent — the untouched raw — so the model can `read`
+// back anything either compression OR truncation dropped. The two coincide
+// for callers that don't pre-compress (the truncateWithRecovery wrapper).
+//
+// The recovery footer is appended whenever the model-visible text differs
+// from the raw spillContent — i.e. compression trimmed it, truncation
+// capped it, or both. Returns (modelVisible, full=spillContent).
+func truncateWithRecoverySplit(ac *AgentContext, toolName, modelContent, spillContent string) (model, full string) {
 	caps := ac.OutputCaps
-	truncated, full := capTruncate(
-		content,
+	truncated, _ := capTruncate(
+		modelContent,
 		caps.CapFor(toolName),
 		caps.BytesFor(toolName),
 		caps.LineLengthFor(toolName),
 		ac.RecentUserHint,
 	)
-	if truncated == full {
+	full = spillContent
+
+	// Account the tokens this whole pass removed from the raw output —
+	// compression (spill→model) plus truncation (model→truncated).
+	if saved := estTokens(spillContent) - estTokens(truncated); saved > 0 {
+		ac.Compression.Add(saved)
+	}
+
+	// Nothing was dropped relative to the raw output → no footer needed.
+	if truncated == spillContent {
 		return truncated, full
 	}
 	if ac.Spill == nil {
 		return truncated, full
 	}
-	path, err := ac.Spill.Spill(full)
+	path, err := ac.Spill.Spill(spillContent)
 	if err != nil || path == "" {
 		return truncated, full
 	}
@@ -106,12 +129,13 @@ func capTruncate(s string, maxLines, maxBytes, maxLineLen int, hint string) (tru
 	}
 	lines := strings.Split(out, "\n")
 	if len(lines) > maxLines {
-		if h := strings.TrimSpace(hint); h != "" {
-			if rel, ok := relevantTruncateLines(lines, maxLines, h); ok {
-				out = rel
-			} else {
-				out, _ = HeadTail(out, maxLines)
-			}
+		// Try priority/relevance-ranked selection: it keeps the hint-
+		// matching lines AND the intrinsically-important ones (errors,
+		// warnings, security findings) over neutral/noise lines. It
+		// returns ok=false when nothing scores above neutral — uniform
+		// output with no hint — and we fall back to plain head/tail.
+		if rel, ok := relevantTruncateLines(lines, maxLines, strings.TrimSpace(hint)); ok {
+			out = rel
 		} else {
 			out, _ = HeadTail(out, maxLines)
 		}
@@ -179,27 +203,28 @@ func capLineLengths(s string, maxLen int) string {
 }
 
 // relevantTruncateLines selects up to `maxLines` lines from `lines`
-// that score highest against the hint, then renders a banner showing
-// how many were dropped. Returns (rendered, true) on success or
-// ("", false) when no lines match — caller should fall back to
-// head/tail.
+// that score highest, then renders a banner showing how many were
+// dropped. Returns (rendered, true) on success or ("", false) when no
+// line scores above neutral — caller should fall back to head/tail.
 //
-// Relevance score: number of distinct hint tokens (lowercased,
-// length ≥ 3) that appear in the line. Ties broken by line index
-// (earlier wins). Each selected line carries 2 lines of bracketing
-// context to keep it readable.
+// Score = hint-relevance × hintWeight + intrinsic line priority (H6).
+// Hint relevance is the number of distinct hint tokens (lowercased,
+// length ≥ 3) appearing in the line; the hint may be empty, in which
+// case selection is driven purely by priority — errors/warnings/
+// security findings are kept over neutral lines, and debug/trace noise
+// is dropped first. Ties broken by line index (earlier wins). Each
+// selected line carries 2 lines of bracketing context to stay readable.
 func relevantTruncateLines(lines []string, maxLines int, hint string) (string, bool) {
-	tokens := relevantHintTokens(hint)
-	if len(tokens) == 0 {
-		return "", false
-	}
+	tokens := relevantHintTokens(hint) // may be empty (priority-only mode)
+
+	const hintWeight = 4
 
 	type scored struct {
 		idx, score int
 	}
 	scoredLines := make([]scored, 0, len(lines))
 	for i, ln := range lines {
-		s := scoreLine(ln, tokens)
+		s := scoreLine(ln, tokens)*hintWeight + linePriority(ln)
 		if s > 0 {
 			scoredLines = append(scoredLines, scored{idx: i, score: s})
 		}
@@ -296,4 +321,33 @@ func scoreLine(line string, tokens []string) int {
 		}
 	}
 	return score
+}
+
+// priorityHigh / priorityMedium / priorityNoise classify a line's
+// intrinsic importance for H6 priority-ranked truncation. High covers
+// errors/failures/panics and security findings; medium covers warnings
+// and deprecations; noise covers debug/trace chatter that should be the
+// first to go. Patterns are deliberately broad but anchored to whole
+// words to avoid matching substrings inside ordinary text.
+var (
+	priorityHigh  = regexp.MustCompile(`(?i)\b(err\w*|fail\w*|panic\w*|fatal|exception\w*|traceback|segfault|undefined|cannot|denied|unauthoriz\w*|forbidden|vulnerab\w*|insecure|critical)\b|(?i)\bcve-`)
+	priorityMed   = regexp.MustCompile(`(?i)\b(warn\w*|deprecat\w*|caution)\b`)
+	priorityNoise = regexp.MustCompile(`(?i)\b(debug\w*|trace\w*|verbose)\b`)
+)
+
+// linePriority returns an additive score reflecting how important it is to
+// keep this line when truncating: +3 for error/security lines, +2 for
+// warnings, -1 for debug/trace noise, 0 otherwise. A negative result keeps
+// the line out of the priority selection entirely (it drops first).
+func linePriority(line string) int {
+	switch {
+	case priorityHigh.MatchString(line):
+		return 3
+	case priorityMed.MatchString(line):
+		return 2
+	case priorityNoise.MatchString(line):
+		return -1
+	default:
+		return 0
+	}
 }

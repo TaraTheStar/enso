@@ -133,6 +133,11 @@ type Agent struct {
 	// invalidation machinery in prune.go. Resolved once at New().
 	pruneCfg config.ResolvedPruneConfig
 
+	// compression accumulates tokens saved by output compression +
+	// truncation this session; shared with AgentContext and inherited by
+	// sub-agents. Surfaced via CompressionSaved() for /context.
+	compression *tools.CompressionStats
+
 	// toolMeta sidecars History — keyed by message index (the History
 	// slot of each `role: "tool"` message). Holds the bookkeeping
 	// pruning needs that we can't (or shouldn't) round-trip through
@@ -586,6 +591,18 @@ type Config struct {
 	// Zero value = defaults via config.ContextPruneConfig.Resolve().
 	PruneCfg config.ResolvedPruneConfig
 
+	// Filters is the command-output FilterSet shared across the agent
+	// tree. nil at the top level makes New load the embedded defaults +
+	// user overrides (when PruneCfg.Compress is on); spawned children
+	// receive the parent's set so it isn't reloaded per sub-agent.
+	Filters *tools.FilterSet
+
+	// Compression accumulates tokens saved by output compression +
+	// truncation, surfaced in /context. nil at the top level makes New
+	// allocate one; children inherit the parent's so savings aggregate
+	// across the session.
+	Compression *tools.CompressionStats
+
 	// CompactionProvider names the [providers.X] entry to route
 	// summarisation calls through. Empty = use the session's primary
 	// provider. When the named provider is missing in Providers, the
@@ -696,6 +713,31 @@ func New(cfg Config) (*Agent, error) {
 		pruneCfg = (config.ContextPruneConfig{}).Resolve()
 	}
 
+	// Output-compression wiring (R1/R2/H5). The FilterSet and savings
+	// counter are loaded/allocated once at the top level and threaded to
+	// children via cfg so a deep sub-agent tree shares one set and one
+	// running total. A nil FilterSet (compress disabled) makes the tools
+	// layer fall back to plain truncation.
+	compression := cfg.Compression
+	if compression == nil {
+		compression = &tools.CompressionStats{}
+	}
+	var filterSet *tools.FilterSet
+	switch {
+	case cfg.Filters != nil:
+		// Inherited from a parent (spawn) — share it, never reload.
+		filterSet = cfg.Filters
+	case pruneCfg.Compress && cfg.Depth == 0:
+		// Top-level agent with compression on: load embedded defaults +
+		// user overrides once. Children inherit via cfg.Filters above, so
+		// a parent that disabled compression keeps its children disabled.
+		filtersDir := ""
+		if dir, derr := paths.ConfigDir(); derr == nil {
+			filtersDir = filepath.Join(dir, "filters")
+		}
+		filterSet = tools.LoadFilterSet(filtersDir, slog.Default())
+	}
+
 	ac := &tools.AgentContext{
 		Cwd:                cfg.Cwd,
 		SessionID:          cfg.SessionID,
@@ -730,6 +772,8 @@ func New(cfg Config) (*Agent, error) {
 		ToolTimeouts: cfg.ToolTimeouts,
 		BashJobs:     tools.NewBashJobs(),
 		Spill:        makeSpillWriter(cfg.SessionID),
+		Filters:      filterSet,
+		Compression:  compression,
 	}
 
 	// Seed messageUsage from resume state when available so the first
@@ -755,6 +799,7 @@ func New(cfg Config) (*Agent, error) {
 		Hooks:                  cfg.Hooks,
 		OnUserTurn:             cfg.OnUserTurn,
 		pruneCfg:               pruneCfg,
+		compression:            compression,
 		toolMeta:               map[int]*toolMessageMeta{},
 		messageUsage:           mu,
 		providerCtx:            provCtx,

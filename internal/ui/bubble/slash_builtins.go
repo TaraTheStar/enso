@@ -20,9 +20,11 @@ import (
 	"github.com/TaraTheStar/enso/internal/instructions"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/mcp"
+	"github.com/TaraTheStar/enso/internal/paths"
 	"github.com/TaraTheStar/enso/internal/permissions"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/slash"
+	"github.com/TaraTheStar/enso/internal/tools"
 	"github.com/TaraTheStar/enso/internal/ui/blocks"
 	"github.com/TaraTheStar/enso/internal/ui/find"
 	"github.com/TaraTheStar/enso/internal/workflow"
@@ -63,6 +65,7 @@ func registerBuiltins(reg *slash.Registry, sc *slashCtx) {
 	reg.Register(&contextCmd{sc: sc})
 	reg.Register(&promptCmd{sc: sc})
 	reg.Register(&pruneCmd{sc: sc})
+	reg.Register(&discoverCmd{sc: sc})
 }
 
 // /prompt — show the per-layer breakdown of the assembled system prompt.
@@ -216,6 +219,15 @@ func (c *contextCmd) Run(ctx context.Context, args string) error {
 	} else {
 		c.sc.printf("  total           %s", formatWindow(bd.Total))
 	}
+	// Tokens saved this session by output compression + truncation (H11).
+	// Only the in-process agent tracks this today; the worker-backed path
+	// (isolated backends) reports nothing here rather than a wrong zero.
+	if sv, ok := c.sc.agt.(interface{ CompressionSaved() int64 }); ok {
+		if saved := sv.CompressionSaved(); saved > 0 {
+			c.sc.printf("")
+			c.sc.printf("saved by compression  %s tokens (raw tool output kept on disk, recoverable via read)", formatWindow(int(saved)))
+		}
+	}
 	if bd.ToolActive > bd.Conversation*2 && bd.ToolActive > 5000 {
 		c.sc.printf("")
 		c.sc.printf("note: tool output dominates — /prune will stub older tool results, freeing tokens.")
@@ -250,6 +262,80 @@ func (c *pruneCmd) Run(ctx context.Context, args string) error {
 		stubbed, plural(stubbed),
 		formatWindow(before), formatWindow(after), formatWindow(saved))
 	return nil
+}
+
+// /discover — mine recorded bash output for compression opportunities (R3).
+//
+// Ranks the bash commands run across stored sessions by how many tokens of
+// raw output they accumulated, and flags which ones a compression filter
+// already covers. The big uncovered rows are where writing a new filter
+// (under $XDG_CONFIG_HOME/enso/filters/) would pay off most.
+
+type discoverCmd struct{ sc *slashCtx }
+
+func (c *discoverCmd) Name() string { return "discover" }
+func (c *discoverCmd) Description() string {
+	return "rank bash commands by output size and show which lack a compression filter"
+}
+func (c *discoverCmd) Run(ctx context.Context, args string) error {
+	if c.sc.store == nil {
+		c.sc.printf("discover: store unavailable (running --ephemeral)")
+		return nil
+	}
+	stats, err := session.ComputeBashOutputStats(c.sc.store, time.Time{})
+	if err != nil {
+		return fmt.Errorf("discover: %w", err)
+	}
+	if len(stats) == 0 {
+		c.sc.printf("discover: no bash output recorded yet")
+		return nil
+	}
+
+	filtersDir := ""
+	if dir, derr := paths.ConfigDir(); derr == nil {
+		filtersDir = filepath.Join(dir, "filters")
+	}
+	fset := tools.LoadFilterSet(filtersDir, nil)
+
+	const topN = 15
+	c.sc.printf("Bash output by command (most tokens first):")
+	c.sc.printf("  %-24s %6s %10s  %s", "command", "runs", "tokens", "filter")
+	shown := 0
+	uncoveredTokens := 0
+	for _, st := range stats {
+		covered := fset.Covers(st.Command)
+		mark := "—"
+		if covered {
+			mark = "covered"
+		} else {
+			uncoveredTokens += st.RawTokens
+		}
+		if shown < topN {
+			c.sc.printf("  %-24s %6d %10s  %s",
+				truncateStr(st.Command, 24), st.Runs, formatWindow(st.RawTokens), mark)
+			shown++
+		}
+	}
+	if len(stats) > topN {
+		c.sc.printf("  … %d more commands", len(stats)-topN)
+	}
+	if uncoveredTokens > 0 {
+		c.sc.printf("")
+		c.sc.printf("note: %s tokens came from commands with no filter — add one under %s to compress them.",
+			formatWindow(uncoveredTokens), filtersDir)
+	}
+	return nil
+}
+
+// truncateStr clips s to n runes with an ellipsis, for table columns.
+func truncateStr(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	if n <= 1 {
+		return s[:n]
+	}
+	return s[:n-1] + "…"
 }
 
 // /help
