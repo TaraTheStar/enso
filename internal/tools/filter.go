@@ -34,9 +34,15 @@ type Filter struct {
 	// embedded default replaces it (last-loader-wins), which is how users
 	// override a shipped filter.
 	Name string `toml:"name"`
-	// MatchCommand is a regexp tested against the full command string. The
-	// first filter (in load order) whose MatchCommand matches wins.
+	// MatchCommand is a regexp tested against the full command string. When
+	// several filters match a command the highest Priority wins; ties are
+	// broken by load order (first loaded wins).
 	MatchCommand string `toml:"match_command"`
+	// Priority disambiguates overlapping MatchCommand patterns. Higher wins.
+	// Defaults to 0, so shipped filters keep their load-order precedence; a
+	// user filter can set a positive priority to take over a command an
+	// embedded default also matches (without reusing its name to replace it).
+	Priority int `toml:"priority"`
 	// StripANSI removes terminal escape sequences before line filtering.
 	StripANSI bool `toml:"strip_ansi"`
 	// KeepLinesMatching, when non-empty, switches the filter to allowlist
@@ -82,7 +88,8 @@ type filterFile struct {
 }
 
 // FilterSet is an ordered collection of compiled filters. Match returns the
-// first filter whose MatchCommand matches a command; Apply runs it.
+// highest-Priority filter whose MatchCommand matches a command (ties broken
+// by load order); Apply runs it.
 type FilterSet struct {
 	filters []*Filter
 	byName  map[string]int // name -> index in filters, for override-by-name
@@ -214,12 +221,19 @@ func (fs *FilterSet) Match(cmd string) *Filter {
 	if fs == nil {
 		return nil
 	}
+	// Highest Priority wins. Iterating in load order and only replacing on a
+	// strictly greater priority keeps the tie-break stable (first loaded wins
+	// at equal priority), so the default priority-0 case is pure load order.
+	var best *Filter
 	for _, f := range fs.filters {
-		if f.Matches(cmd) {
-			return f
+		if !f.Matches(cmd) {
+			continue
+		}
+		if best == nil || f.Priority > best.Priority {
+			best = f
 		}
 	}
-	return nil
+	return best
 }
 
 // Apply runs the matching filter (if any) over output. Returns the
