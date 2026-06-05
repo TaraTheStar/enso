@@ -7,7 +7,7 @@ require (
 	charm.land/glamour/v2 v2.0.0
 	charm.land/lipgloss/v2 v2.0.3
 	github.com/adrg/frontmatter v0.2.0
-	github.com/anthropics/anthropic-sdk-go v1.45.0
+	github.com/anthropics/anthropic-sdk-go v1.46.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.18
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.53.3
 	github.com/bmatcuk/doublestar/v4 v4.10.0
