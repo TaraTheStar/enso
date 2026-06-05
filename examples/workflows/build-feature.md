@@ -53,5 +53,14 @@ file contents — do not trust the coder's summary alone.
 
 {{ .coder.output }}
 
-Report a verdict (LGTM / changes-requested) and, if changes are requested,
-a punch list of concrete fixes the next coder pass should address.
+Report your assessment as prose — and, if changes are requested, a punch
+list of concrete fixes the next coder pass should address. Then end your
+message with a fenced JSON block carrying the machine-readable verdict:
+
+```json
+{"verdict": "LGTM", "reason": "one-line justification"}
+```
+
+Use `"LGTM"` only if the changes match the request; otherwise
+`"changes-requested"`. (A downstream workflow can gate on
+`.reviewer.verdict` to route ship-vs-rework — see `gated-ship.md`.)

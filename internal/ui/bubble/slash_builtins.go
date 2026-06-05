@@ -1136,10 +1136,16 @@ func (c *workflowCmd) Run(ctx context.Context, args string) error {
 			c.sc.printf("workflow validate: %v", err)
 			return nil
 		}
-		c.sc.printf("workflow %q ok — %d role%s (%v), %d edge%s",
+		conditional := 0
+		for _, e := range wf.Edges {
+			if e.Cond != nil {
+				conditional++
+			}
+		}
+		c.sc.printf("workflow %q ok — %d role%s (%v), %d edge%s (%d conditional)",
 			wf.Name,
 			len(wf.RoleOrder), plural(len(wf.RoleOrder)), wf.RoleOrder,
-			len(wf.Edges), plural(len(wf.Edges)),
+			len(wf.Edges), plural(len(wf.Edges)), conditional,
 		)
 		return nil
 	}
@@ -1166,6 +1172,11 @@ func (c *workflowCmd) Run(ctx context.Context, args string) error {
 		return nil
 	}
 	for _, role := range wf.RoleOrder {
+		if res.Skipped[role] {
+			c.sc.printf("%s: (skipped)", role)
+			c.sc.printf("")
+			continue
+		}
 		out := res.Outputs[role]
 		c.sc.printf("%s:", role)
 		c.sc.printf("%s", out)

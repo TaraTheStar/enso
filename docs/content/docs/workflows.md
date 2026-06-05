@@ -77,11 +77,13 @@ roles:                       # role-name → role config
 edges:                       # explicit dependencies — runner topo-sorts
   - planner -> coder
   - coder -> reviewer
+  - reviewer -> ship if '...'  # optional `if` guard — see Conditional edges
 ```
 
 `edges` declares dependency direction (`a -> b` means b waits for a).
 Roles with no incoming edges run first. Sibling roles (no dependency
-between them) run in parallel.
+between them) run in parallel. An edge may carry an optional `if`
+predicate that gates whether it fires — see [Conditional edges](#conditional-edges).
 
 ## Body templating
 
@@ -134,6 +136,8 @@ the role's final message, in this precedence:
 If neither form is present, a role simply has no fields — `.output`
 still carries the full raw text, so existing workflows are unaffected.
 
+Structured fields are also what conditional edges (below) gate on.
+
 Notes:
 
 - **Reserved field names.** `output` and `skipped` are reserved; a role
@@ -146,6 +150,60 @@ Notes:
 - **Malformed JSON yields no fields.** If the last ` ```json ` block
   fails to parse, the role gets empty fields (it does *not* fall back to
   `KEY: value`). `.output` is still the raw text.
+
+## Conditional edges
+
+An edge can carry an `if` guard — a single-quoted predicate that decides
+at runtime whether the edge **fires**:
+
+```yaml
+edges:
+  - build  -> review
+  - review -> ship      if '{{ eq .review.verdict "LGTM" }}'
+  - review -> escalate  if '{{ ne .review.verdict "LGTM" }}'
+```
+
+A node runs only if **all** of its incoming edges fire (strict AND). If
+any incoming edge does not fire, the node is **skipped** — and skips
+propagate: a skipped node's outgoing edges never fire, so its dependents
+skip too. Above, `review` runs once and exactly one of `ship` /
+`escalate` runs; the other is skipped. A skipped role produces no LLM
+call, prints `role: (skipped)`, and exposes `.<role>.skipped == true`.
+
+### Predicate language
+
+A predicate is a Go `text/template` evaluated against the **same context
+as role bodies** (`.Args`, `.<role>.output`, `.<role>.<field>`). It is
+truthy unless it renders to an empty string, `false`, `0`, `no`, or
+`<no value>` (case-insensitive). Available helpers:
+
+| Helper                         | Meaning                                         |
+| ------------------------------ | ----------------------------------------------- |
+| `eq` / `ne` / `and` / `or` / `not` | stdlib template builtins                     |
+| `contains haystack needle`     | case-insensitive substring (subject first)      |
+| `matches subject pattern`      | regexp match (subject first, pattern second)    |
+
+`contains` and `matches` are available in role bodies too.
+
+### Missing fields are lenient — but mind the eq/ne asymmetry
+
+A predicate that references a field the role never emitted evaluates as
+**not satisfied** rather than aborting the run. Concretely, with the
+field absent:
+
+- `'{{ eq .review.verdict "LGTM" }}'` → **false** (the gate does *not*
+  fire — the node stays put).
+- `'{{ ne .review.verdict "LGTM" }}'` → **true** (the gate *fires*).
+
+So in the ship/escalate pair above, an unparseable or field-less review
+makes `ship` skip and `escalate` run — the safe direction. Choose `eq`
+vs `ne` deliberately for which branch should win when a field is missing.
+
+A worked example ships at `examples/workflows/gated-ship.md`.
+
+> **Branch-then-merge is not supported.** Because the join is strict-AND,
+> a diamond where only one branch fires will *skip* the merge node. Join
+> modes (`any`) are not implemented.
 
 ## Running
 
@@ -189,14 +247,18 @@ both. The runner uses goroutines + a topological scheduler. Sibling
 parallelism is goroutine-correct but not load-tested at large
 fan-outs (10+); if you hit weird ordering, file a bug.
 
-## Built-in pipeline
+## Example workflows
 
-Shipped at `examples/workflows/build-feature.md` — the
-planner→coder→reviewer pipeline. Copy it as a starting point.
+Shipped under `examples/workflows/` — copy any as a starting point:
+
+- `build-feature.md` — the linear planner→coder→reviewer pipeline.
+- `plan-deep-execute-fast.md` — the same shape across two providers
+  (deep model plans/reviews, fast model executes).
+- `gated-ship.md` — conditional routing: a reviewer's structured verdict
+  gates ship-vs-escalate via `if` edges.
 
 ## What's not yet supported
 
-- **Conditional edges** — every edge is unconditional. There's no
-  "if planner reports success, run coder" gate. Workaround: have the
-  reviewer flag failures in its output and inspect manually.
 - **Loops** — DAG only; cycles are rejected at parse time.
+- **Join modes** — the conditional-edge join is strict-AND only; there's
+  no `any` join, so branch-then-merge diamonds skip the merge node.

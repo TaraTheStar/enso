@@ -4,6 +4,46 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Structured workflow role outputs.** A workflow role can now expose
+  named fields, not just raw text. Fields are parsed from the role's
+  final message — the last fenced ` ```json ` block (decoded as a flat
+  object) or, failing that, contiguous trailing `KEY: value` lines — and
+  read downstream as `{{ .<role>.<field> }}`. The raw text remains
+  available as `{{ .<role>.output }}`, so existing workflows are
+  unaffected. Missing fields render empty rather than erroring, and
+  `output`/`skipped` are reserved names. `Result.Fields` carries the
+  parsed fields to programmatic callers.
+- **Conditional workflow edges.** An edge may carry an `if` guard —
+  `from -> to if '<predicate>'` — that decides at runtime whether the
+  edge fires. A node runs only if **all** of its incoming edges fire
+  (strict AND); otherwise it is skipped, and skips propagate down the
+  graph. A skipped role makes no LLM call, prints `role: (skipped)`, and
+  exposes `{{ .<role>.skipped }}`. Predicates are Go `text/template`
+  expressions over the same context as role bodies, with `eq`/`ne`/`and`/
+  `or`/`not` plus `contains` (case-insensitive substring) and `matches`
+  (regexp); missing fields evaluate as not-satisfied rather than
+  aborting. This unlocks ship-vs-escalate routing on a reviewer's
+  structured verdict — see the new `examples/workflows/gated-ship.md`.
+  `/workflow validate` now reports the conditional-edge count, and both
+  the TUI and `enso run` surface which roles were skipped.
+
+### Changed
+
+- Dependency bumps: `google.golang.org/genai`, `modernc.org/sqlite`,
+  `github.com/anthropics/anthropic-sdk-go`, and the AWS SDK
+  (`config`, `service/bedrockruntime`).
+
+### Fixed
+
+- **Tool-registry data race under parallel workflows.** The registry's
+  cached tool-definition list is now guarded by a `sync.RWMutex`, so
+  concurrent sibling roles building their child agents no longer race on
+  it (caught by `go test -race`).
+
 ## [v2.11.0] - 2026-06-02
 
 ### Added
