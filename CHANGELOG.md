@@ -8,6 +8,33 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Context compression for tool output.** Bash and read output is now
+  compacted before it lands in the model's context, and the raw output is
+  always spilled to disk so nothing dropped is unrecoverable. Three
+  layers, applied in order: (1) declarative, per-command **filters** —
+  TOML rules (`match_command`, `strip_ansi`, `keep_lines_matching`,
+  `strip_lines_matching`, `max_lines`, `on_empty`) that strip the noise a
+  toolchain emits (passing-test lines, progress bars, ANSI colour);
+  defaults for Go/Node/Python/VCS ship embedded, and dropping a `*.toml`
+  under `$XDG_CONFIG_HOME/enso/filters/` adds or overrides coverage
+  without recompiling. Each filter carries inline self-tests that must
+  pass before it is trusted. (2) **structural compression** — unified
+  diffs elide lockfile and whitespace-only hunks, repetitive logs collapse
+  to templates, and long JSON arrays are sampled. (3) a token-aware guard
+  that never lets compression inflate output. A `priority` field on a
+  filter disambiguates overlapping `match_command` patterns (higher wins,
+  ties broken by load order), so a user filter can take over a command an
+  embedded default also matches. Controlled by `compress` under
+  `[context_prune]` (on by default); `/context` reports the tokens saved.
+- **`/discover` — find uncovered commands.** Mines the session store for
+  the bash commands that produced the most output and reports them ranked,
+  marking which are already covered by a filter and which are not — so it
+  is obvious where a new filter would pay off.
+- **`read` outline mode.** `read` accepts `mode: "outline"` to return a
+  signature-only view of a file (Go is parsed via AST for package,
+  imports, and declaration signatures; other languages fall back to a
+  definition-line heuristic), letting the model survey a large file's
+  shape without pulling in every body.
 - **Structured workflow role outputs.** A workflow role can now expose
   named fields, not just raw text. Fields are parsed from the role's
   final message — the last fenced ` ```json ` block (decoded as a flat
