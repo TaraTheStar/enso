@@ -180,6 +180,18 @@ type AgentContext struct {
 	// exceeds its cap. Empty disables relevance truncation.
 	RecentUserHint string
 
+	// Filters, when non-nil, is the active command-output FilterSet
+	// (R1/R2). The bash path runs a matching filter over raw command
+	// output before truncation; nil disables declarative filtering (the
+	// content-shape structural compressors still run). Loaded once by the
+	// host and shared read-only across sub-agents.
+	Filters *FilterSet
+
+	// Compression, when non-nil, accumulates the tokens saved this
+	// session by output compression + truncation, surfaced via /context
+	// (H11). Nil disables the accounting (the trimming still happens).
+	Compression *CompressionStats
+
 	// Spill, when non-nil, is called by truncateWithRecovery when a
 	// tool's output exceeds its caps. The returned path is embedded in
 	// the LLMOutput so the model can recover sections via the `read`

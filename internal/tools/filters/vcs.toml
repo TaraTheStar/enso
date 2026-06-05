@@ -1,0 +1,35 @@
+# Default command-output filters for version-control tooling.
+# Adapted from rtk's filter format (Apache-2.0) — see the repo NOTICE.
+
+# `git status` (long form): strip the boilerplate hint lines git prints
+# under each section ("(use \"git add ...\")") so only the file list and
+# section headers remain.
+[[filter]]
+name = "git-status"
+match_command = '\bgit\s+status\b'
+strip_ansi = true
+strip_lines_matching = [
+  '^\s*\(use "git ',
+  '^\s*\(commit or discard',
+]
+on_empty = "git status: clean working tree"
+
+[[filter.tests]]
+name = "drops use hints keeps files"
+input = '''
+On branch main
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   internal/tools/bash.go
+'''
+expect_contains = ["modified:   internal/tools/bash.go", "On branch main"]
+expect_not_contains = ['(use "git add']
+
+# `git log` graph/oneline: nothing to strip structurally, but capping keeps a
+# `git log` with no range from dumping the entire history into context.
+[[filter]]
+name = "git-log"
+match_command = '\bgit\s+log\b'
+strip_ansi = true
+max_lines = 200

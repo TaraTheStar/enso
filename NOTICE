@@ -1,0 +1,35 @@
+enso
+Copyright the enso authors.
+
+This product is licensed under the GNU Affero General Public License v3.0
+or later (AGPL-3.0-or-later). See the LICENSE file for the full text.
+
+================================================================================
+Third-party attributions
+================================================================================
+
+The context-compression subsystem (internal/tools/filter.go,
+internal/tools/compress.go, the embedded filters under
+internal/tools/filters/, and the /discover report) re-implements, in Go,
+ideas and patterns from two Apache-2.0 projects:
+
+  * RTK — https://github.com/rtk-ai/rtk
+      The declarative command-output filter format (match_command,
+      strip_ansi, strip_lines_matching, max_lines, on_empty, and the inline
+      per-filter tests), the per-command "failures-only" compaction approach,
+      and the "discover uncovered commands" report are adapted from RTK.
+
+  * headroom — https://github.com/chopratejas/headroom
+      The structural diff/log/JSON compression approach, the token-aware
+      "never inflate" guard, and the cache-boundary stability invariants are
+      adapted from headroom.
+
+Both projects are licensed under the Apache License, Version 2.0:
+
+      https://www.apache.org/licenses/LICENSE-2.0
+
+Apache-2.0 is one-way compatible with AGPL-3.0-or-later: Apache-2.0 material
+may be incorporated into an AGPLv3 work, and the combined distribution is
+AGPLv3. No source files from either project are copied verbatim; the Go
+implementations here are independent re-expressions of the above patterns,
+attributed in keeping with the Apache-2.0 attribution requirement.

@@ -218,7 +218,7 @@ func runBashHost(ctx context.Context, cmdStr string, timeout time.Duration, ac *
 			}
 			combined += stderr
 		}
-		truncated, _ := truncateWithRecovery(ac, "bash", combined)
+		truncated, _ := truncateWithRecoverySplit(ac, "bash", compressBash(ac, cmdStr, combined), combined)
 		if truncated == "" {
 			truncated = "(no output before timeout)"
 		}
@@ -238,7 +238,7 @@ func runBashHost(ctx context.Context, cmdStr string, timeout time.Duration, ac *
 		if output == "" {
 			output = runErr.Error()
 		}
-		truncated, full := truncateWithRecovery(ac, "bash", output)
+		truncated, full := truncateWithRecoverySplit(ac, "bash", compressBash(ac, cmdStr, output), output)
 		return Result{
 			LLMOutput:  fmt.Sprintf("exit %d\n%s", cmd.ProcessState.ExitCode(), truncated),
 			FullOutput: fmt.Sprintf("exit %d\nstdout: %s\nstderr: %s", cmd.ProcessState.ExitCode(), stdoutBuf.String(), full),
@@ -247,7 +247,7 @@ func runBashHost(ctx context.Context, cmdStr string, timeout time.Duration, ac *
 	}
 
 	output := stdoutBuf.String()
-	truncated, full := truncateWithRecovery(ac, "bash", output)
+	truncated, full := truncateWithRecoverySplit(ac, "bash", compressBash(ac, cmdStr, output), output)
 	llm := truncated
 	if llm == "" {
 		// A model can't interpret an empty tool message, and some
@@ -263,6 +263,21 @@ func runBashHost(ctx context.Context, cmdStr string, timeout time.Duration, ac *
 		Display:    strings.TrimSpace(truncated),
 		Meta:       ResultMeta{CacheKey: cacheKey},
 	}, nil
+}
+
+// compressBash applies the command-keyed declarative filter and the
+// content-shape structural compressors to raw command output (R1/H5). The
+// result is what the model sees (after the output caps); the raw output is
+// still spilled so the model can recover anything dropped. A nil filter set
+// or no match falls through to structural compression, then to raw.
+func compressBash(ac *AgentContext, cmd, raw string) string {
+	// A nil FilterSet means the compression feature is disabled wholesale
+	// (config `compress = false`); fall back to plain truncation.
+	if raw == "" || ac.Filters == nil {
+		return raw
+	}
+	out, _ := compressOutput(ac.Filters, cmd, raw)
+	return out
 }
 
 // bashCacheKey normalises a shell command into a dedup key. Long

@@ -342,6 +342,16 @@ attribution_name = "enso"
 # pinned_paths = ["PLAN.md"]           # suffix-matched against absolute paths;
 #                                      # reads of these survive stubbing + compaction
 # smart_truncate = false               # B2: relevance-based truncation when output exceeds cap
+# compress = true                      # command-aware + structural output compression:
+#                                      #   declarative per-command filters strip passing-test /
+#                                      #   progress / lockfile-diff noise BEFORE the output caps.
+#                                      #   Defaults ship in-binary; add or override with
+#                                      #   *.toml files under $XDG_CONFIG_HOME/enso/filters/.
+#                                      #   The raw output is always spilled to disk, so nothing
+#                                      #   compression drops is unrecoverable. Set false to revert
+#                                      #   to plain head/tail truncation.
+#                                      #   The /discover command ranks recorded bash commands by
+#                                      #   output size and flags which ones still lack a filter.
 #
 # [context_prune.tool_retention]
 # read = 8
