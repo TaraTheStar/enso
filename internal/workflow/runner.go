@@ -5,8 +5,13 @@ package workflow
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"math"
+	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"text/template"
@@ -49,8 +54,18 @@ type RunDeps struct {
 
 // Result is the outcome of a workflow run.
 type Result struct {
-	Outputs map[string]string // role name → final assistant text
-	Last    string            // output of the last role in topological order
+	Outputs map[string]string            // role name → final assistant text
+	Fields  map[string]map[string]string // role name → parsed structured fields
+	Last    string                       // output of the last role in topological order
+}
+
+// roleOutput is the per-role record stored during a run. Fields is built once
+// by parseStructured when the role completes and is never mutated afterwards,
+// so a shallow struct copy in the snapshot path is safe.
+type roleOutput struct {
+	Text    string            // raw final assistant text -> .<role>.output
+	Fields  map[string]string // parsed structured fields  -> .<role>.<field>
+	Skipped bool              // reserved for Phase B       -> .<role>.skipped
 }
 
 // Run executes the workflow with sibling parallelism. Roles whose
@@ -79,7 +94,7 @@ func Run(ctx context.Context, wf *Workflow, args string, deps RunDeps) (*Result,
 		indeg[e.To]++
 	}
 
-	outputs := map[string]string{}
+	outputs := map[string]roleOutput{}
 	var outMu sync.Mutex
 
 	type roleDone struct {
@@ -152,10 +167,19 @@ func Run(ctx context.Context, wf *Workflow, args string, deps RunDeps) (*Result,
 		return nil, firstErr
 	}
 
-	res := &Result{Outputs: outputs}
+	// Project the rich per-role records back to the back-compat shapes:
+	// Outputs (raw text) and Fields (structured).
+	res := &Result{
+		Outputs: make(map[string]string, len(outputs)),
+		Fields:  make(map[string]map[string]string, len(outputs)),
+	}
+	for k, rec := range outputs {
+		res.Outputs[k] = rec.Text
+		res.Fields[k] = rec.Fields
+	}
 	if len(wf.RoleOrder) > 0 {
 		last := wf.RoleOrder[len(wf.RoleOrder)-1]
-		res.Last = outputs[last]
+		res.Last = outputs[last].Text
 	}
 	return res, nil
 }
@@ -170,16 +194,16 @@ func runRole(
 	role Role,
 	args string,
 	outMu *sync.Mutex,
-	outputs map[string]string,
+	outputs map[string]roleOutput,
 	deps RunDeps,
 ) error {
 	// Snapshot outputs for prompt rendering. By construction the role
 	// can only launch after every dependency has populated outputs, so
 	// this snapshot has everything the template needs.
 	outMu.Lock()
-	snapshot := make(map[string]string, len(outputs))
+	snapshot := make(map[string]roleOutput, len(outputs))
 	for k, v := range outputs {
-		snapshot[k] = v
+		snapshot[k] = v // shallow copy ok: Fields is immutable post-construction
 	}
 	outMu.Unlock()
 
@@ -263,23 +287,104 @@ func runRole(
 	}
 
 	outMu.Lock()
-	outputs[name] = text
+	outputs[name] = roleOutput{Text: text, Fields: parseStructured(text)}
 	outMu.Unlock()
 	return nil
 }
 
-// renderPrompt executes the role's template against `{ Args, <role>: {output} }`
-// for every role that has already produced an output.
-func renderPrompt(tmpl *template.Template, args string, outputs map[string]string) (string, error) {
-	data := map[string]any{"Args": args}
-	for name, text := range outputs {
-		data[name] = map[string]any{"output": text}
-	}
+// renderPrompt executes the role's template against the shared data context
+// (`{ .Args, .<role>.output, .<role>.<field> }`) built by buildData.
+func renderPrompt(tmpl *template.Template, args string, outputs map[string]roleOutput) (string, error) {
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, data); err != nil {
+	if err := tmpl.Execute(&buf, buildData(args, outputs)); err != nil {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// buildData is the single source of truth for the `{ .Args, .<role>.* }`
+// template/predicate context. Reserved keys (output/skipped) are written AFTER
+// the role's structured Fields so they win if a role emits a same-named field —
+// `.<role>.output` therefore always means "raw text". Authors should avoid
+// emitting fields named "output" or "skipped".
+func buildData(args string, outputs map[string]roleOutput) map[string]any {
+	data := map[string]any{"Args": args}
+	for name, rec := range outputs {
+		m := make(map[string]any, len(rec.Fields)+2)
+		for k, v := range rec.Fields { // fields first…
+			m[k] = v
+		}
+		m["output"] = rec.Text // …reserved keys override.
+		m["skipped"] = rec.Skipped
+		data[name] = m
+	}
+	return data
+}
+
+var jsonFenceRe = regexp.MustCompile("(?s)```json[ \t]*\r?\n(.*?)```")
+
+var kvLineRe = regexp.MustCompile(`^([A-Za-z_][A-Za-z0-9_]*):[ \t]*(.*)$`)
+
+// parseStructured extracts named fields from a role's final assistant text.
+// Source precedence: (1) the LAST ```json fenced block, parsed as a flat
+// object; (2) failing that, contiguous trailing `KEY: value` lines. A malformed
+// last JSON block yields empty fields (no KV fallback). `.output` (the raw text)
+// is always available regardless, so callers stay backward compatible.
+func parseStructured(text string) map[string]string {
+	if blocks := jsonFenceRe.FindAllStringSubmatch(text, -1); len(blocks) > 0 {
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(blocks[len(blocks)-1][1]), &raw); err != nil {
+			return map[string]string{} // malformed last block => no fields
+		}
+		out := make(map[string]string, len(raw))
+		for k, v := range raw {
+			out[k] = stringifyJSON(v)
+		}
+		return out
+	}
+	return trailingKeyValues(text)
+}
+
+// stringifyJSON renders a decoded JSON scalar/value as the string a template
+// will see. Integral numbers render without a trailing ".0"; bools as
+// true/false; nested objects/arrays as compact JSON.
+func stringifyJSON(v any) string {
+	switch t := v.(type) {
+	case string:
+		return t
+	case nil:
+		return ""
+	case float64:
+		if t == math.Trunc(t) && !math.IsInf(t, 0) {
+			return strconv.FormatInt(int64(t), 10)
+		}
+		return strconv.FormatFloat(t, 'g', -1, 64)
+	default:
+		if b, err := json.Marshal(t); err == nil {
+			return string(b)
+		}
+		return fmt.Sprint(t)
+	}
+}
+
+// trailingKeyValues scans contiguous `KEY: value` lines at the end of text.
+// Scanning stops at the first non-matching or blank line, so prose above the
+// block is ignored.
+func trailingKeyValues(text string) map[string]string {
+	lines := strings.Split(strings.TrimRight(text, "\n \t"), "\n")
+	out := map[string]string{}
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimRight(lines[i], " \t\r")
+		if strings.TrimSpace(line) == "" {
+			break
+		}
+		m := kvLineRe.FindStringSubmatch(line)
+		if m == nil {
+			break
+		}
+		out[m[1]] = strings.TrimSpace(m[2])
+	}
+	return out
 }
 
 // providerNames returns the configured provider keys in stable order

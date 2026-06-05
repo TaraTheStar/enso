@@ -45,7 +45,7 @@ of risks and open questions.
 
 You are the coder. Implement the plan below using read/write/edit/bash:
 
-{{ .planner }}
+{{ .planner.output }}
 
 Do not deviate from the plan; if you find the plan is wrong, stop and
 explain rather than improvise.
@@ -56,10 +56,10 @@ You are the reviewer. The implementation is below; the original plan
 preceded it:
 
 Plan:
-{{ .planner }}
+{{ .planner.output }}
 
 Implementation summary:
-{{ .coder }}
+{{ .coder.output }}
 
 Read the actual changed files and report:
 - What's correct.
@@ -88,14 +88,64 @@ between them) run in parallel.
 The body has one `## <role>` section per declared role. Each section
 is a Go `text/template` that runs with these variables:
 
-| Variable     | Value                                                              |
-| ------------ | ------------------------------------------------------------------ |
-| `.Args`      | The argument string passed to the workflow.                        |
-| `.<role>`    | The text output of `<role>` (only available *after* it's run).     |
+| Variable             | Value                                                            |
+| -------------------- | --------------------------------------------------------------- |
+| `.Args`              | The argument string passed to the workflow.                     |
+| `.<role>.output`     | The raw final text of `<role>` (only available *after* it runs).|
+| `.<role>.<field>`    | A structured field parsed from `<role>`'s output (see below).    |
 
 A role can reference any previous role by name. The runner enforces
-edge ordering so `{{ .planner }}` is populated by the time `coder`
-renders.
+edge ordering so `{{ .planner.output }}` is populated by the time
+`coder` renders.
+
+## Structured outputs
+
+Besides the raw `.output`, each role can expose **named fields** that
+downstream templates read as `.<role>.<field>`. Fields are parsed from
+the role's final message, in this precedence:
+
+1. The **last** fenced ` ```json ` block in the message, decoded as a
+   flat JSON object. This is the recommended form:
+
+   ````
+   I reviewed the diff and it looks good.
+
+   ```json
+   {"verdict": "LGTM", "score": 9, "blocking": false}
+   ```
+   ````
+
+   A downstream role can then reference `{{ .review.verdict }}`,
+   `{{ .review.score }}`, etc. Numbers render without a trailing `.0`
+   (`9`, not `9.0`), booleans as `true`/`false`, and nested
+   arrays/objects as compact JSON.
+
+2. If there's no JSON block, contiguous trailing `KEY: value` lines are
+   used instead:
+
+   ```
+   verdict: LGTM
+   reason: all tests pass
+   ```
+
+   Scanning stops at the first blank or non-`KEY: value` line, so prose
+   above the block is ignored.
+
+If neither form is present, a role simply has no fields — `.output`
+still carries the full raw text, so existing workflows are unaffected.
+
+Notes:
+
+- **Reserved field names.** `output` and `skipped` are reserved; a role
+  emitting a field with one of those names is shadowed by the built-in
+  meaning (`.<role>.output` always means the raw text). Avoid them.
+- **Missing fields render empty.** A reference to a field a role didn't
+  emit renders the empty string (Go's `<no value>`). Guard optional
+  fields with `{{ with .review.reason }}…{{ end }}` so the literal
+  placeholder never leaks into a prompt.
+- **Malformed JSON yields no fields.** If the last ` ```json ` block
+  fails to parse, the role gets empty fields (it does *not* fall back to
+  `KEY: value`). `.output` is still the raw text.
 
 ## Running
 
