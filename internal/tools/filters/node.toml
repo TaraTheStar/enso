@@ -1,0 +1,61 @@
+# Default command-output filters for the Node/JS toolchain.
+# Adapted from rtk's filter format (Apache-2.0) — see the repo NOTICE.
+
+# Package installs (npm/pnpm/yarn): strip the per-package progress chatter
+# and deprecation/funding noise; keep warnings/errors and the final summary.
+[[filter]]
+name = "node-install"
+match_command = '\b(npm|pnpm|yarn)\s+(install|i|add|ci)\b'
+strip_ansi = true
+strip_lines_matching = [
+  '^npm WARN deprecated',
+  '^\s*$',
+  '^\s*(\d+ packages are looking for funding)',
+  '^\s*run `npm fund`',
+  '^(Progress|⠋|⠙|⠹|⠸|⠼|⠴|⠦|⠧|⠇|⠏)',
+]
+on_empty = "install completed (no warnings)"
+
+[[filter.tests]]
+name = "keeps error drops funding noise"
+input = '''
+npm WARN deprecated foo@1.0.0: use bar instead
+npm ERR! code ERESOLVE
+12 packages are looking for funding
+  run `npm fund` for details
+'''
+expect_contains = ["npm ERR! code ERESOLVE"]
+expect_not_contains = ["deprecated foo", "looking for funding", "run `npm fund`"]
+
+# Jest / Vitest: drop the PASS lines and per-file tick output; keep FAIL
+# blocks, failing assertions, and the summary.
+[[filter]]
+name = "jest-vitest"
+match_command = '\b(jest|vitest)\b|\bnpm\s+(run\s+)?test\b'
+strip_ansi = true
+strip_lines_matching = [
+  '^\s*PASS\s',
+  '^\s*✓\s',
+  '^\s*√\s',
+]
+on_empty = "all tests passed (no failures)"
+
+[[filter.tests]]
+name = "keeps fail drops pass"
+input = '''
+ PASS  src/a.test.ts
+ ✓ adds numbers (2 ms)
+ FAIL  src/b.test.ts
+  ● multiplies
+    expected 6 received 5
+'''
+expect_contains = ["FAIL  src/b.test.ts", "expected 6 received 5"]
+expect_not_contains = ["PASS  src/a.test.ts", "✓ adds numbers"]
+
+# tsc: nothing structural to strip, but cap so a project with thousands of
+# errors doesn't blow the window before the cap layer sees it.
+[[filter]]
+name = "tsc"
+match_command = '\btsc\b'
+strip_ansi = true
+max_lines = 400

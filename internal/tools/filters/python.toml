@@ -1,0 +1,41 @@
+# Default command-output filters for the Python toolchain.
+# Adapted from rtk's filter format (Apache-2.0) — see the repo NOTICE.
+
+# pytest: strip the progress dots/percentage and PASSED lines; keep
+# FAILED/ERROR lines, tracebacks, and the summary.
+[[filter]]
+name = "pytest"
+match_command = '\bpytest\b|\bpy\.test\b'
+strip_ansi = true
+strip_lines_matching = [
+  '\bPASSED\b',
+  '^\s*$',
+  '^platform\s',
+  '^rootdir:',
+  '^plugins:',
+  '^collected\s',
+]
+on_empty = "pytest: all tests passed"
+
+[[filter.tests]]
+name = "keeps failures drops passes and header"
+input = '''
+platform linux -- Python 3.11
+rootdir: /work
+collected 3 items
+test_a.py::test_one PASSED
+test_a.py::test_two FAILED
+E   assert 1 == 2
+'''
+expect_contains = ["test_a.py::test_two FAILED", "assert 1 == 2"]
+expect_not_contains = ["PASSED", "platform linux", "rootdir:", "collected 3 items"]
+
+# ruff / mypy: keep findings, drop the summary "Found N errors" preamble is
+# useful so leave it; just strip blank lines and cap.
+[[filter]]
+name = "ruff-mypy"
+match_command = '\b(ruff|mypy)\b'
+strip_ansi = true
+strip_lines_matching = ['^\s*$']
+max_lines = 400
+on_empty = "no issues found"

@@ -148,6 +148,8 @@ func (SpawnTool) Run(ctx context.Context, args map[string]interface{}, ac *tools
 		RestrictedRoots:    ac.RestrictedRoots,
 		Capabilities:       ac.Capabilities, // sealed children can still broker
 		IsolationNote:      ac.IsolationNote,
+		Filters:            ac.Filters,     // share the loaded filter set
+		Compression:        ac.Compression, // aggregate savings across the tree
 	})
 	if err != nil {
 		return tools.Result{}, fmt.Errorf("spawn_agent: build child: %w", err)
