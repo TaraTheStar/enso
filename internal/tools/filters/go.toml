@@ -1,0 +1,82 @@
+# Default command-output filters for the Go toolchain.
+# Adapted from rtk's filter format (Apache-2.0) — see the repo NOTICE.
+# Override any of these by dropping a file with the same filter `name`
+# under $XDG_CONFIG_HOME/enso/filters/.
+
+# `go test`: drop the passing-test scaffolding (RUN/PASS/ok lines) so the
+# model sees failures, panics, and test log output only. Passing runs
+# collapse to a one-liner. The full output is always recoverable via the
+# spill path noted in the tool result.
+[[filter]]
+name = "go-test"
+match_command = '\bgo\s+test\b'
+strip_ansi = true
+strip_lines_matching = [
+  '^=== (RUN|CONT|PAUSE|NAME)\b',
+  '^--- PASS:',
+  '^\s+--- PASS:',
+  '^ok\s',
+  '^PASS$',
+  '^\?\s+\S+\s+\[no test files\]$',
+]
+on_empty = "all tests passed (no failures, no test output)"
+
+[[filter.tests]]
+name = "keeps failures, drops passes"
+input = '''
+=== RUN   TestAlpha
+--- PASS: TestAlpha (0.00s)
+=== RUN   TestBeta
+    beta_test.go:42: got 3, want 4
+--- FAIL: TestBeta (0.01s)
+FAIL
+ok  	github.com/x/pkg	0.013s
+FAIL	github.com/x/other	0.020s
+'''
+expect_contains = ["--- FAIL: TestBeta", "beta_test.go:42", "FAIL\tgithub.com/x/other"]
+expect_not_contains = ["=== RUN", "--- PASS", "ok  \tgithub.com/x/pkg"]
+
+[[filter.tests]]
+name = "all-pass collapses to summary"
+input = '''
+=== RUN   TestAlpha
+--- PASS: TestAlpha (0.00s)
+ok  	github.com/x/pkg	0.013s
+'''
+expect_equal = "all tests passed (no failures, no test output)"
+
+# `go build` / `go vet`: strip the "# package" banner lines that precede a
+# block of errors — the file:line in each error already identifies the
+# package. Keeps the actual diagnostics.
+[[filter]]
+name = "go-build"
+match_command = '\bgo\s+(build|vet|install)\b'
+strip_ansi = true
+strip_lines_matching = ['^#\s+\S']
+on_empty = "build succeeded (no diagnostics)"
+
+[[filter.tests]]
+name = "drops package banner keeps error"
+input = '''
+# github.com/x/pkg
+./main.go:10:2: undefined: foo
+'''
+expect_contains = ["./main.go:10:2: undefined: foo"]
+expect_not_contains = ["# github.com/x/pkg"]
+
+# golangci-lint: drop its info/progress logging; keep the file:line findings.
+[[filter]]
+name = "golangci-lint"
+match_command = '\bgolangci-lint\b'
+strip_ansi = true
+strip_lines_matching = ['^level=(info|debug)', '^\s*$']
+on_empty = "golangci-lint: no issues"
+
+[[filter.tests]]
+name = "keeps finding drops info log"
+input = '''
+level=info msg="linters took 1.2s"
+main.go:5:1: exported function Foo should have comment (revive)
+'''
+expect_contains = ["main.go:5:1:"]
+expect_not_contains = ["level=info"]

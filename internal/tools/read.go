@@ -36,7 +36,7 @@ type ReadTool struct{}
 
 func (t ReadTool) Name() string { return "read" }
 func (t ReadTool) Description() string {
-	return "Read a file or a line range. Also reads images (png, jpeg, gif, webp) — pass an image path and a vision-capable model sees the image directly. Args: path (string), first_line (int), last_line (int)"
+	return "Read a file or a line range. Also reads images (png, jpeg, gif, webp) — pass an image path and a vision-capable model sees the image directly. Pass mode:\"outline\" to get just the structure of a large source file (package, imports, and top-level declaration signatures — function headers, types, consts) instead of every line; then read the specific range you need. Args: path (string), first_line (int), last_line (int), mode (string: \"outline\")"
 }
 func (t ReadTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{
@@ -45,6 +45,10 @@ func (t ReadTool) Parameters() map[string]interface{} {
 			"path":       map[string]interface{}{"type": "string"},
 			"first_line": map[string]interface{}{"type": "integer"},
 			"last_line":  map[string]interface{}{"type": "integer"},
+			"mode": map[string]interface{}{
+				"type":        "string",
+				"description": "\"outline\" returns signature-only structure (function/type/const declarations, no bodies) for a quick map of a large source file. Omit for a normal read.",
+			},
 		},
 		"required": []string{"path"},
 	}
@@ -99,6 +103,30 @@ func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 				CacheKey:  fmt.Sprintf("read:%s:image", abs),
 			},
 		}, nil
+	}
+
+	// Signature-only outline mode (R4): return the file's structure
+	// instead of every line. The whole file still lives on disk, so the
+	// model can follow up with a ranged read of whatever the outline
+	// surfaces.
+	if mode, _ := args["mode"].(string); mode == "outline" {
+		if outline, ok := outlineFile(abs, string(data)); ok {
+			truncated, full := truncateWithRecovery(ac, "read", outline)
+			if ac.InstructionResolver != nil {
+				if reminder := ac.InstructionResolver.ResolveOnRead(abs); reminder != "" {
+					truncated = truncated + "\n\n" + reminder
+				}
+			}
+			return Result{
+				LLMOutput:     truncated,
+				FullOutput:    full,
+				DisplayOutput: "outline",
+				Meta: ResultMeta{
+					PathsRead: []string{abs},
+					CacheKey:  fmt.Sprintf("read:%s:outline", abs),
+				},
+			}, nil
+		}
 	}
 
 	lines := strings.Split(string(data), "\n")

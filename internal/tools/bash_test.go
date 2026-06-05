@@ -120,3 +120,53 @@ func TestIsSecretEnvName(t *testing.T) {
 		}
 	}
 }
+
+// TestBashTool_CompressesFilteredOutput is the R1 end-to-end check: with a
+// FilterSet loaded, go-test scaffolding is stripped from the model-visible
+// output, the savings counter advances, and the spill footer points at the
+// recoverable raw output.
+func TestBashTool_CompressesFilteredOutput(t *testing.T) {
+	stats := &CompressionStats{}
+	ac := &AgentContext{
+		Cwd:         t.TempDir(),
+		Filters:     LoadFilterSet("", nil),
+		Compression: stats,
+		Spill:       &FileSpill{Root: t.TempDir(), SessionID: "s1"},
+	}
+	// Emulate `go test` output via a printf (exit 0 → success path). The
+	// trailing comment makes the command string match the go-test filter
+	// without actually invoking the toolchain.
+	cmd := `printf '=== RUN   TestA\n--- PASS: TestA (0.00s)\n=== RUN   TestB\n    b_test.go:9: boom\n--- FAIL: TestB (0.01s)\nFAIL\n' # go test ./...`
+	res, err := BashTool{}.Run(context.Background(),
+		map[string]any{"cmd": cmd}, ac)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if strings.Contains(res.LLMOutput, "=== RUN") || strings.Contains(res.LLMOutput, "--- PASS") {
+		t.Fatalf("passing scaffolding not stripped from model output:\n%s", res.LLMOutput)
+	}
+	if !strings.Contains(res.LLMOutput, "b_test.go:9: boom") {
+		t.Fatalf("failure detail dropped:\n%s", res.LLMOutput)
+	}
+	if stats.Saved() <= 0 {
+		t.Fatalf("expected compression savings to be recorded, got %d", stats.Saved())
+	}
+	// Raw output is preserved in FullOutput for the session/recovery path.
+	if !strings.Contains(res.FullOutput, "--- PASS: TestA") {
+		t.Fatalf("raw output not preserved in FullOutput:\n%s", res.FullOutput)
+	}
+}
+
+// TestBashTool_NoFilterSetPassesThrough confirms a nil FilterSet disables
+// compression wholesale (config compress=false) — output is untouched.
+func TestBashTool_NoFilterSetPassesThrough(t *testing.T) {
+	ac := &AgentContext{Cwd: t.TempDir()} // Filters nil
+	res, err := BashTool{}.Run(context.Background(),
+		map[string]any{"cmd": `printf '=== RUN   TestA\n--- PASS: TestA\n'`}, ac)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(res.LLMOutput, "=== RUN") {
+		t.Fatalf("nil FilterSet should not compress:\n%s", res.LLMOutput)
+	}
+}

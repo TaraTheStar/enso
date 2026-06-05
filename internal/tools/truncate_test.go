@@ -165,3 +165,39 @@ func TestDefaultOutputCaps_LookupFallback(t *testing.T) {
 			got, DefaultMaxLineLength)
 	}
 }
+
+// TestPriorityTruncate_KeepsErrorsOverNoise is the H6 check: with no hint,
+// truncation past the line cap should preserve the error line and drop the
+// surrounding INFO/debug noise.
+func TestPriorityTruncate_KeepsErrorsOverNoise(t *testing.T) {
+	var lines []string
+	for i := 0; i < 100; i++ {
+		lines = append(lines, "INFO routine log line some detail here")
+	}
+	lines = append(lines, "ERROR database connection refused")
+	for i := 0; i < 100; i++ {
+		lines = append(lines, "DEBUG verbose trace chatter")
+	}
+	input := strings.Join(lines, "\n")
+
+	truncated, _ := capTruncate(input, 20, 0, 0, "")
+	if !strings.Contains(truncated, "ERROR database connection refused") {
+		t.Fatalf("priority truncation dropped the error line:\n%s", truncated)
+	}
+}
+
+func TestLinePriority(t *testing.T) {
+	cases := map[string]int{
+		"ERROR something exploded":     3,
+		"panic: nil deref":             3,
+		"security vulnerability found": 3,
+		"WARNING deprecated API":       2,
+		"DEBUG handler entered":        -1,
+		"just a normal line of output": 0,
+	}
+	for line, want := range cases {
+		if got := linePriority(line); got != want {
+			t.Errorf("linePriority(%q) = %d, want %d", line, got, want)
+		}
+	}
+}
