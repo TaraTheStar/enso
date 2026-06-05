@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"text/template"
+	"unicode"
 
 	"github.com/adrg/frontmatter"
 
@@ -33,9 +34,13 @@ type Role struct {
 }
 
 // Edge is a directed dependency: From's output is fed to To's prompt context.
+// Cond is an optional `if` guard; when non-nil the edge only "fires" (counts
+// toward To's readiness) if the predicate evaluates truthy at runtime. A nil
+// Cond is an unconditional edge.
 type Edge struct {
 	From string
 	To   string
+	Cond *Predicate
 }
 
 // frontmatter shape
@@ -105,7 +110,7 @@ func Parse(displayName string, data []byte) (*Workflow, error) {
 		if !ok {
 			return nil, fmt.Errorf("workflow %s: role %q has no `## %s` section in body", displayName, name, name)
 		}
-		tmpl, err := template.New(name).Parse(section)
+		tmpl, err := newTemplate(name, section)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %s: role %q template: %w", displayName, name, err)
 		}
@@ -161,15 +166,90 @@ func splitSections(body string) (map[string]string, error) {
 	return out, nil
 }
 
+// parseEdge parses a single edge spec: `from -> to [if '<predicate>']`.
+// The guard parser is structured so a future `loop` arm can slot in beside
+// `if`; for now `loop` returns a clear "not supported" error.
 func parseEdge(s string) (Edge, error) {
 	parts := strings.Split(s, "->")
-	if len(parts) != 2 {
-		return Edge{}, fmt.Errorf("expected `from -> to`")
+	if len(parts) != 2 { // preserves the existing "exactly one arrow" rule
+		return Edge{}, fmt.Errorf("expected `from -> to [if <pred>]`")
 	}
-	return Edge{
-		From: strings.TrimSpace(parts[0]),
-		To:   strings.TrimSpace(parts[1]),
-	}, nil
+	from, fromRest := splitFirstWord(parts[0])
+	if from == "" {
+		return Edge{}, fmt.Errorf("missing edge source")
+	}
+	if fromRest != "" {
+		return Edge{}, fmt.Errorf("edge source must be a single role name, got %q", strings.TrimSpace(parts[0]))
+	}
+	to, rest := splitFirstWord(parts[1])
+	if to == "" {
+		return Edge{}, fmt.Errorf("missing edge target")
+	}
+	cond, err := parseGuard(rest)
+	if err != nil {
+		return Edge{}, err
+	}
+	return Edge{From: from, To: to, Cond: cond}, nil
+}
+
+// parseGuard parses the optional trailing guard after the edge target. An
+// empty remainder means an unconditional edge (nil predicate).
+func parseGuard(rest string) (*Predicate, error) {
+	rest = strings.TrimSpace(rest)
+	if rest == "" {
+		return nil, nil
+	}
+	kw, after := splitFirstWord(rest)
+	switch kw {
+	case "if":
+		pred, leftover, err := extractPredicate(after)
+		if err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(leftover) != "" {
+			return nil, fmt.Errorf("unexpected text after if-predicate: %q", leftover)
+		}
+		return pred, nil
+	case "loop":
+		return nil, fmt.Errorf("`loop` edges (bounded loops) are not supported yet")
+	default:
+		return nil, fmt.Errorf("expected `if` guard, got %q", kw)
+	}
+}
+
+// extractPredicate reads a single-quoted predicate at the start of s and
+// compiles it. LIMITATION: the predicate body must not contain a literal
+// single quote — inside a Go template use double quotes or backticks.
+func extractPredicate(s string) (*Predicate, string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" || s[0] != '\'' {
+		return nil, "", fmt.Errorf("expected single-quoted predicate, got %q", s)
+	}
+	j := strings.IndexByte(s[1:], '\'')
+	if j < 0 {
+		return nil, "", fmt.Errorf("unterminated predicate (missing closing quote): %q", s)
+	}
+	body := s[1 : 1+j]
+	rest := s[1+j+1:]
+	p, err := newPredicate("'"+body+"'", body) // compiles now; errors surface in /workflow validate
+	if err != nil {
+		return nil, "", err
+	}
+	return p, rest, nil
+}
+
+// splitFirstWord returns the first whitespace-delimited token and the trimmed
+// remainder.
+func splitFirstWord(s string) (word, rest string) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", ""
+	}
+	i := strings.IndexFunc(s, unicode.IsSpace)
+	if i < 0 {
+		return s, ""
+	}
+	return s[:i], strings.TrimSpace(s[i:])
 }
 
 // topoSort returns roles in dependency order. Roles with no incoming edge

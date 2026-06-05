@@ -54,9 +54,10 @@ type RunDeps struct {
 
 // Result is the outcome of a workflow run.
 type Result struct {
-	Outputs map[string]string            // role name → final assistant text
+	Outputs map[string]string            // role name → final assistant text ("" for skipped)
 	Fields  map[string]map[string]string // role name → parsed structured fields
-	Last    string                       // output of the last role in topological order
+	Skipped map[string]bool              // role name → true if a conditional edge skipped it
+	Last    string                       // output of the last non-skipped role in topological order
 }
 
 // roleOutput is the per-role record stored during a run. Fields is built once
@@ -65,7 +66,7 @@ type Result struct {
 type roleOutput struct {
 	Text    string            // raw final assistant text -> .<role>.output
 	Fields  map[string]string // parsed structured fields  -> .<role>.<field>
-	Skipped bool              // reserved for Phase B       -> .<role>.skipped
+	Skipped bool              // true if a conditional edge skipped it -> .<role>.skipped
 }
 
 // Run executes the workflow with sibling parallelism. Roles whose
@@ -84,17 +85,27 @@ func Run(ctx context.Context, wf *Workflow, args string, deps RunDeps) (*Result,
 	}
 
 	// Build dependency graph state. parse.go has already rejected cycles.
-	indeg := map[string]int{}
-	for name := range wf.Roles {
-		indeg[name] = 0
+	// Each node tracks how many incoming edges are still unresolved
+	// (remaining) and how many resolved "dead" — i.e. did not fire, either
+	// because their `if` guard was false or because the source role was
+	// itself skipped. With strict-AND join (no join modes), a node runs iff
+	// every incoming edge fired (dead==0); any dead edge skips it.
+	type nodeState struct {
+		remaining int
+		dead      int
 	}
-	deps2 := map[string][]string{} // role -> roles that depend on it
+	state := map[string]*nodeState{}
+	for name := range wf.Roles {
+		state[name] = &nodeState{}
+	}
+	outEdges := map[string][]Edge{} // role -> its outgoing edges (Cond preserved)
 	for _, e := range wf.Edges {
-		deps2[e.From] = append(deps2[e.From], e.To)
-		indeg[e.To]++
+		outEdges[e.From] = append(outEdges[e.From], e)
+		state[e.To].remaining++
 	}
 
 	outputs := map[string]roleOutput{}
+	skipped := map[string]bool{}
 	var outMu sync.Mutex
 
 	type roleDone struct {
@@ -107,8 +118,10 @@ func Run(ctx context.Context, wf *Workflow, args string, deps RunDeps) (*Result,
 	defer cancel()
 
 	var wg sync.WaitGroup
+	launched := 0
 	launch := func(name string) {
 		wg.Add(1)
+		launched++
 		go func() {
 			defer wg.Done()
 			err := runRole(runCtx, name, wf.Roles[name], args, &outMu, outputs, deps)
@@ -116,27 +129,58 @@ func Run(ctx context.Context, wf *Workflow, args string, deps RunDeps) (*Result,
 		}()
 	}
 
+	// edgesOf returns a role's outgoing edges in a deterministic (To-sorted)
+	// order so launches and skip cascades are reproducible.
+	edgesOf := func(role string) []Edge {
+		es := append([]Edge(nil), outEdges[role]...)
+		sort.Slice(es, func(i, j int) bool { return es[i].To < es[j].To })
+		return es
+	}
+
+	// markSkipped records a role as skipped and cascades: a skipped role's
+	// outgoing edges all resolve "dead", which may skip its dependents in
+	// turn. Skips never spawn goroutines, so the completed<launched
+	// invariant below is untouched. All of this runs single-threaded in the
+	// drain loop.
+	var markSkipped func(role string)
+	resolveDead := func(dep string) {
+		st := state[dep]
+		st.remaining--
+		st.dead++
+		if st.remaining == 0 {
+			// dead>0 by construction here, so the node is always skipped.
+			markSkipped(dep)
+		}
+	}
+	markSkipped = func(role string) {
+		outMu.Lock()
+		outputs[role] = roleOutput{Skipped: true}
+		outMu.Unlock()
+		skipped[role] = true
+		for _, e := range edgesOf(role) {
+			resolveDead(e.To)
+		}
+	}
+
 	// Initial ready set: roles with no incoming edge. Sort for stable
 	// ordering of bus events when concurrency=1.
 	ready := []string{}
-	for name, d := range indeg {
-		if d == 0 {
+	for name, st := range state {
+		if st.remaining == 0 {
 			ready = append(ready, name)
 		}
 	}
 	sort.Strings(ready)
-	launched := 0
 	for _, name := range ready {
 		launch(name)
-		launched++
 	}
 
 	// Loop drains completions until every launched role has finished.
-	// We do NOT wait for `len(wf.Roles)`: when a role fails, its
-	// dependents are never launched (cancel() prevents activation), so
-	// they never publish a doneCh entry — counting against `total`
-	// would deadlock. Counting against `launched` lets the runner
-	// drain whatever's actually in flight and then return.
+	// We do NOT wait for `len(wf.Roles)`: roles whose incoming edges did
+	// not all fire are *skipped* (never launched, resolved synchronously
+	// here), and a failed role's dependents are never launched either
+	// (cancel() prevents activation). Counting against `launched` lets the
+	// runner drain exactly the goroutines in flight and then return.
 	var firstErr error
 	completed := 0
 	for completed < launched {
@@ -149,15 +193,30 @@ func Run(ctx context.Context, wf *Workflow, args string, deps RunDeps) (*Result,
 			}
 			continue
 		}
-		// Activate dependents whose in-degree just hit zero. Sort the
-		// list so launches are deterministic.
-		dependents := append([]string(nil), deps2[d.role]...)
-		sort.Strings(dependents)
-		for _, dep := range dependents {
-			indeg[dep]--
-			if indeg[dep] == 0 {
-				launch(dep)
-				launched++
+		// Snapshot outputs once for resolving all of this role's outgoing
+		// edge predicates. Fields is immutable post-construction, so a
+		// shallow copy under the lock is safe.
+		outMu.Lock()
+		snap := make(map[string]roleOutput, len(outputs))
+		for k, v := range outputs {
+			snap[k] = v
+		}
+		outMu.Unlock()
+		data := buildData(args, snap)
+
+		for _, e := range edgesOf(d.role) {
+			fired := evalCond(e.Cond, data, deps.Bus)
+			st := state[e.To]
+			st.remaining--
+			if !fired {
+				st.dead++
+			}
+			if st.remaining == 0 {
+				if st.dead == 0 {
+					launch(e.To)
+				} else {
+					markSkipped(e.To) // strict AND: any dead edge => skip
+				}
 			}
 		}
 	}
@@ -168,18 +227,23 @@ func Run(ctx context.Context, wf *Workflow, args string, deps RunDeps) (*Result,
 	}
 
 	// Project the rich per-role records back to the back-compat shapes:
-	// Outputs (raw text) and Fields (structured).
+	// Outputs (raw text, "" for skipped) and Fields (structured).
 	res := &Result{
 		Outputs: make(map[string]string, len(outputs)),
 		Fields:  make(map[string]map[string]string, len(outputs)),
+		Skipped: skipped,
 	}
 	for k, rec := range outputs {
 		res.Outputs[k] = rec.Text
 		res.Fields[k] = rec.Fields
 	}
-	if len(wf.RoleOrder) > 0 {
-		last := wf.RoleOrder[len(wf.RoleOrder)-1]
-		res.Last = outputs[last].Text
+	// Last = the last role in topological order that actually ran. A skipped
+	// tail (e.g. an un-taken branch) must not become the reported result.
+	for i := len(wf.RoleOrder) - 1; i >= 0; i-- {
+		if r := wf.RoleOrder[i]; !skipped[r] {
+			res.Last = outputs[r].Text
+			break
+		}
 	}
 	return res, nil
 }

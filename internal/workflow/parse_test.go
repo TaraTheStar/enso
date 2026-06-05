@@ -3,9 +3,37 @@
 package workflow
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// TestParse_ShippedExamples guards that every workflow under
+// examples/workflows/ parses, topo-sorts, and compiles its edge
+// predicates — so a broken example can't ship.
+func TestParse_ShippedExamples(t *testing.T) {
+	dir := filepath.Join("..", "..", "examples", "workflows")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read examples dir: %v", err)
+	}
+	found := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		found++
+		t.Run(e.Name(), func(t *testing.T) {
+			if _, err := LoadFile(filepath.Join(dir, e.Name())); err != nil {
+				t.Errorf("example %s failed to parse: %v", e.Name(), err)
+			}
+		})
+	}
+	if found == 0 {
+		t.Fatalf("no example workflows found in %s", dir)
+	}
+}
 
 func TestParse_LinearWorkflow(t *testing.T) {
 	src := []byte(`---
@@ -211,13 +239,23 @@ func TestParseEdge(t *testing.T) {
 	cases := []struct {
 		in        string
 		from, to  string
+		wantCond  bool
 		wantError bool
 	}{
-		{"a -> b", "a", "b", false},
-		{"  planner   ->   coder  ", "planner", "coder", false},
-		{"a -> b -> c", "", "", true}, // multi-arrow not supported
-		{"a => b", "", "", true},
-		{"a", "", "", true},
+		{in: "a -> b", from: "a", to: "b"},
+		{in: "  planner   ->   coder  ", from: "planner", to: "coder"},
+		{in: `a -> b if '{{ eq .a.x "y" }}'`, from: "a", to: "b", wantCond: true},
+		{in: `review -> ship if '{{ contains .review.output "lgtm" }}'`, from: "review", to: "ship", wantCond: true},
+		{in: "a -> b -> c", wantError: true},                 // multi-arrow not supported
+		{in: "a => b", wantError: true},                      // wrong arrow
+		{in: "a", wantError: true},                           // no arrow
+		{in: "a b -> c", wantError: true},                    // multi-word source
+		{in: "a -> b if", wantError: true},                   // `if` with no predicate
+		{in: "a -> b if 'unterminated", wantError: true},     // missing closing quote
+		{in: `a -> b if 'x' wat`, wantError: true},           // trailing text after predicate
+		{in: "a -> b loop until 'x' max 3", wantError: true}, // parked → error
+		{in: "a -> b wat", wantError: true},                  // unknown guard keyword
+		{in: `a -> b if '{{ nope .a }}'`, wantError: true},   // unknown func => compile error
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
@@ -234,6 +272,9 @@ func TestParseEdge(t *testing.T) {
 			}
 			if e.From != tc.from || e.To != tc.to {
 				t.Errorf("got %+v, want from=%q to=%q", e, tc.from, tc.to)
+			}
+			if (e.Cond != nil) != tc.wantCond {
+				t.Errorf("Cond presence = %v, want %v", e.Cond != nil, tc.wantCond)
 			}
 		})
 	}
