@@ -4,12 +4,18 @@ package tools
 
 import (
 	"sort"
+	"sync"
 
 	"github.com/TaraTheStar/enso/internal/llm"
 )
 
 // Registry holds the available tools.
+//
+// A registry is goroutine-safe: sibling workflow roles and spawned child
+// agents share one registry and call ToolDefs concurrently per turn, so all
+// access to tools and the memoized cache is guarded by mu.
 type Registry struct {
+	mu    sync.RWMutex
 	tools map[string]Tool
 
 	// defsCache memoizes the sorted ToolDefs slice. Nil means
@@ -26,17 +32,23 @@ func NewRegistry() *Registry {
 
 // Register adds a tool to the registry.
 func (r *Registry) Register(t Tool) {
+	r.mu.Lock()
 	r.tools[t.Name()] = t
 	r.defsCache = nil
+	r.mu.Unlock()
 }
 
 // Get returns a tool by name, or nil if not found.
 func (r *Registry) Get(name string) Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return r.tools[name]
 }
 
 // List returns all registered tools.
 func (r *Registry) List() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	result := make([]Tool, 0, len(r.tools))
 	for _, t := range r.tools {
 		result = append(result, t)
@@ -85,12 +97,14 @@ func (r *Registry) Without(names []string) *Registry {
 		excluded[n] = struct{}{}
 	}
 	child := NewRegistry()
+	r.mu.RLock()
 	for name, t := range r.tools {
 		if _, drop := excluded[name]; drop {
 			continue
 		}
 		child.Register(t)
 	}
+	r.mu.RUnlock()
 	return child
 }
 
@@ -104,6 +118,20 @@ func (r *Registry) Without(names []string) *Registry {
 // Filter / Without finish wiring them up, so the sort + alloc only
 // runs once per registry. Register invalidates the cache.
 func (r *Registry) ToolDefs() []llm.ToolDef {
+	// Fast path: warm cache under a read lock. The cached slice is replaced
+	// wholesale (never mutated in place) by Register, so returning it without
+	// holding the lock is safe.
+	r.mu.RLock()
+	cached := r.defsCache
+	r.mu.RUnlock()
+	if cached != nil {
+		return cached
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	// Re-check: another goroutine may have populated the cache between the
+	// read-unlock above and the write-lock here.
 	if r.defsCache != nil {
 		return r.defsCache
 	}
