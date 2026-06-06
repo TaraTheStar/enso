@@ -1,0 +1,51 @@
+# Default command-output filters for container / orchestration tooling.
+# Adapted from rtk's filter format (Apache-2.0) — see the repo NOTICE.
+# Override any of these by dropping a file with the same filter `name`
+# under $XDG_CONFIG_HOME/enso/filters/.
+
+# docker (build/pull/compose): strip the per-layer pull progress lines
+# (`<12-hex-id>: Downloading|Extracting|Pull complete|...`) and the build
+# context upload banner, then cap. The final Digest/Status/Successfully
+# lines and any error survive; the full log is recoverable via the spill.
+[[filter]]
+name = "docker"
+match_command = '\bdocker\b'
+strip_ansi = true
+strip_lines_matching = [
+  '^[0-9a-f]{12}: (Waiting|Downloading|Extracting|Verifying Checksum|Download complete|Pull complete|Already exists|Retrying)\b',
+  '^Sending build context to Docker daemon\b',
+]
+max_lines = 200
+
+[[filter.tests]]
+name = "drops layer progress keeps status"
+input = '''
+latest: Pulling from library/alpine
+9d16cba9fb96: Already exists
+9d16cba9fb96: Pull complete
+Digest: sha256:abc123
+Status: Downloaded newer image for alpine:latest
+'''
+expect_contains = ["Digest: sha256:abc123", "Status: Downloaded newer image for alpine:latest"]
+expect_not_contains = ["Already exists", "Pull complete"]
+
+# kubectl apply/create/delete/replace: drop the `<resource> unchanged` lines
+# so only the resources that actually changed (created/configured/deleted)
+# remain. An apply that changed nothing collapses to a one-liner.
+[[filter]]
+name = "kubectl-apply"
+match_command = '\bkubectl\s+(apply|create|delete|replace)\b'
+strip_ansi = true
+strip_lines_matching = ['\bunchanged$']
+on_empty = "kubectl: no changes (all resources unchanged)"
+
+[[filter.tests]]
+name = "drops unchanged keeps changed resources"
+input = '''
+deployment.apps/web configured
+service/web unchanged
+configmap/web-config unchanged
+ingress.networking.k8s.io/web created
+'''
+expect_contains = ["deployment.apps/web configured", "ingress.networking.k8s.io/web created"]
+expect_not_contains = ["unchanged"]
