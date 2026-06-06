@@ -1,0 +1,90 @@
+# Default command-output filters for the Rust / cargo toolchain.
+# Adapted from rtk's filter format (Apache-2.0) — see the repo NOTICE.
+# Override any of these by dropping a file with the same filter `name`
+# under $XDG_CONFIG_HOME/enso/filters/.
+
+# `cargo test`: drop the build progress (Compiling/Finished/Running), the
+# "running N tests" banner, and the passing/ignored `... ok` lines so the
+# model sees failures, panics, and the failure summary only. An all-pass run
+# collapses to a one-liner. Full output is recoverable via the spill path.
+[[filter]]
+name = "cargo-test"
+match_command = '\bcargo\s+test\b'
+strip_ansi = true
+strip_lines_matching = [
+  '^\s*Compiling\b',
+  '^\s*Finished\b',
+  '^\s*Running\b',
+  '^\s*Doc-tests\b',
+  '^running \d+ tests?$',
+  '^test .* \.\.\. ok$',
+  '^test .* \.\.\. ignored\b',
+  '^test result: ok\b',
+  '^\s*$',
+]
+on_empty = "cargo test: all passed (no failures)"
+
+[[filter.tests]]
+name = "keeps failures drops passes and scaffolding"
+input = '''
+   Compiling myapp v0.1.0 (/work)
+    Finished test [unoptimized + debuginfo] target(s) in 2.3s
+     Running unittests src/lib.rs (target/debug/deps/myapp-abc)
+
+running 2 tests
+test tests::adds ... ok
+test tests::subs ... FAILED
+
+failures:
+
+---- tests::subs stdout ----
+thread 'tests::subs' panicked at src/lib.rs:15:9:
+assertion `left == right` failed
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out
+'''
+expect_contains = ["test tests::subs ... FAILED", "panicked at src/lib.rs:15:9", "test result: FAILED"]
+expect_not_contains = ["test tests::adds ... ok", "running 2 tests", "Compiling myapp"]
+
+[[filter.tests]]
+name = "all-pass collapses to summary"
+input = '''
+   Compiling myapp v0.1.0 (/work)
+    Finished test [unoptimized + debuginfo] target(s) in 2.3s
+     Running unittests src/lib.rs (target/debug/deps/myapp-abc)
+
+running 2 tests
+test tests::adds ... ok
+test tests::subs ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+'''
+expect_equal = "cargo test: all passed (no failures)"
+
+# `cargo build` / `check` / `clippy` / `run`: strip the registry and
+# compilation progress lines (Compiling/Finished/Updating/Downloading...) so
+# only warnings and errors (and their `--> file:line` spans) remain.
+[[filter]]
+name = "cargo-build"
+match_command = '\bcargo\s+(build|check|clippy|run)\b'
+strip_ansi = true
+strip_lines_matching = [
+  '^\s*(Compiling|Finished|Updating|Downloading|Downloaded|Blocking|Fresh|Installing|Locking|Adding|Removing|Packaging|Verifying)\b',
+  '^\s*$',
+]
+on_empty = "cargo: no warnings or errors"
+
+[[filter.tests]]
+name = "drops progress keeps the warning span"
+input = '''
+    Updating crates.io index
+   Compiling myapp v0.1.0 (/work)
+warning: unused variable: `x`
+ --> src/main.rs:4:9
+  |
+4 |     let x = 5;
+  |         ^
+    Finished dev [unoptimized + debuginfo] target(s) in 1.2s
+'''
+expect_contains = ["warning: unused variable", "--> src/main.rs:4:9"]
+expect_not_contains = ["Compiling myapp", "Finished dev", "Updating crates.io"]

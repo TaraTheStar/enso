@@ -15,7 +15,8 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   TOML rules (`match_command`, `strip_ansi`, `keep_lines_matching`,
   `strip_lines_matching`, `max_lines`, `on_empty`) that strip the noise a
   toolchain emits (passing-test lines, progress bars, ANSI colour);
-  defaults for Go/Node/Python/VCS ship embedded, and dropping a `*.toml`
+  defaults for Go, Rust (cargo), Node, Python, `grep`, VCS, Docker, and
+  Kubernetes ship embedded, and dropping a `*.toml`
   under `$XDG_CONFIG_HOME/enso/filters/` adds or overrides coverage
   without recompiling. Each filter carries inline self-tests that must
   pass before it is trusted. (2) **structural compression** — unified
