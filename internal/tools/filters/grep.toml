@@ -1,0 +1,26 @@
+# Default command-output filter for grep / git grep.
+# Adapted from rtk's filter format (Apache-2.0) — see the repo NOTICE.
+# Override by dropping a file with the same filter `name` under
+# $XDG_CONFIG_HOME/enso/filters/.
+
+# grep: strip the colour escapes a `--color` alias emits, drop the
+# "Binary file ... matches" noise a recursive grep prints, and cap the match
+# count. A grep that returns hundreds of hits is a too-broad search; the cap
+# keeps the head and tail (with an elision marker) so the model still sees
+# the shape, and the full result is recoverable via the spill path.
+[[filter]]
+name = "grep"
+match_command = '\bgrep\b'
+strip_ansi = true
+strip_lines_matching = ['^Binary file .* matches$']
+max_lines = 100
+
+[[filter.tests]]
+name = "drops binary-match noise keeps text hits"
+input = '''
+src/main.go:10:TODO fix this
+Binary file build/app matches
+src/util.go:4:TODO later
+'''
+expect_contains = ["src/main.go:10:TODO fix this", "src/util.go:4:TODO later"]
+expect_not_contains = ["Binary file build/app matches"]
