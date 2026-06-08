@@ -311,6 +311,11 @@ type ChatRequest struct {
 	TopP            float64  `json:"top_p,omitempty"`
 	MinP            float64  `json:"min_p,omitempty"`
 	PresencePenalty float64  `json:"presence_penalty,omitempty"`
+	// FrequencyPenalty is OpenAI's repeat-discouragement knob;
+	// RepetitionPenalty maps to llama.cpp's repeat_penalty. Both omitted on
+	// the wire when zero so a server keeps its own default.
+	FrequencyPenalty  float64 `json:"frequency_penalty,omitempty"`
+	RepetitionPenalty float64 `json:"repetition_penalty,omitempty"`
 }
 
 // ToolDef is the JSON Schema definition sent to the model.
