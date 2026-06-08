@@ -61,6 +61,14 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Compaction cache-boundary invariant now regression-tested.** History
+  compaction rebuilds the message list wholesale, so a guard now asserts
+  the system-prompt prefix (the cache-hot zone upstream of every
+  conversation message) survives compaction byte-for-byte and the
+  synthetic summary is appended after it, never spliced inside —
+  compaction never busts more of the prompt prefix cache than intended.
+  Complements the existing prune-side shape and tool-definition
+  byte-stability guards.
 - Dependency bumps: `google.golang.org/genai`, `modernc.org/sqlite`,
   `github.com/anthropics/anthropic-sdk-go`, and the AWS SDK
   (`config`, `service/bedrockruntime`).
