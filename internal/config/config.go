@@ -856,9 +856,17 @@ type GenerationConfig struct {
 	// pathological prompt can't loop forever. Zero/unset = 2.
 	MaxRecoverAttempts int `toml:"max_recover_attempts"`
 
-	// LoopGuard toggles mid-stream repetition detection. nil/unset =
-	// enabled.
+	// LoopGuard toggles mid-stream repetition detection (both the verbatim-
+	// cycle and the reasoning-novelty checks). nil/unset = enabled.
 	LoopGuard *bool `toml:"loop_guard"`
+
+	// ReasoningBudget caps chain-of-thought runes a model may stream before
+	// it must start acting (answer text or a tool call); exceeding it aborts
+	// and recovers with a nudge to commit. Targets reasoning models that
+	// deliberate for minutes without deciding. Zero/unset disables it — the
+	// loop_guard novelty check is the primary defense; this is an opt-in
+	// hard backstop. A sane value is well below max_tokens, e.g. 8000.
+	ReasoningBudget int `toml:"reasoning_budget"`
 }
 
 // SamplerConfig holds generation parameters.
@@ -868,6 +876,13 @@ type SamplerConfig struct {
 	TopP            float64 `toml:"top_p"`
 	MinP            float64 `toml:"min_p"`
 	PresencePenalty float64 `toml:"presence_penalty"`
+	// FrequencyPenalty (OpenAI) and RepetitionPenalty (llama.cpp's
+	// repeat_penalty) both discourage re-emitting recent tokens. They are
+	// the most direct lever against deliberation loops in local reasoning
+	// models — suppressing the spiral at sampling time, before any guard
+	// has to abort. Zero = omitted on the wire (server default applies).
+	FrequencyPenalty  float64 `toml:"frequency_penalty"`
+	RepetitionPenalty float64 `toml:"repetition_penalty"`
 }
 
 // MCPConfig holds settings for an MCP server. `command` selects stdio
