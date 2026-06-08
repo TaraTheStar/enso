@@ -201,12 +201,13 @@ func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
 	switch cfg.Type {
 	case "", "openai":
 		return &OpenAIClient{
-			Endpoint:     cfg.Endpoint,
-			APIKey:       cfg.APIKey,
-			Model:        cfg.Model,
-			MaxTokens:    resolveMaxTokens(cfg),
-			StallTimeout: resolveStallTimeout(cfg.Generation),
-			LoopGuard:    boolOr(cfg.Generation.LoopGuard, true),
+			Endpoint:        cfg.Endpoint,
+			APIKey:          cfg.APIKey,
+			Model:           cfg.Model,
+			MaxTokens:       resolveMaxTokens(cfg),
+			StallTimeout:    resolveStallTimeout(cfg.Generation),
+			LoopGuard:       boolOr(cfg.Generation.LoopGuard, true),
+			ReasoningBudget: cfg.Generation.ReasoningBudget,
 		}, nil
 	case "bedrock":
 		return &BedrockClient{
