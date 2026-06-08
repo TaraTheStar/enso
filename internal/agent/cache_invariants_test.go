@@ -3,9 +3,15 @@
 package agent
 
 import (
+	"context"
+	"strings"
 	"testing"
 
+	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/enso/internal/permissions"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -99,5 +105,94 @@ func TestCacheInvariant_StaleStubbingPreservesShape(t *testing.T) {
 	// The system message must be index 0 and untouched.
 	if a.History[0].Role != "system" || a.History[0].Content != "sys" {
 		t.Fatalf("system message at index 0 was disturbed: %+v", a.History[0])
+	}
+}
+
+// Compaction is the other half of H2 and the riskier one: unlike pruning
+// (which only swaps a tool message's Content for a stub in place), it
+// REBUILDS History wholesale. The cache-hot zone — the system prompt
+// prefix that lives upstream of every conversation message — must come
+// through byte-for-byte, or the very first request after a compaction
+// re-pays the full system+tools cache write it had already amortised.
+// The frozen zone must also stay append-only: the synthetic summary is
+// inserted directly after the system prefix, never woven into it.
+func TestCacheInvariant_CompactionPreservesSystemPrefix(t *testing.T) {
+	mock := llmtest.NewT(t)
+	// summariseHistory makes exactly one Chat call; hand it a canned summary.
+	mock.Push(llmtest.Script{Text: "## Goal\nship the thing\n## Next Steps\nkeep going"})
+
+	// Small window so recentTurnBudget pins only the freshest turn(s),
+	// leaving older turns to actually compact. budget = window/4, floored
+	// at 2000; large per-turn content keeps that to ~one recent turn.
+	prov := &llm.Provider{
+		Name:          "test",
+		Client:        mock,
+		Model:         "fake",
+		ContextWindow: 8000,
+		Pool:          llm.NewPool(1),
+	}
+
+	// Distinctive system prompt — this is the cache-hot prefix under test.
+	sys := "SYSTEM PROMPT — tool defs + instructions — " + strings.Repeat("x", 64)
+	hist := []llm.Message{{Role: "system", Content: sys}}
+	big := strings.Repeat("alpha beta gamma delta ", 400) // ~9KB ≈ 2300 tokens/turn
+	for i := 0; i < 6; i++ {
+		n := itoaA(i)
+		hist = append(hist,
+			llm.Message{Role: "user", Content: "turn " + n + " " + big},
+			llm.Message{Role: "assistant", Content: "reply " + n + " " + big},
+		)
+	}
+
+	a, err := New(Config{
+		Providers:       map[string]*llm.Provider{"test": prov},
+		DefaultProvider: "test",
+		Bus:             bus.New(),
+		Registry:        tools.NewRegistry(),
+		Perms:           permissions.NewChecker(nil, nil, nil, "allow"),
+		Cwd:             t.TempDir(),
+		History:         hist,
+		MaxTurns:        4,
+	})
+	if err != nil {
+		t.Fatalf("new agent: %v", err)
+	}
+
+	systemIdx, _, _, ok := compactionBoundary(a.History, a.recentTurnBudget())
+	if !ok {
+		t.Fatalf("test setup: expected a compactable boundary (recentTurnBudget=%d, %d msgs)",
+			a.recentTurnBudget(), len(a.History))
+	}
+	prefixBefore := append([]llm.Message{}, a.History[:systemIdx+1]...)
+	lenBefore := len(a.History)
+
+	changed, err := a.forceCompact(context.Background(), "test")
+	if err != nil {
+		t.Fatalf("forceCompact: %v", err)
+	}
+	if !changed {
+		t.Fatal("forceCompact reported no change; expected a compaction")
+	}
+
+	// 1. The cache-hot prefix is byte-identical, role and content.
+	for i := range prefixBefore {
+		if a.History[i].Role != prefixBefore[i].Role || a.History[i].Content != prefixBefore[i].Content {
+			t.Errorf("cache-hot prefix mutated at index %d:\nbefore: %s / %q\nafter:  %s / %q",
+				i, prefixBefore[i].Role, prefixBefore[i].Content, a.History[i].Role, a.History[i].Content)
+		}
+	}
+
+	// 2. Append-only into the frozen zone: the synthetic summary sits
+	//    immediately after the system prefix, not spliced inside it.
+	synth := a.History[len(prefixBefore)]
+	if !synth.Synthetic || synth.Role != "assistant" {
+		t.Errorf("expected a synthetic assistant summary right after the system prefix, got role=%q synthetic=%v",
+			synth.Role, synth.Synthetic)
+	}
+
+	// 3. The compaction actually shrank History (sanity: we tested the
+	//    real path, not a no-op).
+	if len(a.History) >= lenBefore {
+		t.Errorf("compaction did not shrink history: before %d, after %d", lenBefore, len(a.History))
 	}
 }
