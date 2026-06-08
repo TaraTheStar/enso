@@ -104,6 +104,11 @@ const (
 	FinishLength     = "length"     // provider hit the max_tokens cap
 	FinishRepetition = "repetition" // loop guard tripped mid-stream
 	FinishStall      = "stall"      // no token for StallTimeout
+	// FinishReasoningBudget: the model streamed more reasoning
+	// (chain-of-thought) than ReasoningBudget without starting to act —
+	// no answer text and no tool call. Aborted so the agent can nudge it
+	// to commit instead of deliberating toward the max_tokens cap.
+	FinishReasoningBudget = "reasoning_budget"
 )
 
 // ChatClient is the streaming-chat interface the agent and compaction
@@ -137,6 +142,15 @@ type OpenAIClient struct {
 	// aborted with FinishRepetition so the agent can recover before the
 	// max_tokens cap is even reached.
 	LoopGuard bool
+
+	// ReasoningBudget caps how many reasoning (chain-of-thought) runes a
+	// model may stream before it starts acting — emitting answer text or a
+	// tool call. Exceeding it aborts the stream with FinishReasoningBudget
+	// so the agent can nudge the model to commit. Targets the local-model
+	// failure mode where a reasoning model deliberates for minutes without
+	// deciding. Zero disables it (the default); the novelty loop guard is
+	// the primary defense and this is an opt-in hard backstop.
+	ReasoningBudget int
 
 	// HTTPClient is the transport used for both /chat/completions and
 	// the recovery probe. nil means http.DefaultClient — production
@@ -351,6 +365,13 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		// silence genuinely means hung. Rate-independent: keys off
 		// inter-token silence, not throughput.
 		started := false
+
+		// reasoningRunes counts chain-of-thought emitted before the model
+		// starts acting; acting flips true on the first content or tool-call
+		// delta, after which the budget no longer applies (the thinking
+		// phase is over and a long answer is legitimate).
+		reasoningRunes := 0
+		acting := false
 	stream:
 		for {
 			var raw []byte
@@ -386,12 +407,22 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 				delta := ch.Delta
 				if delta.ReasoningContent != "" {
 					eventCh <- Event{Type: EventReasoningDelta, Text: delta.ReasoningContent}
-					if detector != nil && detector.add(delta.ReasoningContent) {
+					if detector != nil && detector.addReasoning(delta.ReasoningContent) {
 						abort(FinishRepetition)
 						break stream
 					}
+					if c.ReasoningBudget > 0 && !acting {
+						for range delta.ReasoningContent {
+							reasoningRunes++
+						}
+						if reasoningRunes > c.ReasoningBudget {
+							abort(FinishReasoningBudget)
+							break stream
+						}
+					}
 				}
 				if delta.Content != "" {
+					acting = true
 					eventCh <- Event{Type: EventTextDelta, Text: delta.Content}
 					if detector != nil && detector.add(delta.Content) {
 						abort(FinishRepetition)
@@ -399,6 +430,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 					}
 				}
 				if len(delta.ToolCalls) > 0 {
+					acting = true
 					if err := acc.Merge(delta); err != nil {
 						eventCh <- Event{Type: EventError, Error: fmt.Errorf("merge tool call: %w", err)}
 						return

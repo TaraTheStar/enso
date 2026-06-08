@@ -446,8 +446,10 @@ func (a *Agent) summariseHistory(ctx context.Context, older []llm.Message, seed 
 			{Role: "system", Content: sys},
 			{Role: "user", Content: user},
 		},
-		Temperature: p.Sampler.Temperature,
-		TopP:        p.Sampler.TopP,
+		Temperature:       p.Sampler.Temperature,
+		TopP:              p.Sampler.TopP,
+		FrequencyPenalty:  p.Sampler.FrequencyPenalty,
+		RepetitionPenalty: p.Sampler.RepetitionPenalty,
 	}
 
 	events, err := p.Client.Chat(ctx, req)

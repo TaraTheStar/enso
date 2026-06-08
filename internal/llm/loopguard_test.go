@@ -3,6 +3,7 @@
 package llm
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -77,6 +78,70 @@ func TestRepetitionDetector_IgnoresStructuredCode(t *testing.T) {
 	d := newRepetitionDetector()
 	if feed(d, code) {
 		t.Fatal("detector tripped on legitimate struct-field block")
+	}
+}
+
+// feedReasoning streams s through the reasoning channel in token-sized
+// chunks and reports whether the detector tripped (cyclic OR novelty).
+func feedReasoning(d *repetitionDetector, s string) bool {
+	const chunk = 7
+	for i := 0; i < len(s); i += chunk {
+		end := i + chunk
+		if end > len(s) {
+			end = len(s)
+		}
+		if d.addReasoning(s[i:end]) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestNoveltyDetector_TripsOnRetreadDeliberation(t *testing.T) {
+	// A reasoning model re-stating the same plan over and over. A unique
+	// "(pass N)" suffix per iteration breaks perfect cyclicity, so the
+	// verbatim cyclic check misses it — the novelty check must catch the
+	// re-tread phrasing instead.
+	block := "Let me reconsider the approach for the handler. The function parses the request, validates the token, and writes the response. I believe this is correct, but I should review it once more before committing. "
+	var b strings.Builder
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&b, "%s(pass %d) ", block, i)
+	}
+	d := newRepetitionDetector()
+	if !feedReasoning(d, b.String()) {
+		t.Fatal("expected novelty detector to trip on re-tread deliberation")
+	}
+}
+
+func TestNoveltyDetector_IgnoresLongVariedReasoning(t *testing.T) {
+	// Genuinely progressing reasoning: every sentence carries fresh
+	// content (distinct identifiers/numbers), so distinct shingles stay
+	// high and the guard must not trip even across a long window.
+	verbs := []string{"parse", "validate", "render", "encode", "compare", "merge", "filter", "expand"}
+	nouns := []string{"header", "payload", "cursor", "manifest", "checksum", "boundary", "registry", "socket"}
+	var b strings.Builder
+	for i := 0; i < 300; i++ {
+		fmt.Fprintf(&b, "At step %d we %s the %s #%d, yielding result %d for branch %d. ",
+			i, verbs[i%len(verbs)], nouns[(i*5)%len(nouns)], i*7919%100000, i*31+i%13, i*3+1)
+	}
+	d := newRepetitionDetector()
+	if feedReasoning(d, b.String()) {
+		t.Fatal("novelty detector tripped on long, genuinely varied reasoning")
+	}
+}
+
+func TestNoveltyDetector_IgnoresShortReasoning(t *testing.T) {
+	// Below ntWindowRunes of reasoning the novelty check must never trip —
+	// short deliberation is normal. Use re-tread phrasing with a varying
+	// suffix (non-cyclic, so the verbatim check stays out of it) kept under
+	// a full window, isolating the window gate.
+	var b strings.Builder
+	for i := 0; i < 6; i++ {
+		fmt.Fprintf(&b, "Let me reconsider this once more before deciding. (pass %d) ", i)
+	}
+	d := newRepetitionDetector()
+	if feedReasoning(d, b.String()) {
+		t.Fatal("novelty detector tripped before a full window accumulated")
 	}
 }
 

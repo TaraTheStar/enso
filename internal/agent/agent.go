@@ -1133,13 +1133,15 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		}
 
 		req := llm.ChatRequest{
-			Messages:        a.History,
-			Tools:           registry.ToolDefs(),
-			Temperature:     p.Sampler.Temperature,
-			TopK:            p.Sampler.TopK,
-			TopP:            p.Sampler.TopP,
-			MinP:            p.Sampler.MinP,
-			PresencePenalty: p.Sampler.PresencePenalty,
+			Messages:          a.History,
+			Tools:             registry.ToolDefs(),
+			Temperature:       p.Sampler.Temperature,
+			TopK:              p.Sampler.TopK,
+			TopP:              p.Sampler.TopP,
+			MinP:              p.Sampler.MinP,
+			PresencePenalty:   p.Sampler.PresencePenalty,
+			FrequencyPenalty:  p.Sampler.FrequencyPenalty,
+			RepetitionPenalty: p.Sampler.RepetitionPenalty,
 		}
 
 		// D2: log a per-turn prefix-size breakdown so the user (and
@@ -1317,9 +1319,9 @@ func (a *Agent) maybeRecover(p *llm.Provider, finishReason, content string, asst
 		return false, false, nil
 	}
 	switch finishReason {
-	case llm.FinishRepetition, llm.FinishStall:
-		// Degenerate or hung output: discard the partial (it would poison
-		// context) and retry with a corrective nudge.
+	case llm.FinishRepetition, llm.FinishStall, llm.FinishReasoningBudget:
+		// Degenerate, hung, or over-deliberating output: discard the partial
+		// (it would poison context) and retry with a corrective nudge.
 		if a.recoverAttempts >= p.MaxRecoverAttempts {
 			a.recoverAttempts = 0
 			a.Bus.Publish(bus.Event{
@@ -1370,17 +1372,25 @@ const recoveryContinueNudge = "Your previous response was cut off at the output 
 // recoveryNudge is the corrective injected before retrying a degenerate or
 // stalled turn.
 func recoveryNudge(finishReason string) string {
-	if finishReason == llm.FinishStall {
+	switch finishReason {
+	case llm.FinishStall:
 		return "Your previous response stalled and was stopped before completing. Please answer the request directly and concisely."
+	case llm.FinishReasoningBudget:
+		return "Your previous response spent too long thinking without producing an answer or taking an action, and was stopped. Stop deliberating now: commit to the next concrete step — emit your answer or the tool call — without further planning or review."
+	default:
+		return "Your previous response began repeating itself and was stopped. Stop repeating, take a different approach, and answer concisely."
 	}
-	return "Your previous response began repeating itself and was stopped. Stop repeating, take a different approach, and answer concisely."
 }
 
 func recoverWord(finishReason string) string {
-	if finishReason == llm.FinishStall {
+	switch finishReason {
+	case llm.FinishStall:
 		return "stalling"
+	case llm.FinishReasoningBudget:
+		return "over-thinking"
+	default:
+		return "repeating"
 	}
-	return "repeating"
 }
 
 // appendUserMessage appends a user-role message and bumps the
