@@ -37,7 +37,10 @@ func (a *Agent) addAssistant(content string) {
 }
 
 // addTool runs through appendToolMessage so tests cover the actual
-// production code path (dedup + invalidation + stubbing).
+// production append path. appendToolMessage is now append-only (it records
+// metadata but never stubs); stubbing is exercised by calling the reclaim
+// passes (reclaimToolOutputs / pruneStaleToolMessages) explicitly, which is
+// what MaybeCompact does at a reclaim boundary.
 func (a *Agent) addTool(name, callID, content string, meta tools.ResultMeta) {
 	a.appendToolMessage(llm.Message{
 		Role:       "tool",
@@ -95,8 +98,9 @@ func TestPrune_StaleStubbingByPerToolThreshold(t *testing.T) {
 	}
 }
 
-// A3: dedup by cache key — second tool result with same key stubs
-// the first, regardless of retention threshold.
+// A3: dedup by cache key — at the next reclaim, the older result with
+// a cache key shared by a newer result is stubbed, regardless of the
+// retention threshold; the newest is kept verbatim.
 func TestPrune_DedupByCacheKey(t *testing.T) {
 	ag := newPruneAgent(config.ContextPruneConfig{StaleAfter: 100}) // disable stale-stubbing for this test
 
@@ -108,6 +112,12 @@ func TestPrune_DedupByCacheKey(t *testing.T) {
 	ag.addTool("read", "r2", "second read content (same key)",
 		tools.ResultMeta{PathsRead: []string{"/abs/x.go"}, CacheKey: "read:/abs/x.go:1-100"})
 
+	// Append-only until the reclaim boundary: nothing is stubbed yet.
+	if isStub(findToolByID(ag.History, "r1").Content) {
+		t.Errorf("dedup must not fire on append; r1 should still be verbatim before reclaim")
+	}
+	ag.reclaimToolOutputs()
+
 	first := findToolByID(ag.History, "r1")
 	if !isStub(first.Content) {
 		t.Errorf("first read should have been stubbed by dedup: %q", first.Content)
@@ -118,8 +128,8 @@ func TestPrune_DedupByCacheKey(t *testing.T) {
 	}
 }
 
-// A4: a write/edit that reports PathsWritten triggers stubbing of
-// any earlier read of the same path.
+// A4: a write/edit that reports PathsWritten triggers stubbing of any
+// earlier read of the same path — at the next reclaim, not on append.
 func TestPrune_PostEditInvalidatesReads(t *testing.T) {
 	ag := newPruneAgent(config.ContextPruneConfig{StaleAfter: 100}) // disable stale-stubbing
 
@@ -131,9 +141,20 @@ func TestPrune_PostEditInvalidatesReads(t *testing.T) {
 	ag.addTool("edit", "e1", "edited foo.go (1 replacement)",
 		tools.ResultMeta{PathsWritten: []string{"/abs/foo.go"}, CacheKey: "edit:/abs/foo.go"})
 
+	// Append-only until the reclaim boundary: the stale read is still
+	// verbatim immediately after the edit.
+	if isStub(findToolByID(ag.History, "r1").Content) {
+		t.Errorf("read should not be stubbed on append; only at reclaim")
+	}
+	ag.reclaimToolOutputs()
+
 	r := findToolByID(ag.History, "r1")
 	if !isStub(r.Content) {
 		t.Errorf("read of foo.go should have been stubbed after edit: %q", r.Content)
+	}
+	// The edit itself (the freshest write) stays verbatim.
+	if isStub(findToolByID(ag.History, "e1").Content) {
+		t.Errorf("the edit result should not be stubbed: %q", findToolByID(ag.History, "e1").Content)
 	}
 }
 
