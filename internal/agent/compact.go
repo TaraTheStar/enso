@@ -142,7 +142,7 @@ The conversation excerpt is enclosed below between the fence tags <conversation-
 Produce a structured Markdown summary using EXACTLY these seven headers, in this order, with no preamble and no other top-level headers:
 
 ## Goal
-The current user-facing objective. One or two sentences.
+The CURRENT user-facing objective, in one or two sentences. If the excerpt shows the prior goal was completed and no new objective has been stated, write "Completed: <what was finished> — awaiting next user instruction." Never restate a finished goal as if it were still open.
 
 ## Constraints & Preferences
 Standing rules from the user (style choices, libraries to use or avoid, deadlines, do/don't lists). Bulleted.
@@ -157,7 +157,7 @@ Three subsections, bulleted, omitting empty subsections:
 Decisions made and rationale. Quote the user's exact words when the decision was theirs. Bulleted.
 
 ## Next Steps
-Concrete actions to resume the work. Ordered list.
+Only OUTSTANDING concrete actions, as an ordered list. If the work is complete, write exactly "None — awaiting user instruction." Never list an action the excerpt already shows accomplished.
 
 ## Critical Context
 Facts that won't survive in code/git but matter for continuing: hidden invariants, gotchas, prior failed approaches, incident references, non-obvious tradeoffs.
@@ -193,6 +193,8 @@ Produce an UPDATED summary using EXACTLY the same seven headers, in this order, 
 Rules:
 - Preserve any line from the prior summary that is still accurate.
 - Move items from "In Progress" → "Done" when NEW EVENTS confirm completion.
+- Retire a Goal or Next Step once NEW EVENTS show it accomplished — record the fact under "### Done" and remove it from "## Goal" / "## Next Steps". Never leave a completed objective under "## Goal" or a completed action under "## Next Steps"; that makes the model redo finished work.
+- If NEW EVENTS show the prior goal completed and no new objective has been stated, set "## Goal" to "Completed: <X> — awaiting next user instruction." and "## Next Steps" to "None — awaiting user instruction."
 - Add new entries surfaced by NEW EVENTS.
 - Drop items the user has explicitly abandoned (look for direct user statements in NEW EVENTS).
 - Do NOT summarise the summary; keep useful detail.
@@ -222,10 +224,40 @@ func (a *Agent) MaybeCompact(ctx context.Context) (bool, error) {
 	if p == nil || window <= 0 {
 		return false, nil
 	}
+	budget := a.inputBudget(p, window)
 	used := a.estimateTokens()
-	if used < a.inputBudget(p, window) {
+	if used < budget {
 		return false, nil
 	}
+
+	// Tier 1 — cheap, no-LLM reclaim. Stub stale/duplicate/superseded
+	// tool outputs in one batched pass. This is the only point between
+	// summary compactions where already-sent messages are rewritten, so
+	// the prefix KV cache survives every normal turn and the reclaim
+	// costs a single invalidation here. estimateTokens is anchored to the
+	// last provider-reported usage (which still describes the un-stubbed
+	// prompt), so measure the saving directly from the heuristic delta and
+	// subtract it: if that drops us back under budget, skip the expensive
+	// LLM summary entirely.
+	if estBefore := llm.Estimate(a.History); a.reclaimToolOutputs() > 0 {
+		saved := estBefore - llm.Estimate(a.History)
+		if used-saved < budget {
+			if a.Bus != nil {
+				a.Bus.Publish(bus.Event{
+					Type: bus.EventCompacted,
+					Payload: map[string]any{
+						"reason":        "reclaim",
+						"summary":       "",
+						"before_tokens": used,
+						"after_tokens":  used - saved,
+					},
+				})
+			}
+			return true, nil
+		}
+	}
+
+	// Tier 2 — still over budget: summarise the older block.
 	return a.forceCompact(ctx, "auto")
 }
 
@@ -282,6 +314,30 @@ func (a *Agent) CompactPreview() CompactPreviewResult {
 	}
 }
 
+// completionAnchor returns a summariser seed when the summarisable block
+// ends on a finished exchange — an assistant answer carrying text and no
+// pending tool calls. That shape means the preceding user request was
+// resolved before compaction, so we tell the summariser to treat it as
+// done rather than an open thread. Returns "" when the block ends mid-work
+// (trailing tool results with no answer, a dangling assistant tool-call, or
+// an unanswered user message), where asserting completion would be wrong.
+func completionAnchor(summarisable []llm.Message) string {
+	for i := len(summarisable) - 1; i >= 0; i-- {
+		switch m := summarisable[i]; m.Role {
+		case "assistant":
+			if len(m.ToolCalls) == 0 && strings.TrimSpace(m.Content) != "" {
+				return "the preceding user request has been completed and answered — treat it as finished work, not an open task"
+			}
+			return ""
+		case "tool", "user":
+			// Work still in flight (tool results awaiting an answer) or an
+			// unanswered user turn — no completion to anchor on.
+			return ""
+		}
+	}
+	return ""
+}
+
 func (a *Agent) forceCompact(ctx context.Context, reason string) (bool, error) {
 	return a.forceCompactWithSeed(ctx, reason, "")
 }
@@ -320,6 +376,15 @@ func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (
 
 	if len(summarisable) == 0 && len(pinnedOlder) == 0 {
 		return false, nil
+	}
+
+	// Auto/overflow compactions carry no user-supplied seed. Without one the
+	// summariser gets no signal that the trailing request was already
+	// resolved and tends to resurface it as a live Goal/Next Step — the
+	// compaction-loop failure mode where the model redoes finished work. If
+	// the block ends on a completed exchange, anchor the recap on that.
+	if seed == "" {
+		seed = completionAnchor(summarisable)
 	}
 
 	beforeTokens := llm.Estimate(a.History)

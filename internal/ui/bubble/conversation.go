@@ -370,7 +370,7 @@ func compactionTokens(payload any) (before, after int) {
 	if !ok {
 		return 0, 0
 	}
-	return tokenField(d["before"]), tokenField(d["after"])
+	return tokenField(d["before_tokens"]), tokenField(d["after_tokens"])
 }
 
 func tokenField(v any) int {

@@ -96,9 +96,11 @@ func TestCacheInvariant_StaleStubbingPreservesShape(t *testing.T) {
 		StaleAfter:    1,
 		ToolRetention: map[string]int{"bash": 1, "read": 1},
 	})
-	buildTurns(a) // appendToolMessage already ran pruneStaleToolMessages
+	buildTurns(a) // append-only: no stubbing happens during the appends
 	before := shapeOf(a)
-	// Run it again explicitly — must be idempotent and shape-preserving.
+	// The reclaim pass stubs content but must preserve shape; running it
+	// twice must be idempotent and shape-preserving.
+	a.pruneStaleToolMessages()
 	a.pruneStaleToolMessages()
 	assertSameShape(t, before, shapeOf(a))
 
