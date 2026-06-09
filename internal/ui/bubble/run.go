@@ -542,6 +542,12 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		// truncated history. Never returns on success (syscall.Exec).
 		return performRewind(*m.pendingRewind, store, sessionID, cwd)
 	}
+	if m.pendingNew {
+		// /new: re-exec with session-selecting flags stripped so the new
+		// process mints a fresh session. Done after teardown so the old
+		// worker is fully wound down first.
+		return execIntoNewSession()
+	}
 	if m.pendingSwitch != "" {
 		return execIntoSession(m.pendingSwitch)
 	}

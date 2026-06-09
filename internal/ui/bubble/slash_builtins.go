@@ -44,6 +44,7 @@ func registerBuiltins(reg *slash.Registry, sc *slashCtx) {
 	reg.Register(&modelCmd{sc: sc})
 	reg.Register(&infoCmd{sc: sc})
 	reg.Register(&sessionsCmd{sc: sc})
+	reg.Register(&newCmd{sc: sc})
 	reg.Register(&agentsCmd{sc: sc})
 	reg.Register(&renameCmd{sc: sc})
 	reg.Register(&exportCmd{sc: sc})
@@ -752,6 +753,25 @@ func (c *forkCmd) Run(ctx context.Context, args string) error {
 		return fmt.Errorf("fork: %w", err)
 	}
 	c.sc.printf("fork: new session %s — resume with `enso --session %s`", newID, newID)
+	return nil
+}
+
+// /new
+
+type newCmd struct{ sc *slashCtx }
+
+func (c *newCmd) Name() string { return "new" }
+func (c *newCmd) Description() string {
+	return "start a fresh conversation in a new session"
+}
+func (c *newCmd) Run(ctx context.Context, args string) error {
+	// The handler can't mutate the model directly; it flags the model,
+	// which quits after dispatch so run.go re-execs into a fresh session
+	// (mirrors how the model reads sc.quit / sc.openRewind). The new
+	// process mints its own session id at startup, so there's nothing to
+	// create here — and this works under --ephemeral too (a fresh
+	// throwaway conversation).
+	c.sc.pendingNew = true
 	return nil
 }
 

@@ -136,6 +136,10 @@ type model struct {
 	sessionsOpen  bool
 	pendingSwitch string
 
+	// pendingNew, set when the /new command fires, tells run.go to
+	// re-exec into a fresh session (no --session) after p.Run() returns.
+	pendingNew bool
+
 	// palette is the `/`-trigger slash-command palette (U2). Same
 	// alt-screen pattern as picker / sessions; opens when `/` is typed
 	// on an empty input line and reads the live command registry.
@@ -582,6 +586,15 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					m.rewind.load()
 					m.rewindOpen = true
 				}
+			}
+			// /new signals a fresh-session relaunch. Quit so run.go can
+			// re-exec after teardown (same exit path as a session switch;
+			// alt-screen is left declaratively via m.quitting).
+			if m.slashCtx.pendingNew {
+				m.slashCtx.pendingNew = false
+				m.pendingNew = true
+				m.quitting = true
+				return m, tea.Quit
 			}
 			return m, cmd
 		}

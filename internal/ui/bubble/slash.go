@@ -76,6 +76,10 @@ type slashCtx struct {
 	// the rewind overlay after dispatch returns (a handler can't mutate
 	// the model directly). Read + cleared in the enter handler.
 	openRewind bool
+	// pendingNew, when set by the /new handler, tells the model to quit so
+	// run.go can re-exec into a fresh session (same handler-flag pattern as
+	// quit / openRewind). Read + cleared in the enter handler.
+	pendingNew bool
 }
 
 // printf appends formatted output that the dispatcher will surface as a

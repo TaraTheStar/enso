@@ -56,3 +56,40 @@ func TestBuildSwitchArgs(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildNewSessionArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		orig []string
+		want []string
+	}{
+		{
+			name: "no session flags: unchanged",
+			orig: []string{"/bin/enso", "tui"},
+			want: []string{"/bin/enso", "tui"},
+		},
+		{
+			name: "strips `--session foo` form, appends nothing",
+			orig: []string{"/bin/enso", "tui", "--session", "foo"},
+			want: []string{"/bin/enso", "tui"},
+		},
+		{
+			name: "strips `--session=foo`, preserves other flags",
+			orig: []string{"/bin/enso", "tui", "--session=foo", "--yolo"},
+			want: []string{"/bin/enso", "tui", "--yolo"},
+		},
+		{
+			name: "drops --continue and --resume, keeps --ephemeral",
+			orig: []string{"/bin/enso", "--ephemeral", "--continue", "--resume", "x"},
+			want: []string{"/bin/enso", "--ephemeral"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildNewSessionArgs(tc.orig)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got  %v\nwant %v", got, tc.want)
+			}
+		})
+	}
+}

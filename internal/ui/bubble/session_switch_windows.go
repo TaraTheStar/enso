@@ -13,3 +13,9 @@ import "errors"
 func execIntoSession(sessionID string) error {
 	return errors.New("session switch not supported on Windows; relaunch with --session " + sessionID)
 }
+
+// execIntoNewSession likewise has no Windows implementation — syscall.Exec
+// doesn't exist there. /new asks the user to relaunch manually.
+func execIntoNewSession() error {
+	return errors.New("starting a new session in-place is not supported on Windows; relaunch enso")
+}
