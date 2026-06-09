@@ -125,6 +125,74 @@ func TestTailTurnsForBudget_RespectsBudget(t *testing.T) {
 	}
 }
 
+// TestSummaryTemplatesRetireCompletedWork pins the "retire when done"
+// guidance in both summary templates. Without it, a solved goal lingers
+// under ## Goal / ## Next Steps and the model redoes finished work — the
+// compaction-loop regression this guards.
+func TestSummaryTemplatesRetireCompletedWork(t *testing.T) {
+	// Fresh template (no prior summary).
+	freshSys, _, _ := buildSummariseRequest([]llm.Message{u("hi"), a("done")}, "")
+	if !strings.Contains(freshSys, "awaiting next user instruction") {
+		t.Errorf("fresh ## Goal lacks completed-goal retirement guidance:\n%s", freshSys)
+	}
+	if !strings.Contains(freshSys, "None — awaiting user instruction") {
+		t.Errorf("fresh ## Next Steps lacks empty-when-done guidance:\n%s", freshSys)
+	}
+
+	// Update template (leading Synthetic prior summary).
+	older := []llm.Message{
+		{Role: "assistant", Synthetic: true, Content: "[compacted summary of earlier conversation]\n\n## Goal\nfix X"},
+		u("now do Y"), a("did Y"),
+	}
+	updateSys, _, _ := buildSummariseRequest(older, "")
+	if !strings.Contains(updateSys, "Retire a Goal or Next Step") {
+		t.Errorf("update template missing retire-when-done rule:\n%s", updateSys)
+	}
+}
+
+// TestCompletionAnchor covers the seed derived for seedless (auto/overflow)
+// compactions: a completed exchange yields an anchor; anything mid-work
+// yields "" so we never falsely assert completion.
+func TestCompletionAnchor(t *testing.T) {
+	const wantSub = "finished work, not an open task"
+
+	cases := []struct {
+		name        string
+		block       []llm.Message
+		wantNonZero bool
+	}{
+		{"completed answer", []llm.Message{u("fix X"), aWithCalls("", "c1"), toolReply("c1", "ok"), a("fixed X")}, true},
+		{"trailing tool result", []llm.Message{u("fix X"), aWithCalls("", "c1"), toolReply("c1", "ok")}, false},
+		{"dangling assistant tool-call", []llm.Message{u("fix X"), aWithCalls("working", "c1")}, false},
+		{"unanswered user turn", []llm.Message{a("done"), u("fix X")}, false},
+		{"empty assistant answer", []llm.Message{u("fix X"), a("   ")}, false},
+		{"empty block", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := completionAnchor(tc.block)
+			if tc.wantNonZero {
+				if !strings.Contains(got, wantSub) {
+					t.Errorf("want anchor containing %q, got %q", wantSub, got)
+				}
+			} else if got != "" {
+				t.Errorf("want empty anchor for mid-work block, got %q", got)
+			}
+		})
+	}
+}
+
+// TestBuildSummariseRequest_SeedRendered confirms a non-empty seed (e.g.
+// the completion anchor) reaches the summariser's user payload so the
+// recap is framed around the finished boundary.
+func TestBuildSummariseRequest_SeedRendered(t *testing.T) {
+	_, user, _ := buildSummariseRequest([]llm.Message{u("hi"), a("done")},
+		"the preceding user request has been completed and answered")
+	if !strings.Contains(user, "the preceding user request has been completed and answered") {
+		t.Errorf("seed anchor not rendered into summariser payload:\n%s", user)
+	}
+}
+
 // TestTailTurnsForBudget_LargeContentFewTurns verifies the budget
 // pulls back the turn count when individual messages are large. This
 // is the key win over the fixed `recentTurnsToPin = 6`: a session that

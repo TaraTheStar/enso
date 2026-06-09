@@ -174,6 +174,18 @@ func egressBrokerOpts(eg config.EgressConfig, yolo, interactive bool, setProxy f
 			if yolo {
 				pr.AllowAll()
 			}
+			// Seed the proxy allowlist with the statically-configured
+			// entries up front. Without this they only reach p.allowed
+			// lazily on a broker grant — which --yolo bypasses (AllowAll
+			// short-circuits the gate), so a configured host that resolves
+			// to a private address (e.g. a LAN-hosted SearXNG) would still
+			// be refused by the SSRF denylist, since that exemption keys off
+			// the EXPLICIT allowlist, not AllowAll. Seeding here means an
+			// operator who named a host gets the documented loopback/LAN
+			// opt-out regardless of yolo/interactive.
+			for _, e := range eg.Allow {
+				pr.Allow(e)
+			}
 			static.Proxy = pr
 			setProxy(pr.ProxyURL()) // box's only route out
 		}

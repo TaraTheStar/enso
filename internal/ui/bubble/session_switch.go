@@ -29,6 +29,23 @@ func execIntoSession(sessionID string) error {
 	return nil // unreachable
 }
 
+// execIntoNewSession replaces the running process with the same binary,
+// stripping any session-selecting flags (--session / --resume /
+// --continue) so the new process mints a FRESH session at startup. All
+// other args (e.g. --ephemeral, --agent) are preserved. Backs the /new
+// command. Never returns on success — syscall.Exec replaces the image.
+func execIntoNewSession() error {
+	args := buildNewSessionArgs(os.Args)
+	bin, err := resolveSelfPath(os.Args[0])
+	if err != nil {
+		return fmt.Errorf("resolve self path: %w", err)
+	}
+	if err := syscall.Exec(bin, args, os.Environ()); err != nil {
+		return fmt.Errorf("exec %s: %w", bin, err)
+	}
+	return nil // unreachable
+}
+
 // resolveSelfPath returns an absolute path to the currently-running
 // binary suitable for syscall.Exec, which (unlike the shell) does not
 // consult PATH. os.Executable is preferred because it reflects the
@@ -72,5 +89,32 @@ func buildSwitchArgs(orig []string, sessionID string) []string {
 		out = append(out, a)
 	}
 	out = append(out, "--session", sessionID)
+	return out
+}
+
+// buildNewSessionArgs returns argv for the /new re-exec: original args
+// with `--session ...` / `--session=...` / `--continue` / `--resume ...`
+// / `--resume=...` removed and nothing appended, so the relaunched
+// process starts a brand-new session. Exposed for testing.
+func buildNewSessionArgs(orig []string) []string {
+	out := make([]string, 0, len(orig))
+	out = append(out, orig[0])
+	skipNext := false
+	for _, a := range orig[1:] {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		switch {
+		case a == "--session", a == "--resume":
+			skipNext = true
+			continue
+		case a == "--continue":
+			continue
+		case strings.HasPrefix(a, "--session="), strings.HasPrefix(a, "--resume="):
+			continue
+		}
+		out = append(out, a)
+	}
 	return out
 }

@@ -19,8 +19,10 @@ package egress
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -29,6 +31,18 @@ import (
 
 	"github.com/TaraTheStar/enso/internal/netsec"
 )
+
+// tunnelIdleTimeout caps how long a CONNECT tunnel may sit with NO bytes
+// flowing in either direction before the proxy tears it down. Active
+// transfers refresh the deadline on every read, so healthy downloads and
+// streams are unaffected; the bound exists so a tunnel whose endpoints
+// both go idle WITHOUT a clean close (idle keep-alive the client never
+// reaps) can't block its two relay goroutines on Read forever and leak
+// their two fds for the proxy's whole lifetime. Enough leaked tunnels
+// exhaust the process fd limit, after which every later safeDial fails
+// with "too many open files" — i.e. the proxy starts 502ing everything
+// and never recovers. Generous enough that real tool egress never trips it.
+const tunnelIdleTimeout = 5 * time.Minute
 
 // Proxy is an HTTP/HTTPS forward proxy that only connects to allowed
 // host:port targets. HTTPS flows through CONNECT (the proxy never sees
@@ -161,7 +175,15 @@ func (p *Proxy) Start() error {
 	p.ln = ln
 	p.tr = http.DefaultTransport.(*http.Transport).Clone()
 	p.tr.DialContext = p.safeDial // pin resolved IPs; refuse denied classes
-	p.srv = &http.Server{Handler: http.HandlerFunc(p.handle)}
+	p.srv = &http.Server{
+		Handler: http.HandlerFunc(p.handle),
+		// Bound a client that opens a connection and dawdles before
+		// sending a full request/CONNECT line, so a stuck or slow-loris
+		// client can't pin a handler goroutine + fd indefinitely. Only
+		// the header read is bounded; CONNECT tunnels manage their own
+		// deadline (tunnelIdleTimeout) after hijack.
+		ReadHeaderTimeout: 30 * time.Second,
+	}
 	go func() { _ = p.srv.Serve(ln) }()
 	return nil
 }
@@ -255,13 +277,22 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "egress denied: "+target+" not on the task allowlist", http.StatusForbidden)
 		return
 	}
+	// Strip hop-by-hop headers before forwarding: passing the client's
+	// Connection/Keep-Alive/Transfer-Encoding through to the upstream (and
+	// the upstream's back to the client) desyncs keep-alive framing on a
+	// REUSED client connection — the first request succeeds, then the next
+	// response misaligns, the client waits and cancels, and RoundTrip
+	// surfaces it as "context canceled". Let net/http frame each hop.
+	stripHopByHop(r.Header)
 	r.RequestURI = ""
 	resp, err := p.tr.RoundTrip(r)
 	if err != nil {
+		p.logUpstreamErr("HTTP", target, r.Context(), err)
 		http.Error(w, "egress: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
+	stripHopByHop(resp.Header)
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
@@ -269,6 +300,43 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+// hopByHopHeaders are connection-scoped headers a forwarding proxy must
+// not pass through (RFC 7230 §6.1 plus the conventional proxy set).
+var hopByHopHeaders = []string{
+	"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate",
+	"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
+}
+
+// stripHopByHop deletes hop-by-hop headers, including any names the
+// Connection header itself lists (RFC 7230 §6.1), so neither direction's
+// framing/keep-alive directives leak across the proxy hop.
+func stripHopByHop(h http.Header) {
+	for _, c := range h["Connection"] {
+		for _, f := range strings.Split(c, ",") {
+			if f = strings.TrimSpace(f); f != "" {
+				h.Del(f)
+			}
+		}
+	}
+	for _, k := range hopByHopHeaders {
+		h.Del(k)
+	}
+}
+
+// logUpstreamErr records a forwarding failure, distinguishing a real
+// gateway failure (upstream unreachable → a genuine 502 worth a WARN) from
+// the client having closed the request before the upstream answered
+// (context canceled → not our fault, logged at debug so it stops masquerading
+// as a 502 in the logs).
+func (p *Proxy) logUpstreamErr(method, target string, ctx context.Context, err error) {
+	if errors.Is(err, context.Canceled) || ctx.Err() != nil {
+		slog.Debug("egress: client closed request before upstream responded",
+			"method", method, "target", target)
+		return
+	}
+	slog.Warn("egress proxy 502", "method", method, "target", target, "err", err)
 }
 
 func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
@@ -279,6 +347,7 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 	dst, err := p.safeDial(r.Context(), "tcp", target)
 	if err != nil {
+		p.logUpstreamErr("CONNECT", target, r.Context(), err)
 		http.Error(w, "egress: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -294,6 +363,35 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = src.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-	go func() { _, _ = io.Copy(dst, src); _ = dst.Close() }()
-	go func() { _, _ = io.Copy(src, dst); _ = src.Close() }()
+	// Relay both directions. Closing BOTH conns the instant EITHER
+	// direction ends unblocks the other goroutine's Read immediately, so
+	// the tunnel always releases its two fds — relying on the cascade to
+	// propagate on its own leaves a truly-idle tunnel (neither side ever
+	// sending EOF) blocked on Read forever, leaking fds until the proxy
+	// 502s everything. tunnelPipe also bounds idle time as a backstop.
+	var once sync.Once
+	closeBoth := func() { once.Do(func() { _ = dst.Close(); _ = src.Close() }) }
+	go func() { tunnelPipe(dst, src); closeBoth() }()
+	go func() { tunnelPipe(src, dst); closeBoth() }()
+}
+
+// tunnelPipe copies src→dst, refreshing src's read deadline before every
+// read so an ACTIVE tunnel is never bounded while an IDLE one is torn down
+// after tunnelIdleTimeout. Returns on EOF, any read/write error, or the
+// idle deadline — the caller then closes both conns so the peer goroutine
+// returns too.
+func tunnelPipe(dst, src net.Conn) {
+	buf := make([]byte, 32*1024)
+	for {
+		_ = src.SetReadDeadline(time.Now().Add(tunnelIdleTimeout))
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			if _, werr := dst.Write(buf[:n]); werr != nil {
+				return
+			}
+		}
+		if rerr != nil {
+			return
+		}
+	}
 }

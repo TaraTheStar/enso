@@ -137,35 +137,26 @@ func (a *Agent) staleAfterFor(toolName string) int {
 // appendToolMessage is the prune-aware variant of appendMessage that
 // the agent's tool-execution path uses. It:
 //
-//  1. records sidecar metadata for the new message,
-//  2. runs A3 (same cacheKey → stub the older),
-//  3. runs A4 (paths written → stub matching prior reads),
-//  4. delegates to appendMessage to persist + grow History,
-//  5. runs A1/A2 (pruneStaleToolMessages) — stubs tool messages older
-//     than their per-tool retention threshold.
+//  1. delegates to appendMessage to persist + grow History,
+//  2. records sidecar metadata (cacheKey, paths, age, pinned) for the
+//     new message so a later reclaim pass can stub it.
 //
-// Steps 2–3 happen *before* appending so the new message's index is
-// correct. The new message itself is never stubbed by these steps —
-// its content is the freshest signal and stays verbatim.
+// It deliberately does NOT stub anything here. Stubbing rewrites the
+// content of OLDER messages, and on a prefix-cached backend any edit to
+// an already-sent message invalidates the KV cache from that position to
+// the end of the prompt — the earlier the edit, the more expensive. Doing
+// it on every tool call (the previous behaviour) meant a steady drip of
+// mid-prefix rewrites, each forcing the backend to reprocess the whole
+// suffix. The transcript is now append-only between reclaims; all stubbing
+// is batched into reclaimToolOutputs, which runs only at the compaction
+// boundary (see MaybeCompact), so the cache survives every normal turn and
+// the reclaim costs a single invalidation instead of one per tool call.
 func (a *Agent) appendToolMessage(msg llm.Message, meta tools.ResultMeta) {
 	// Late-init for backwards-compat — older callers (or tests
 	// constructing an Agent without going through New) may not have
 	// the map allocated yet.
 	if a.toolMeta == nil {
 		a.toolMeta = map[int]*toolMessageMeta{}
-	}
-
-	if a.pruneCfg.Enabled {
-		// A3: dedup by cache key. If an earlier tool message had the
-		// same key, replace its content with a stub now — the new
-		// result supersedes it.
-		if meta.CacheKey != "" {
-			a.dedupCacheKey(meta.CacheKey, msg.Name)
-		}
-		// A4: any prior read of a now-written path is invalidated.
-		if len(meta.PathsWritten) > 0 {
-			a.invalidateReadsOf(meta.PathsWritten)
-		}
 	}
 
 	// Append + persist via the standard path. Note: appendMessage
@@ -191,87 +182,105 @@ func (a *Agent) appendToolMessage(msg llm.Message, meta tools.ResultMeta) {
 		}
 	}
 	a.toolMeta[idx] = tm
-
-	if a.pruneCfg.Enabled {
-		// A1/A2: stub anything older than its per-tool threshold.
-		// Skips pinned messages and already-stubbed messages.
-		a.pruneStaleToolMessages()
-	}
 }
 
-// dedupCacheKey walks toolMeta for a matching cacheKey and stubs the
-// older entry (if any). At most one prior entry per cacheKey is
-// expected, but if multiple exist (e.g. pruning was disabled then
-// re-enabled), all matches are stubbed.
-func (a *Agent) dedupCacheKey(key, toolName string) {
-	for idx, tm := range a.toolMeta {
-		if tm == nil || tm.stubbed || tm.pinned {
-			continue
-		}
-		if tm.cacheKey != key {
-			continue
-		}
-		if idx >= len(a.History) {
-			continue
-		}
-		a.History[idx].Content = stubFor(stubLabelFor(tm.toolName, toolName), a.History[idx].Content)
-		tm.stubbed = true
-	}
-	a.refreshEstimate()
-}
-
-// invalidateReadsOf stubs any prior `read`-class tool message whose
-// PathsRead intersects `written`. The model's view of the file is
-// stale once the file has been edited, so the verbatim pre-edit
-// content in history is actively misleading; replacing with a stub
-// frees the tokens AND removes the misinformation.
+// reclaimToolOutputs runs the in-place tool-output stub reclaim as a
+// single batched pass. It is the ONLY place between summary compactions
+// where already-sent messages are rewritten, so it is called only at a
+// reclaim boundary (MaybeCompact / overflow recovery) — never per tool
+// call. That keeps the transcript append-only during normal turns, so the
+// backend's prefix KV cache survives, and the reclaim pays one cache
+// invalidation here instead of one per tool result.
 //
-// Pinned reads are spared — if PLAN.md is pinned, an edit to PLAN.md
-// still keeps the pre-edit content for now (the assumption is that
-// pinned files are sentinel/spec docs the user wants stable; if
-// they're being edited mid-session, the user can /prune or unset
-// the pin).
-func (a *Agent) invalidateReadsOf(written []string) {
-	if len(written) == 0 {
-		return
+// It folds the three stubbing rules into one sweep:
+//   - A3 dedup: an older result superseded by a newer same-cache-key one
+//   - A4 stale-read: a read whose path was edited by a later write
+//   - A1/A2 age: a result older than its per-tool retention window
+//
+// Returns the number of messages newly stubbed.
+func (a *Agent) reclaimToolOutputs() int {
+	if !a.pruneCfg.Enabled {
+		return 0
 	}
-	wset := make(map[string]struct{}, len(written))
-	for _, p := range written {
-		wset[p] = struct{}{}
-	}
+	stubbed := a.stubSupersededToolOutputs() // A3 + A4
+	stubbed += a.pruneStaleToolMessages()    // A1/A2
+	return stubbed
+}
+
+// stubSupersededToolOutputs stubs tool messages whose content is no
+// longer the freshest signal: A3 (an older result with the same cache
+// key as a newer one) and A4 (a read whose path was written by a later
+// edit, leaving the pre-edit content stale and actively misleading).
+//
+// Both are computed in a single forward scan: newestForKey holds the
+// highest index carrying each cache key, lastWriteIdx the highest index
+// that wrote each path. A message is superseded iff a strictly-later
+// message supersedes it, so the freshest entry is always kept. Pinned
+// reads are spared (sentinel/spec docs the user wants stable).
+func (a *Agent) stubSupersededToolOutputs() int {
+	newestForKey := map[string]int{}
+	lastWriteIdx := map[string]int{}
 	for idx, tm := range a.toolMeta {
-		if tm == nil || tm.stubbed || tm.pinned {
+		if tm == nil {
 			continue
 		}
-		if idx >= len(a.History) {
+		if tm.cacheKey != "" && idx > newestForKey[tm.cacheKey] {
+			newestForKey[tm.cacheKey] = idx
+		}
+		for _, p := range tm.pathsWritten {
+			if idx > lastWriteIdx[p] {
+				lastWriteIdx[p] = idx
+			}
+		}
+	}
+
+	stubbed := 0
+	for idx, tm := range a.toolMeta {
+		if tm == nil || tm.stubbed || tm.pinned || idx >= len(a.History) {
 			continue
 		}
-		hit := false
+		// A3: a newer message carries the same cache key.
+		if tm.cacheKey != "" && newestForKey[tm.cacheKey] > idx {
+			newName := tm.toolName
+			if nt := a.toolMeta[newestForKey[tm.cacheKey]]; nt != nil {
+				newName = nt.toolName
+			}
+			a.History[idx].Content = stubFor(stubLabelFor(tm.toolName, newName), a.History[idx].Content)
+			tm.stubbed = true
+			stubbed++
+			continue
+		}
+		// A4: a path this read was edited by a strictly-later write.
+		stale := false
 		for _, p := range tm.pathsRead {
-			if _, ok := wset[p]; ok {
-				hit = true
+			if w, ok := lastWriteIdx[p]; ok && w > idx {
+				stale = true
 				break
 			}
 		}
-		if !hit {
-			continue
+		if stale {
+			a.History[idx].Content = stubFor(tm.toolName+"@stale", a.History[idx].Content)
+			tm.stubbed = true
+			stubbed++
 		}
-		a.History[idx].Content = stubFor(tm.toolName+"@stale", a.History[idx].Content)
-		tm.stubbed = true
 	}
-	a.refreshEstimate()
+	if stubbed > 0 {
+		a.refreshEstimate()
+	}
+	return stubbed
 }
 
 // pruneStaleToolMessages walks History from the end backwards,
 // counting user-message turn boundaries, and stubs tool messages
-// whose age exceeds the per-tool retention threshold.
-func (a *Agent) pruneStaleToolMessages() {
+// whose age exceeds the per-tool retention threshold. Returns the
+// number of messages newly stubbed.
+func (a *Agent) pruneStaleToolMessages() int {
 	if a.pruneCfg.StaleAfter <= 0 && len(a.pruneCfg.ToolRetention) == 0 && len(inCodeDefaultRetention) == 0 {
-		return
+		return 0
 	}
 
 	turnsBack := 0
-	mutated := false
+	stubbed := 0
 	for i := len(a.History) - 1; i >= 0; i-- {
 		m := &a.History[i]
 		if m.Role == "user" {
@@ -289,12 +298,13 @@ func (a *Agent) pruneStaleToolMessages() {
 		if turnsBack > threshold {
 			m.Content = stubFor(tm.toolName, m.Content)
 			tm.stubbed = true
-			mutated = true
+			stubbed++
 		}
 	}
-	if mutated {
+	if stubbed > 0 {
 		a.refreshEstimate()
 	}
+	return stubbed
 }
 
 // ForcePrune is the entry point for the /prune slash command and any
