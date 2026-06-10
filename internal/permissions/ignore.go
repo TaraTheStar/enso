@@ -45,13 +45,21 @@ func LoadIgnoreFile(path string) ([]string, error) {
 // `edit(<pattern>)`, `grep(<pattern>)`, `glob(<pattern>)`. The
 // agent loop applies these in addition to anything in
 // `[permissions] deny`.
-func IgnoreToDenyPatterns(ignore []string) []string {
-	tools := []string{"read", "write", "edit", "grep", "glob"}
-	out := make([]string, 0, len(ignore)*len(tools))
+//
+// For the path tools, relative patterns are anchored to cwd (see
+// anchorPattern) so they match the canonical absolute path the checker
+// compares against — a relative `.env` entry must deny `/repo/.env`
+// however the model spells the path. The glob rule keeps the pattern
+// verbatim: glob's argument is itself a pattern matched lexically, not
+// a resolved path.
+func IgnoreToDenyPatterns(ignore []string, cwd string) []string {
+	pathTools := []string{"read", "write", "edit", "grep"}
+	out := make([]string, 0, len(ignore)*(len(pathTools)+1))
 	for _, pat := range ignore {
-		for _, t := range tools {
-			out = append(out, t+"("+pat+")")
+		for _, t := range pathTools {
+			out = append(out, t+"("+anchorPattern(pat, cwd)+")")
 		}
+		out = append(out, "glob("+pat+")")
 	}
 	return out
 }

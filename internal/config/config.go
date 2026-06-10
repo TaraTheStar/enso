@@ -934,11 +934,6 @@ type PermConfig struct {
 type UIConfig struct {
 	Theme      string `toml:"theme"`
 	EditorMode string `toml:"editor_mode"` // "default" | "vim"
-	// StatusLine, when non-empty, replaces the default right-side status
-	// segment. text/template syntax. Variables: .Provider .Model
-	// .Session .Mode .Activity .Tokens .Window .TokensFmt.
-	// Default if empty: "[{{.Provider}}] {{.Model}} · {{.Session}} · {{.TokensFmt}}".
-	StatusLine string `toml:"status_line"`
 }
 
 // GitConfig controls how the agent attributes itself when making git commits

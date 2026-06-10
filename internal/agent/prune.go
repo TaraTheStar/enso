@@ -12,8 +12,8 @@ import (
 
 // toolMessageMeta is the per-tool-message bookkeeping the prune
 // subsystem (A1–A4, C1) maintains alongside Agent.History. Indexed by
-// the message's slot in History; rebuildToolMeta() rewrites the index
-// after compaction shifts slots.
+// the message's slot in History; forceCompactWithSeed rebuilds the
+// index alongside the rewritten History when compaction shifts slots.
 type toolMessageMeta struct {
 	toolName     string
 	cacheKey     string
@@ -152,6 +152,11 @@ func (a *Agent) staleAfterFor(toolName string) int {
 // boundary (see MaybeCompact), so the cache survives every normal turn and
 // the reclaim costs a single invalidation instead of one per tool call.
 func (a *Agent) appendToolMessage(msg llm.Message, meta tools.ResultMeta) {
+	// One lock hold for the index capture, append, and sidecar write so
+	// a concurrent compaction can't shift slots between them.
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
+
 	// Late-init for backwards-compat — older callers (or tests
 	// constructing an Agent without going through New) may not have
 	// the map allocated yet.
@@ -159,11 +164,10 @@ func (a *Agent) appendToolMessage(msg llm.Message, meta tools.ResultMeta) {
 		a.toolMeta = map[int]*toolMessageMeta{}
 	}
 
-	// Append + persist via the standard path. Note: appendMessage
-	// uses len(History) before append for the new index, so capture
-	// it before delegating.
+	// Append + persist via the standard path. Note: the new message's
+	// index is len(History) before the append, so capture it first.
 	idx := len(a.History)
-	a.appendMessage(msg)
+	a.appendMessageLocked(msg)
 
 	// Sidecar entry for this new tool message.
 	tm := &toolMessageMeta{
@@ -197,7 +201,8 @@ func (a *Agent) appendToolMessage(msg llm.Message, meta tools.ResultMeta) {
 //   - A4 stale-read: a read whose path was edited by a later write
 //   - A1/A2 age: a result older than its per-tool retention window
 //
-// Returns the number of messages newly stubbed.
+// Returns the number of messages newly stubbed. Caller must hold
+// a.histMu (the passes rewrite History content and read toolMeta).
 func (a *Agent) reclaimToolOutputs() int {
 	if !a.pruneCfg.Enabled {
 		return 0
@@ -217,6 +222,8 @@ func (a *Agent) reclaimToolOutputs() int {
 // that wrote each path. A message is superseded iff a strictly-later
 // message supersedes it, so the freshest entry is always kept. Pinned
 // reads are spared (sentinel/spec docs the user wants stable).
+//
+// Caller must hold a.histMu.
 func (a *Agent) stubSupersededToolOutputs() int {
 	newestForKey := map[string]int{}
 	lastWriteIdx := map[string]int{}
@@ -265,6 +272,7 @@ func (a *Agent) stubSupersededToolOutputs() int {
 		}
 	}
 	if stubbed > 0 {
+		a.histGen++
 		a.refreshEstimate()
 	}
 	return stubbed
@@ -273,7 +281,7 @@ func (a *Agent) stubSupersededToolOutputs() int {
 // pruneStaleToolMessages walks History from the end backwards,
 // counting user-message turn boundaries, and stubs tool messages
 // whose age exceeds the per-tool retention threshold. Returns the
-// number of messages newly stubbed.
+// number of messages newly stubbed. Caller must hold a.histMu.
 func (a *Agent) pruneStaleToolMessages() int {
 	if a.pruneCfg.StaleAfter <= 0 && len(a.pruneCfg.ToolRetention) == 0 && len(inCodeDefaultRetention) == 0 {
 		return 0
@@ -302,6 +310,7 @@ func (a *Agent) pruneStaleToolMessages() int {
 		}
 	}
 	if stubbed > 0 {
+		a.histGen++
 		a.refreshEstimate()
 	}
 	return stubbed
@@ -311,8 +320,11 @@ func (a *Agent) pruneStaleToolMessages() int {
 // other "compact aggressively, now" trigger. It runs stale stubbing
 // with `staleAfter` capped at 1 user-turn — i.e. only the very last
 // turn's tool results stay verbatim. Returns the number of messages
-// stubbed and the token delta.
+// stubbed and the token delta. Safe to call from any goroutine
+// (control RPCs / slash commands) — it takes the history lock.
 func (a *Agent) ForcePrune() (stubbed, beforeTokens, afterTokens int) {
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
 	beforeTokens = llm.Estimate(a.History)
 	turnsBack := 0
 	for i := len(a.History) - 1; i >= 0; i-- {
@@ -336,31 +348,11 @@ func (a *Agent) ForcePrune() (stubbed, beforeTokens, afterTokens int) {
 		}
 	}
 	if stubbed > 0 {
+		a.histGen++
 		a.refreshEstimate()
 	}
 	afterTokens = llm.Estimate(a.History)
 	return stubbed, beforeTokens, afterTokens
-}
-
-// rebuildToolMeta recomputes the toolMeta index from scratch after
-// compaction has shifted History. The synthetic summary message
-// added by compaction is not a "tool" message and gets no entry;
-// any pinned entries from the older block that survived compaction
-// keep their bookkeeping (we re-discover them by walking History
-// and matching against the message identity preserved by compaction).
-//
-// Called from forceCompact after it rewrites a.History.
-func (a *Agent) rebuildToolMeta(preserved map[*llm.Message]*toolMessageMeta) {
-	next := map[int]*toolMessageMeta{}
-	for i := range a.History {
-		if a.History[i].Role != "tool" {
-			continue
-		}
-		if tm, ok := preserved[&a.History[i]]; ok && tm != nil {
-			next[i] = tm
-		}
-	}
-	a.toolMeta = next
 }
 
 // stubLabelFor picks the tool name to display in a dedup stub.
@@ -399,9 +391,13 @@ func (a *Agent) CompressionSaved() int64 {
 }
 
 // PrefixBreakdown classifies every message in History and returns a
-// per-category token count. Safe to call at any time; reads History
-// directly so it reflects post-prune state.
+// per-category token count. Safe to call from any goroutine (control
+// RPCs / slash commands / the per-turn debug log) — it takes the
+// history lock and reads History directly, so it reflects post-prune
+// state.
 func (a *Agent) PrefixBreakdown() PrefixBreakdown {
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
 	var bd PrefixBreakdown
 	for i, m := range a.History {
 		toks := llm.Estimate([]llm.Message{m})

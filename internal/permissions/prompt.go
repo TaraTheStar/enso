@@ -5,7 +5,9 @@ package permissions
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,7 +69,14 @@ type Checker struct {
 
 	allowlist *Allowlist
 	mode      string // "prompt", "allow", "deny"
-	yolo      bool
+	// cwd is the session working directory. Path-tool arguments are
+	// canonicalized against it before matching (the gate must see the
+	// same absolute path the tool will actually open — see
+	// canonicalPathArg), and relative path patterns are anchored to it
+	// (see anchorPattern). Defaults to the process cwd; overridden via
+	// SetCwd when the session cwd differs (worker TaskSpecs, daemon).
+	cwd  string
+	yolo bool
 
 	// turnAllow holds patterns the user granted via the modal's
 	// "Allow Turn" button — auto-allow matching calls until the next
@@ -87,10 +96,39 @@ func NewChecker(allow, ask, deny []string, mode string) *Checker {
 	if mode == "" {
 		mode = "prompt"
 	}
+	// Default the canonicalization cwd to the process cwd so a checker
+	// whose caller never calls SetCwd still resolves relative path args
+	// the way the file tools do. Callers whose session cwd differs from
+	// the process cwd (worker TaskSpecs, daemon sessions) must override
+	// via SetCwd right after construction.
+	cwd, _ := os.Getwd()
+	al := NewAllowlist(allow, ask, deny)
+	al.cwd = cwd
 	return &Checker{
-		allowlist: NewAllowlist(allow, ask, deny),
+		allowlist: al,
 		mode:      mode,
+		cwd:       cwd,
 	}
+}
+
+// SetCwd sets the session working directory used to canonicalize
+// path-tool arguments and to anchor relative path patterns before
+// matching. The gate must see the same path the tool will actually open
+// (file tools resolve relative paths against the session cwd — see
+// tools.resolveRestricted), so any call site whose session cwd can
+// differ from the process cwd must call this right after NewChecker.
+func (c *Checker) SetCwd(cwd string) {
+	if cwd == "" {
+		return
+	}
+	cwd = filepath.Clean(cwd)
+	c.mu.Lock()
+	c.cwd = cwd
+	c.allowlist.cwd = cwd
+	if c.turnAllow != nil {
+		c.turnAllow.cwd = cwd
+	}
+	c.mu.Unlock()
 }
 
 // SetYolo toggles yolo mode (auto-allow all).
@@ -142,6 +180,7 @@ func (c *Checker) AddTurnAllow(pattern string) error {
 	c.mu.Lock()
 	if c.turnAllow == nil {
 		c.turnAllow = NewAllowlist(nil, nil, nil)
+		c.turnAllow.cwd = c.cwd
 	}
 	c.turnAllow.AppendPattern(p)
 	c.mu.Unlock()
@@ -276,12 +315,13 @@ func derivePathPattern(tool, path, cwd string) string {
 // for that pattern is what they're trying to silence. Deny rules
 // still win, so a user grant can never override a hard "never".
 func (c *Checker) Check(toolName string, args map[string]interface{}, busInst *bus.Bus) (Decision, error) {
-	matchArg := extractArg(toolName, args)
-
 	// Evaluate all mutable state under the lock; defer the bus emission
 	// and error formatting until after unlock so a slow bus subscriber
-	// can't pin the checker (and to keep the critical section pure).
+	// can't pin the checker (and to keep the critical section pure —
+	// extractArg is pure string/path work). extractArg needs c.cwd, so
+	// it runs under the lock too.
 	c.mu.Lock()
+	matchArg := extractArg(toolName, args, c.cwd)
 	decision, autoReason, modeDeny := c.evalLocked(toolName, matchArg)
 	c.mu.Unlock()
 
@@ -337,11 +377,13 @@ func (c *Checker) evalLocked(toolName, matchArg string) (decision Decision, auto
 }
 
 // extractArg returns the per-tool argument string used by allowlist
-// matching: bash uses the raw command, file tools use the path arg,
-// web_fetch uses the URL, MCP tools fall back to the generic
-// key=value form. New tools can be added here without touching the
-// allowlist code.
-func extractArg(tool string, args map[string]any) string {
+// matching: bash uses the raw command, file tools use the path arg
+// canonicalized to the absolute form the tool will actually open (the
+// raw model-supplied string let deny rules be bypassed by spelling the
+// same file relatively vs absolutely), web_fetch uses the URL, MCP
+// tools fall back to the generic key=value form. New tools can be
+// added here without touching the allowlist code.
+func extractArg(tool string, args map[string]any, cwd string) string {
 	switch tool {
 	case "bash":
 		if v, ok := args["cmd"].(string); ok {
@@ -349,9 +391,11 @@ func extractArg(tool string, args map[string]any) string {
 		}
 	case "read", "write", "edit", "grep":
 		if v, ok := args["path"].(string); ok {
-			return v
+			return canonicalPathArg(v, cwd)
 		}
 	case "glob":
+		// glob's arg is itself a pattern, matched lexically — never
+		// resolved as a path.
 		if v, ok := args["pattern"].(string); ok {
 			return v
 		}
@@ -369,6 +413,26 @@ func extractArg(tool string, args map[string]any) string {
 		}
 	}
 	return buildArgString(args)
+}
+
+// canonicalPathArg resolves a path argument exactly the way the file
+// tools do before opening it (tools.resolveRestricted): join with the
+// session cwd when relative, then Abs+Clean. Allow/ask/deny rules are
+// matched against this canonical absolute form, so a rule scoped to
+// `/repo/secrets/**` can't be bypassed by passing `secrets/key`, and a
+// cwd-anchored relative rule still fires on an absolute argument.
+// Symlink resolution stays at the tool/workspace layer (see MatchPath).
+func canonicalPathArg(path, cwd string) string {
+	if path == "" {
+		return path
+	}
+	if !filepath.IsAbs(path) && cwd != "" {
+		path = filepath.Join(cwd, path)
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return filepath.Clean(path)
 }
 
 // emitAutoAllow records an auto-allow decision (yolo bypass or allowlist
@@ -389,10 +453,19 @@ func emitAutoAllow(b *bus.Bus, tool string, args map[string]interface{}, reason 
 	})
 }
 
+// buildArgString renders args as "k=v" pairs in sorted key order. Map
+// iteration is randomized, so without the sort an arg-scoped
+// allow/ask/deny glob would match nondeterministically for any tool
+// without a dedicated extractArg case (MCP tools, memory_save, ...).
 func buildArgString(args map[string]interface{}) string {
-	var parts []string
-	for k, v := range args {
-		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, args[k]))
 	}
 	return joinStr(parts, " ")
 }

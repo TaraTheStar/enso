@@ -36,10 +36,14 @@ func (t WriteTool) Run(ctx context.Context, args map[string]interface{}, ac *Age
 		return Result{}, fmt.Errorf("write: %w", err)
 	}
 
-	if _, statErr := os.Stat(abs); statErr == nil {
+	// Preserve an existing destination's permission bits (e.g. the exec bit
+	// on a script); only a brand-new file gets the 0o644 default.
+	mode := os.FileMode(0o644)
+	if fi, statErr := os.Stat(abs); statErr == nil {
 		if !ac.ReadSet[abs] {
 			return Result{LLMOutput: fmt.Sprintf("write %s: file exists but was not read in this session", abs)}, nil
 		}
+		mode = fi.Mode().Perm()
 	}
 
 	ac.ReadSet[abs] = true
@@ -48,7 +52,7 @@ func (t WriteTool) Run(ctx context.Context, args map[string]interface{}, ac *Age
 		return Result{}, fmt.Errorf("write %s: mkdir: %w", abs, err)
 	}
 
-	if err := atomicWriteFile(abs, []byte(content), 0o644); err != nil {
+	if err := atomicWriteFile(abs, []byte(content), mode); err != nil {
 		return Result{}, fmt.Errorf("write %s: %w", abs, err)
 	}
 

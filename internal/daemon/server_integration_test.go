@@ -21,9 +21,9 @@ import (
 
 // startTestServer constructs a minimally-configured Server, listens on a
 // temp unix socket, and runs the accept loop until the test ends. Returns
-// the socket path and the mock provider so tests can script responses
-// and dial against it.
-func startTestServer(t *testing.T) (socketPath string, mock *llmtest.Mock) {
+// the socket path, the mock provider so tests can script responses and
+// dial against it, and the server itself for state inspection.
+func startTestServer(t *testing.T) (socketPath string, mock *llmtest.Mock, srv *Server) {
 	t.Helper()
 
 	tmp := t.TempDir()
@@ -73,7 +73,7 @@ func startTestServer(t *testing.T) (socketPath string, mock *llmtest.Mock) {
 		s.mu.Unlock()
 	})
 
-	return socketPath, mock
+	return socketPath, mock, s
 }
 
 // waitForScripts polls mock.CallCount until the agent goroutine has
@@ -106,7 +106,7 @@ func dial(t *testing.T, socketPath string) *Client {
 }
 
 func TestDaemon_CreateSessionStreamsEvents(t *testing.T) {
-	socketPath, mock := startTestServer(t)
+	socketPath, mock, _ := startTestServer(t)
 	mock.Push(llmtest.Script{Text: "hello back"})
 
 	control := dial(t, socketPath)
@@ -159,7 +159,7 @@ func TestDaemon_CreateSessionStreamsEvents(t *testing.T) {
 }
 
 func TestDaemon_ListSessionsReturnsCreated(t *testing.T) {
-	socketPath, mock := startTestServer(t)
+	socketPath, mock, _ := startTestServer(t)
 	mock.Push(llmtest.Script{Text: "ok"})
 
 	createConn := dial(t, socketPath)
@@ -191,7 +191,7 @@ func TestDaemon_ListSessionsReturnsCreated(t *testing.T) {
 }
 
 func TestDaemon_FollowupSubmitTriggersSecondTurn(t *testing.T) {
-	socketPath, mock := startTestServer(t)
+	socketPath, mock, _ := startTestServer(t)
 	mock.Push(llmtest.Script{Text: "first reply"})
 	mock.Push(llmtest.Script{Text: "second reply"})
 

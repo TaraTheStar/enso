@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sync"
 )
 
 // EventType identifies the kind of bus event.
@@ -224,8 +225,16 @@ func FromWire(typ string, payload json.RawMessage) (Event, bool) {
 	return Event{}, false
 }
 
-// Bus is a channel-fan-out hub for agent events.
+// Bus is a channel-fan-out hub for agent events. It is goroutine-safe:
+// Publish may race Subscribe and Close. That matters at shutdown —
+// background bash jobs' pipe-copy goroutines outlive Agent.Run (KillAll
+// only SIGKILLs the process group), and their final output flush
+// publishes via progressWriter while the host closes the bus right
+// after the run returns. Without the lock that flush would send on a
+// closed channel and panic the process.
 type Bus struct {
+	mu          sync.RWMutex
+	closed      bool
 	subscribers []chan Event
 }
 
@@ -236,16 +245,35 @@ func New() *Bus {
 	}
 }
 
-// Subscribe registers a buffered channel as a subscriber.
+// Subscribe registers a buffered channel as a subscriber. Subscribing
+// after Close returns an already-closed channel, so late subscribers'
+// range loops exit immediately instead of hanging forever.
 func (b *Bus) Subscribe(capacity int) chan Event {
 	ch := make(chan Event, capacity)
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		close(ch)
+		return ch
+	}
 	b.subscribers = append(b.subscribers, ch)
 	return ch
 }
 
 // Publish sends an event to all subscribers non-blocking.
 // Events are dropped (with a log) if a subscriber's buffer is full.
+// After Close, Publish is a no-op — late flushes from lingering
+// background-job goroutines are silently discarded.
+//
+// The read lock is held across the send loop, but every send is
+// non-blocking (select with default), so a slow subscriber can never
+// hold the lock long enough to block Close.
 func (b *Bus) Publish(evt Event) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.closed {
+		return
+	}
 	for _, ch := range b.subscribers {
 		select {
 		case ch <- evt:
@@ -255,8 +283,16 @@ func (b *Bus) Publish(evt Event) {
 	}
 }
 
-// Close closes all subscriber channels.
+// Close closes all subscriber channels (subscribers detect shutdown by
+// their range loop ending) and marks the bus closed so concurrent and
+// later Publish calls no-op instead of panicking. Idempotent.
 func (b *Bus) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.closed {
+		return
+	}
+	b.closed = true
 	for _, ch := range b.subscribers {
 		close(ch)
 	}

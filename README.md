@@ -157,9 +157,6 @@ attribution_name = "enso"
 [ui]
 theme       = "dark"
 editor_mode = "default"       # "default" | "vim" — vim adds normal-mode hjkl, w/b, x, i/a/A/o/O, Enter to submit
-status_line = ""              # text/template; replaces the right-side bar. Vars:
-                              #   .Provider .Model .Session .Mode .Activity .Tokens .Window .TokensFmt .TokensPerSec
-                              # Example: "{{.Mode}} | {{.Model}} | {{.TokensFmt}}"
 
 [hooks]
 on_file_edit   = ""           # shell command run after edit/write succeeds; vars: .Path .Tool

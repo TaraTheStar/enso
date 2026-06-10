@@ -40,6 +40,30 @@ func MatchPath(pattern, path string) bool {
 	return m
 }
 
+// anchorPattern rewrites a relative path PATTERN to be cwd-anchored so
+// it can match the canonical absolute path arguments the Checker
+// matches against (see canonicalPathArg) — a relative `.ensoignore`
+// entry or project-tier rule like `edit(./src/**)` must fire however
+// the model spells the path. Only the pattern's anchor moves; glob
+// metacharacters are preserved (filepath.Join only Cleans, which
+// leaves `*`, `**`, and `?` untouched). Three forms pass through
+// unchanged:
+//
+//   - absolute patterns (`read(/repo/secrets/**)`) — already anchored;
+//   - `**` / `**/...` patterns — documented above as "anywhere on the
+//     filesystem" ("any .go file" is `**/*.go`); prefixing cwd would
+//     silently narrow them to the project;
+//   - anything when cwd is unknown (legacy lexical matching).
+func anchorPattern(pattern, cwd string) string {
+	if cwd == "" || pattern == "" || filepath.IsAbs(pattern) {
+		return pattern
+	}
+	if pattern == "**" || strings.HasPrefix(pattern, "**/") {
+		return pattern
+	}
+	return filepath.Join(cwd, pattern)
+}
+
 // MatchCommand checks if a bash command matches a pattern. Supports
 // multi-word patterns (e.g. `git push *`) by treating `*` as
 // "any characters including spaces and slashes" — doublestar refuses to

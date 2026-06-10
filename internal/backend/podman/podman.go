@@ -334,6 +334,13 @@ func (b *Backend) buildRunArgs(name, taskID, exe, cwd, ociRuntime string) []stri
 			// is the ONLY route out at L3, not by convention. See the seal
 			// in the entrypoint below.
 			"--cap-add", "NET_ADMIN",
+			// The privileged entrypoint applies the seal and then drops
+			// NET_ADMIN (setpriv, see entrypointScript) before exec'ing the
+			// untrusted worker, so the worker cannot flush the ENSO_EGRESS
+			// chain and dial around the proxy. no-new-privileges makes that
+			// one-way: a setuid binary in the image can never re-acquire the
+			// dropped capability.
+			"--security-opt", "no-new-privileges",
 		)
 	}
 	for _, e := range b.Env { // explicit opt-in only; never host env
@@ -357,8 +364,8 @@ func (b *Backend) buildRunArgs(name, taskID, exe, cwd, ociRuntime string) []stri
 // then exec'd directly). Ordering is deliberate and security-critical:
 //
 //		set -e
-//		{ <ensure ip[6]tables> ; <user init> ; <apply seal> } 1>&2
-//		exec enso __worker
+//		{ <ensure ip[6]tables+setpriv> ; <user init> ; <apply seal> } 1>&2
+//		exec setpriv --bounding-set -net_admin --no-new-privs enso __worker
 //
 //	  - tooling-install and user init run FIRST, while slirp still has full
 //	    egress, so package fetches work; both are operator-controlled (image
@@ -366,8 +373,23 @@ func (b *Backend) buildRunArgs(name, taskID, exe, cwd, ociRuntime string) []stri
 //	  - the seal is applied LAST, immediately before exec — so the ONLY
 //	    thing that ever runs with the box sealed is the untrusted worker;
 //	  - `set -e` makes the seal fail-closed: if NET_ADMIN is missing, the
-//	    image has no iptables, or a rule fails, the script aborts and the
-//	    worker never starts (a visible failure, never a silent open box).
+//	    image has no iptables/setpriv, or a rule fails, the script aborts
+//	    and the worker never starts (a visible failure, never a silent open
+//	    box).
+//
+// Privilege drop (security-critical): the seal needs CAP_NET_ADMIN to
+// program netfilter, but the worker does NOT. Were the worker to inherit
+// NET_ADMIN it could `iptables -F ENSO_EGRESS` and dial straight out
+// through slirp's NAT, bypassing the allowlist proxy. So the entrypoint
+// applies the seal with full privilege and then execs the worker through
+// `setpriv --bounding-set -net_admin --no-new-privs`, which removes
+// NET_ADMIN from the bounding set (a uid-0 process's permitted set is
+// re-derived from the bounding set on execve, so this actually strips the
+// capability) without changing uid — the bind-mounted workdir, owned by
+// the host user and mapped to container root under the rootless userns,
+// stays writable, and the read-only exestage binary stays executable.
+// Paired with `--security-opt no-new-privileges` on the run command the
+// drop is irreversible.
 //
 // The seal needs root (uid 0) in the container to program netfilter;
 // rootless podman's default container user IS root, so the common path
@@ -387,11 +409,18 @@ func (b *Backend) entrypointScript() string {
 	var s strings.Builder
 	s.WriteString("set -e\n{\n")
 	if sealHostport != "" {
-		// Ensure the firewall tooling exists before sealing. Best-effort
-		// apk (Alpine base) only when absent, so an image that bakes it in
-		// skips the per-task fetch; if it is genuinely missing, the seal
-		// commands below fail under `set -e` → fail-closed.
+		// Ensure the firewall tooling AND setpriv exist before sealing.
+		// Best-effort apk (Alpine base) only when absent, so an image that
+		// bakes them in skips the per-task fetch; if anything is genuinely
+		// missing the seal/drop below fail under `set -e` → fail-closed.
+		// setpriv (util-linux) performs the post-seal NET_ADMIN drop.
 		s.WriteString("command -v iptables >/dev/null 2>&1 && command -v ip6tables >/dev/null 2>&1 || apk add --no-cache iptables ip6tables\n")
+		// The cap drop needs util-linux setpriv (--bounding-set). Alpine's
+		// BusyBox ships a setpriv APPLET that satisfies `command -v` but
+		// lacks --bounding-set, so probe for the flag itself and apk-install
+		// the real binary (which shadows the applet at /bin/setpriv) when
+		// absent. Fail-closed under `set -e` if it cannot be provided.
+		s.WriteString("setpriv --help 2>&1 | grep -q -- --bounding-set || apk add --no-cache setpriv\n")
 	}
 	for _, ln := range b.Init {
 		s.WriteString(ln)
@@ -402,7 +431,16 @@ func (b *Backend) entrypointScript() string {
 		// line) is the only thing that runs sealed.
 		s.WriteString(seal.Rules(sealHostport))
 	}
-	s.WriteString("} 1>&2\nexec /usr/local/bin/enso __worker\n")
+	worker := "/usr/local/bin/enso __worker"
+	if sealHostport != "" {
+		// Drop NET_ADMIN before handing control to the untrusted worker so
+		// it cannot unseal the netns (see the doc comment). Only in egress
+		// mode, where the run command granted NET_ADMIN; the fully-sealed
+		// (--network none) path never gets the capability, so there is
+		// nothing to drop.
+		worker = "setpriv --bounding-set -net_admin --no-new-privs " + worker
+	}
+	s.WriteString("} 1>&2\nexec " + worker + "\n")
 	return s.String()
 }
 

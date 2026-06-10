@@ -478,6 +478,16 @@ func runWorkflow(name string, argParts []string) error {
 		}
 		return fmt.Errorf("load config: %w", err)
 	}
+	// Seam invariant guard (see internal/backend/backend.go): the agent
+	// core always runs as a Worker behind a Backend, but workflow.Run
+	// drives a live tools.Registry in THIS host process — it is not
+	// routed through the seam at all. Until workflows are taught to run
+	// behind a Worker, refuse to execute them when an isolated backend
+	// is configured: silently running bash/edit/web tools unsandboxed on
+	// the host the user asked to seal would be a quiet isolation bypass.
+	if be := cfg.ResolveBackend(); be != config.BackendLocal {
+		return fmt.Errorf("workflows currently run on the host and are not routed through the configured %q backend; run with [backend] type=\"local\" or in a trusted project", be)
+	}
 	wfProviders, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
