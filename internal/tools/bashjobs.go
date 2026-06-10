@@ -203,16 +203,16 @@ func (BashOutputTool) Name() string { return "bash_output" }
 func (BashOutputTool) Description() string {
 	return "Read newly produced output (and status) from a background bash job started with run_in_background. Args: id (string). Returns only output since the previous bash_output call."
 }
-func (BashOutputTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (BashOutputTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"id": map[string]interface{}{"type": "string", "description": "Background job id returned by bash run_in_background"},
+		"properties": map[string]any{
+			"id": map[string]any{"type": "string", "description": "Background job id returned by bash run_in_background"},
 		},
 		"required": []string{"id"},
 	}
 }
-func (BashOutputTool) Run(_ context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (BashOutputTool) Run(_ context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	id, _ := args["id"].(string)
 	if id == "" {
 		return Result{}, fmt.Errorf("bash_output: id required")
@@ -230,16 +230,16 @@ func (BashKillTool) Name() string { return "bash_kill" }
 func (BashKillTool) Description() string {
 	return "Stop (SIGKILL) a background bash job started with run_in_background. Args: id (string)."
 }
-func (BashKillTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (BashKillTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"id": map[string]interface{}{"type": "string", "description": "Background job id returned by bash run_in_background"},
+		"properties": map[string]any{
+			"id": map[string]any{"type": "string", "description": "Background job id returned by bash run_in_background"},
 		},
 		"required": []string{"id"},
 	}
 }
-func (BashKillTool) Run(_ context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (BashKillTool) Run(_ context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	id, _ := args["id"].(string)
 	if id == "" {
 		return Result{}, fmt.Errorf("bash_kill: id required")

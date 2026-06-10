@@ -86,7 +86,7 @@ func (a *ToolCallAccumulator) Finalize() []ToolCall {
 	return result
 }
 
-func coerceArguments(v interface{}) (string, error) {
+func coerceArguments(v any) (string, error) {
 	switch args := v.(type) {
 	case string:
 		return args, nil

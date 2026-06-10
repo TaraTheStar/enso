@@ -25,7 +25,7 @@ func (w *seqWriter) AppendMessage(msg llm.Message, agentID string) (int, error) 
 func (w *seqWriter) AppendMessageUsage(seq int, usage llm.MessageUsage, agentID string) error {
 	return nil
 }
-func (w *seqWriter) AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error {
+func (w *seqWriter) AppendToolCall(callID, name string, args map[string]any, llmOutput, fullOutput, status string) error {
 	return nil
 }
 func (w *seqWriter) SessionID() string { return "test-sess" }

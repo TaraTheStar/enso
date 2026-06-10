@@ -22,16 +22,16 @@ func (t BashTool) Name() string { return "bash" }
 func (t BashTool) Description() string {
 	return "Execute a shell command. Args: cmd (string), optional timeout (int seconds, default 120), optional run_in_background (bool). Two ways to handle long-running work: (1) a command that FINISHES on its own but is slow (a big test suite, a long build) — run it in the foreground and raise `timeout`; you want the result; (2) a command that NEVER returns on its own (a dev server, file watcher, `tail -f`) — pass run_in_background:true, then read it with bash_output and stop it with bash_kill. A foreground command is killed when it exceeds its timeout. Output is truncated for the model but stored fully in the session."
 }
-func (t BashTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t BashTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"cmd": map[string]interface{}{"type": "string", "description": "Shell command to execute"},
-			"timeout": map[string]interface{}{
+		"properties": map[string]any{
+			"cmd": map[string]any{"type": "string", "description": "Shell command to execute"},
+			"timeout": map[string]any{
 				"type":        "integer",
 				"description": "Seconds to wait before a foreground command is killed (default 120). Raise it for a command that finishes on its own but is slow, like a big test suite — honoured as given, up to a safety cap (1 hour by default). Ignored when run_in_background is true.",
 			},
-			"run_in_background": map[string]interface{}{
+			"run_in_background": map[string]any{
 				"type":        "boolean",
 				"description": "Start the command detached and return immediately with a job id; read its output with bash_output and stop it with bash_kill. Use for a command that never returns on its own — a dev server, a file watcher, tail -f.",
 			},
@@ -40,7 +40,7 @@ func (t BashTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t BashTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t BashTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	cmdStr, _ := args["cmd"].(string)
 	if cmdStr == "" {
 		return Result{}, fmt.Errorf("bash: cmd required")
@@ -98,7 +98,7 @@ func (t BashTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 // adapters may pass a plain int; both are accepted. Missing or non-numeric
 // yields 0 ("unset"). Distinct from lsp.go's argInt, which is required and
 // 1-based.
-func optIntArg(v interface{}) int {
+func optIntArg(v any) int {
 	switch n := v.(type) {
 	case float64:
 		return int(n)

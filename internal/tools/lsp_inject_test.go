@@ -41,7 +41,7 @@ func TestWriteTool_LSPInjection(t *testing.T) {
 		ReadSet:     map[string]bool{},
 		LSPNotifier: notifier,
 	}
-	args := map[string]interface{}{"path": abs, "content": "package main\n"}
+	args := map[string]any{"path": abs, "content": "package main\n"}
 
 	res, err := (WriteTool{}).Run(context.Background(), args, ac)
 	if err != nil {
@@ -80,7 +80,7 @@ func TestEditTool_LSPInjection(t *testing.T) {
 		ReadSet:     map[string]bool{abs: true},
 		LSPNotifier: notifier,
 	}
-	args := map[string]interface{}{
+	args := map[string]any{
 		"path":       abs,
 		"old_string": "var x = 1",
 		"new_string": "var x = 2",
@@ -111,7 +111,7 @@ func TestWriteTool_NoNotifierNoInjection(t *testing.T) {
 		ReadSet: map[string]bool{},
 		// LSPNotifier: nil
 	}
-	args := map[string]interface{}{"path": abs, "content": "hi\n"}
+	args := map[string]any{"path": abs, "content": "hi\n"}
 
 	res, err := (WriteTool{}).Run(context.Background(), args, ac)
 	if err != nil {
@@ -136,7 +136,7 @@ func TestWriteTool_EmptyNotifierReplyNoTrailingBlank(t *testing.T) {
 		ReadSet:     map[string]bool{},
 		LSPNotifier: notifier,
 	}
-	args := map[string]interface{}{"path": abs, "content": "hi\n"}
+	args := map[string]any{"path": abs, "content": "hi\n"}
 
 	res, err := (WriteTool{}).Run(context.Background(), args, ac)
 	if err != nil {

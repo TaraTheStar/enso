@@ -18,20 +18,20 @@ func (t EditTool) Name() string { return "edit" }
 func (t EditTool) Description() string {
 	return "Edit a file by exact find-and-replace. Args: path (string), old_string (string), new_string (string), replace_all (bool)"
 }
-func (t EditTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t EditTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"path":        map[string]interface{}{"type": "string"},
-			"old_string":  map[string]interface{}{"type": "string"},
-			"new_string":  map[string]interface{}{"type": "string"},
-			"replace_all": map[string]interface{}{"type": "boolean"},
+		"properties": map[string]any{
+			"path":        map[string]any{"type": "string"},
+			"old_string":  map[string]any{"type": "string"},
+			"new_string":  map[string]any{"type": "string"},
+			"replace_all": map[string]any{"type": "boolean"},
 		},
 		"required": []string{"path", "old_string", "new_string"},
 	}
 }
 
-func (t EditTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t EditTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	path, _ := args["path"].(string)
 	oldStr, _ := args["old_string"].(string)
 	newStr, _ := args["new_string"].(string)

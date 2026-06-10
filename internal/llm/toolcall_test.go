@@ -227,8 +227,8 @@ func mustMerge(t *testing.T, acc *ToolCallAccumulator, d ChatResponseDelta) {
 }
 
 func dtFunction(name, args string) (f struct {
-	Name      string      `json:"name,omitempty"`
-	Arguments interface{} `json:"arguments,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments any    `json:"arguments,omitempty"`
 }) {
 	f.Name = name
 	if args != "" {
@@ -238,8 +238,8 @@ func dtFunction(name, args string) (f struct {
 }
 
 func dtFunctionRaw(name string, args any) (f struct {
-	Name      string      `json:"name,omitempty"`
-	Arguments interface{} `json:"arguments,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments any    `json:"arguments,omitempty"`
 }) {
 	f.Name = name
 	f.Arguments = args

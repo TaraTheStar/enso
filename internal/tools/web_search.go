@@ -49,18 +49,18 @@ func (t WebSearchTool) Description() string {
 	return fmt.Sprintf("Search the web and return ranked results (title, url, snippet). Backend: %s. Args: query (string, required), max_results (int, optional, capped at %d). Pair with web_fetch to read the pages it returns.", t.backend.Name(), t.maxResults)
 }
 
-func (t WebSearchTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t WebSearchTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"query":       map[string]interface{}{"type": "string", "description": "Search query."},
-			"max_results": map[string]interface{}{"type": "integer", "description": "Cap on results returned (1-N where N is the configured ceiling). Optional."},
+		"properties": map[string]any{
+			"query":       map[string]any{"type": "string", "description": "Search query."},
+			"max_results": map[string]any{"type": "integer", "description": "Cap on results returned (1-N where N is the configured ceiling). Optional."},
 		},
 		"required": []string{"query"},
 	}
 }
 
-func (t WebSearchTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t WebSearchTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	q, _ := args["query"].(string)
 	q = strings.TrimSpace(q)
 	if q == "" {

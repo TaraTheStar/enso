@@ -27,19 +27,19 @@ func RegisterLSP(r *Registry, mgr *lsp.Manager) {
 }
 
 // commonLSPParams is the JSON-Schema shape shared by hover/definition/refs.
-func commonLSPParams() map[string]interface{} {
-	return map[string]interface{}{
+func commonLSPParams() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"file": map[string]interface{}{
+		"properties": map[string]any{
+			"file": map[string]any{
 				"type":        "string",
 				"description": "Path to the source file (absolute, or relative to the project cwd).",
 			},
-			"line": map[string]interface{}{
+			"line": map[string]any{
 				"type":        "integer",
 				"description": "1-based line number.",
 			},
-			"column": map[string]interface{}{
+			"column": map[string]any{
 				"type":        "integer",
 				"description": "1-based column (counted in characters; multi-byte chars use rune position).",
 			},
@@ -98,7 +98,7 @@ func pathToURI(p string) string {
 // argInt extracts a 1-based int arg and converts to 0-based for LSP.
 // LSP uses 0-based positions; user input is 1-based for parity with grep
 // / editor line numbers.
-func argInt(args map[string]interface{}, key string) (int, error) {
+func argInt(args map[string]any, key string) (int, error) {
 	raw, ok := args[key]
 	if !ok {
 		return 0, fmt.Errorf("%s is required", key)
@@ -138,8 +138,8 @@ func (t LSPHoverTool) Name() string { return "lsp_hover" }
 func (t LSPHoverTool) Description() string {
 	return "Ask the language server for hover information (type, signature, doc) at a (file, line, column) position. Useful for understanding what a symbol is or means without grepping for its declaration."
 }
-func (t LSPHoverTool) Parameters() map[string]interface{} { return commonLSPParams() }
-func (t LSPHoverTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t LSPHoverTool) Parameters() map[string]any { return commonLSPParams() }
+func (t LSPHoverTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	file, _ := args["file"].(string)
 	line, err := argInt(args, "line")
 	if err != nil {
@@ -171,8 +171,8 @@ func (t LSPDefinitionTool) Name() string { return "lsp_definition" }
 func (t LSPDefinitionTool) Description() string {
 	return "Ask the language server where the symbol at (file, line, column) is defined. Returns one or more `path:line:col` locations the model can read with the `read` tool."
 }
-func (t LSPDefinitionTool) Parameters() map[string]interface{} { return commonLSPParams() }
-func (t LSPDefinitionTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t LSPDefinitionTool) Parameters() map[string]any { return commonLSPParams() }
+func (t LSPDefinitionTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	file, _ := args["file"].(string)
 	line, err := argInt(args, "line")
 	if err != nil {
@@ -211,16 +211,16 @@ func (t LSPReferencesTool) Name() string { return "lsp_references" }
 func (t LSPReferencesTool) Description() string {
 	return "Ask the language server for every reference to the symbol at (file, line, column). Pass include_declaration=true to also get the declaration site itself."
 }
-func (t LSPReferencesTool) Parameters() map[string]interface{} {
+func (t LSPReferencesTool) Parameters() map[string]any {
 	p := commonLSPParams()
-	props := p["properties"].(map[string]interface{})
-	props["include_declaration"] = map[string]interface{}{
+	props := p["properties"].(map[string]any)
+	props["include_declaration"] = map[string]any{
 		"type":        "boolean",
 		"description": "Include the symbol's declaration in the results. Default false.",
 	}
 	return p
 }
-func (t LSPReferencesTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t LSPReferencesTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	file, _ := args["file"].(string)
 	line, err := argInt(args, "line")
 	if err != nil {
@@ -260,11 +260,11 @@ func (t LSPDiagnosticsTool) Name() string { return "lsp_diagnostics" }
 func (t LSPDiagnosticsTool) Description() string {
 	return "List the diagnostics (errors, warnings, hints) the language server has published for a file. Use this after editing to confirm a file compiles cleanly without invoking the build."
 }
-func (t LSPDiagnosticsTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t LSPDiagnosticsTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"file": map[string]interface{}{
+		"properties": map[string]any{
+			"file": map[string]any{
 				"type":        "string",
 				"description": "Path to the source file (absolute, or relative to the project cwd).",
 			},
@@ -272,7 +272,7 @@ func (t LSPDiagnosticsTool) Parameters() map[string]interface{} {
 		"required": []string{"file"},
 	}
 }
-func (t LSPDiagnosticsTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t LSPDiagnosticsTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	file, _ := args["file"].(string)
 	_, uri, client, err := resolveFile(ctx, t.mgr, ac, file)
 	if err != nil {

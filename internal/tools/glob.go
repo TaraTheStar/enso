@@ -19,18 +19,18 @@ func (t GlobTool) Name() string { return "glob" }
 func (t GlobTool) Description() string {
 	return "Find files by glob pattern. Args: pattern (string), path (string)"
 }
-func (t GlobTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t GlobTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"pattern": map[string]interface{}{"type": "string"},
-			"path":    map[string]interface{}{"type": "string"},
+		"properties": map[string]any{
+			"pattern": map[string]any{"type": "string"},
+			"path":    map[string]any{"type": "string"},
 		},
 		"required": []string{"pattern"},
 	}
 }
 
-func (t GlobTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t GlobTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	pattern, _ := args["pattern"].(string)
 	root, _ := args["path"].(string)
 	if root == "" {

@@ -326,9 +326,9 @@ type ToolDef struct {
 
 // ToolFunctionDef describes a tool's name, description, and parameters.
 type ToolFunctionDef struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	Parameters  map[string]interface{} `json:"parameters"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  map[string]any `json:"parameters"`
 }
 
 // ChatResponseDelta is the per-choice `delta` object inside a streaming
@@ -389,8 +389,8 @@ type DTCall struct {
 	ID       string `json:"id,omitempty"`
 	Type     string `json:"type,omitempty"`
 	Function struct {
-		Name      string      `json:"name,omitempty"`
-		Arguments interface{} `json:"arguments,omitempty"` // string or JSON object (llama.cpp quirk)
+		Name      string `json:"name,omitempty"`
+		Arguments any    `json:"arguments,omitempty"` // string or JSON object (llama.cpp quirk)
 	} `json:"function,omitempty"`
 }
 
