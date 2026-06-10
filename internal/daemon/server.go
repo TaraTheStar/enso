@@ -401,6 +401,11 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 	}
 
 	checker := permissions.NewChecker(s.cfg.Permissions.Allow, s.cfg.Permissions.Ask, s.cfg.Permissions.Deny, s.cfg.Permissions.Mode)
+	// The session cwd may differ from the daemon process cwd; the checker
+	// must canonicalize path args against the session's, not the daemon's.
+	if abs, err := filepath.Abs(req.Cwd); err == nil {
+		checker.SetCwd(abs)
+	}
 	if req.Yolo {
 		checker.SetYolo(true)
 	}
@@ -539,19 +544,53 @@ func (s *Server) onSubscribe(conn net.Conn, req SubscribeReq) error {
 		return fmt.Errorf("unknown session %q", req.SessionID)
 	}
 	ch, replay := state.subscribe(req.FromSeq)
+	// The subscribe conn is one-way after the initial request — the
+	// client only ever reads events from it (Submit/Cancel/Respond go
+	// over a separate back-channel conn, see attach.go's withSubmitConn)
+	// — so once a subscription ends the conn has no further use. Close
+	// it on every exit path: that unblocks the reader goroutine below
+	// and makes handleConn's next ReadMessage fail so the outer loop
+	// returns too.
+	defer conn.Close()
+	defer state.unsubscribe(ch)
 	for _, e := range replay {
 		if err := WriteMessage(conn, KindEvent, e); err != nil {
-			state.unsubscribe(ch)
 			return nil
 		}
 	}
-	for evt := range ch {
-		if err := WriteMessage(conn, KindEvent, evt); err != nil {
-			state.unsubscribe(ch)
+
+	// Detect client disconnects independently of event traffic. Waiting
+	// for the next WriteMessage to fail is not enough: an idle session
+	// may never produce another event, leaking this goroutine, the conn
+	// fd, and the subscriber slot per attach/detach cycle — and stale
+	// slots keep proxyPermission's hasSubs true, so prompts fan out to
+	// nobody and deny only after the full timeout. The client never
+	// writes on this conn after subscribing, so a blocking ReadMessage
+	// returning an error IS the disconnect signal; stray frames from a
+	// misbehaving client are drained and ignored.
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, err := ReadMessage(conn); err != nil {
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case evt, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			if err := WriteMessage(conn, KindEvent, evt); err != nil {
+				return nil
+			}
+		case <-done:
 			return nil
 		}
 	}
-	return nil
 }
 
 func (s *Server) lookup(id string) *sessionState {

@@ -77,6 +77,29 @@ type Agent struct {
 	learnedCtxMu sync.Mutex
 	learnedCtx   map[string]int
 
+	// histMu guards History, toolMeta, userTurnCounter, and histGen.
+	// Control operations (/compact, /prune, /context) arrive off the
+	// agent goroutine — the worker adapter dispatches every control RPC
+	// on its own goroutine, and the in-process TUI slash commands call
+	// ForcePrune/ForceCompact directly — so every History/toolMeta
+	// reader and writer must hold this lock. The run loop takes it
+	// around each discrete read/write section, never across a streaming
+	// LLM call, so a mid-turn /context answers promptly.
+	//
+	// Lock ordering: histMu is acquired FIRST. While holding histMu it
+	// is safe to take the leaf locks (a.mu via Provider(),
+	// messageUsageMu, learnedCtxMu); never acquire histMu while holding
+	// any of them.
+	histMu sync.Mutex
+
+	// histGen increments on every History/toolMeta mutation (append,
+	// stub rewrite, compaction rebuild) under histMu. Compaction
+	// releases histMu across the summarisation LLM call and re-checks
+	// histGen before rewriting History, aborting if the conversation
+	// moved underneath it — that's what makes dropping the lock during
+	// the slow call safe.
+	histGen uint64
+
 	mu        sync.Mutex
 	curCancel context.CancelFunc
 
@@ -341,9 +364,11 @@ func (a *Agent) ProviderName() string {
 // old provider (the Provider() call inside the chat goroutine snapped
 // the value before SetProvider could run).
 //
-// Also updates AgentCtx.Provider so spawn_agent and other tools that
-// rely on AgentContext for provider context see the new selection on
-// their next invocation.
+// AgentCtx.Provider is deliberately NOT written here: tools read that
+// field without a lock on the agent goroutine (spawn_agent), so a
+// mid-turn /model swap writing it from the UI/control goroutine would
+// be a data race. turn() applies the current provider to AgentCtx at
+// the turn boundary instead, on the same goroutine that runs tools.
 func (a *Agent) SetProvider(name string) error {
 	a.mu.Lock()
 	p, ok := a.Providers[name]
@@ -353,9 +378,6 @@ func (a *Agent) SetProvider(name string) error {
 	}
 	a.mu.Lock()
 	a.currentProvider = p
-	if a.AgentCtx != nil {
-		a.AgentCtx.Provider = p
-	}
 	a.mu.Unlock()
 	return nil
 }
@@ -372,6 +394,7 @@ func (a *Agent) ContextWindow() int {
 
 // refreshEstimate recomputes the cached token count from the current history.
 // Must be called whenever history changes — appendMessage and compaction.
+// Caller must hold a.histMu (it reads History).
 func (a *Agent) refreshEstimate() {
 	a.estTokens.Store(int64(a.estimateTokens()))
 }
@@ -422,6 +445,8 @@ func (a *Agent) effectiveContextWindow(p *llm.Provider) int {
 // since the last usage event so we don't undercount tool results and
 // the next user message — they aren't in lastUsage.InputTokens but
 // will be on the next API call.
+//
+// Caller must hold a.histMu (it reads History).
 func (a *Agent) estimateTokens() int {
 	if u := a.lastUsage.Load(); u != nil && !u.Empty() {
 		// EffectiveInputTokens normalizes the per-provider cache accounting
@@ -436,7 +461,9 @@ func (a *Agent) estimateTokens() int {
 // tokensAppendedSinceLastUsage estimates the size of messages added to
 // History after the last assistant turn whose usage we recorded.
 // Returns 0 when no usage has been recorded yet or when the recorded
-// turn IS the last message.
+// turn IS the last message. Caller must hold a.histMu (it reads
+// History); messageUsageMu is taken inside, consistent with the
+// histMu-first lock ordering.
 func (a *Agent) tokensAppendedSinceLastUsage() int {
 	a.messageUsageMu.Lock()
 	defer a.messageUsageMu.Unlock()
@@ -482,7 +509,9 @@ func (a *Agent) stampUsage(historyIdx, persistSeq int, usage llm.MessageUsage) {
 	// double-count); reasoning rides on output.
 	a.cumIn.Add(int64(usage.EffectiveInputTokens()))
 	a.cumOut.Add(int64(usage.OutputTokens + usage.ReasoningTokens))
+	a.histMu.Lock()
 	a.refreshEstimate()
+	a.histMu.Unlock()
 	if a.Writer != nil {
 		if err := a.Writer.AppendMessageUsage(persistSeq, usage, a.AgentCtx.AgentID); err != nil {
 			a.AgentCtx.Logger.Error("session: append usage", "err", err)
@@ -816,7 +845,9 @@ func New(cfg Config) (*Agent, error) {
 	// checkpoint compacts only its own history.
 	ac.Checkpoint = a
 	ac.InstructionResolver = a
+	a.histMu.Lock()
 	a.refreshEstimate()
+	a.histMu.Unlock()
 	a.startEventHookFanout()
 	return a, nil
 }
@@ -915,6 +946,8 @@ func (a *Agent) RunOneShot(ctx context.Context, prompt string) (string, error) {
 		return "", ctx.Err()
 	}
 
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
 	for i := len(a.History) - 1; i >= 0; i-- {
 		m := a.History[i]
 		if m.Role == "assistant" && len(m.ToolCalls) == 0 {
@@ -1109,6 +1142,14 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	// using the provider it started with even if SetProvider runs.
 	p := a.Provider()
 
+	// Apply the snapped provider to AgentCtx here, at the turn boundary,
+	// on the agent goroutine. Tools (spawn_agent) read AgentCtx.Provider
+	// without a lock during tool execution, which runs on this same
+	// goroutine — SetProvider must not write the field from another
+	// goroutine mid-turn, so it only updates currentProvider and this is
+	// where the swap becomes visible to tools.
+	a.AgentCtx.Provider = p
+
 	// Cumulative-spend tracking is now driven by provider-reported
 	// usage (EventUsage) post-stream. Backends that don't report usage
 	// leave cumIn/cumOut unchanged for the affected turn — acceptable
@@ -1133,7 +1174,10 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		}
 
 		req := llm.ChatRequest{
-			Messages:          a.History,
+			// Snapshot, not the live slice: a concurrent control op
+			// (/prune stubbing, /compact rebuild) may rewrite History
+			// elements while the client goroutine serialises the request.
+			Messages:          a.historySnapshot(),
 			Tools:             registry.ToolDefs(),
 			Temperature:       p.Sampler.Temperature,
 			TopK:              p.Sampler.TopK,
@@ -1283,8 +1327,8 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 		return false, nil
 	}
 
-	seq := a.appendMessage(asst)
-	a.stampUsage(len(a.History)-1, seq, usage)
+	idx, seq := a.appendMessageIdx(asst)
+	a.stampUsage(idx, seq, usage)
 	a.Bus.Publish(bus.Event{Type: bus.EventAssistantDone})
 
 	if len(toolCalls) == 0 {
@@ -1350,8 +1394,8 @@ func (a *Agent) maybeRecover(p *llm.Provider, finishReason, content string, asst
 			return false, false, nil
 		}
 		a.recoverAttempts++
-		seq := a.appendMessage(asst)
-		a.stampUsage(len(a.History)-1, seq, usage)
+		idx, seq := a.appendMessageIdx(asst)
+		a.stampUsage(idx, seq, usage)
 		a.Bus.Publish(bus.Event{Type: bus.EventAssistantDone})
 		a.appendUserMessage(recoveryContinueNudge, nil)
 		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
@@ -1400,19 +1444,43 @@ func recoverWord(finishReason string) string {
 // seq (0 when no Writer is configured), so the Run loop can hand a
 // genuine user turn's seq to OnUserTurn for checkpointing.
 func (a *Agent) appendUserMessage(content string, parts []llm.MessagePart) int {
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
 	a.userTurnCounter++
-	return a.appendMessage(llm.Message{Role: "user", Content: content, Parts: parts})
+	return a.appendMessageLocked(llm.Message{Role: "user", Content: content, Parts: parts})
 }
 
-// appendMessage persists the message (if a Writer is configured) before
-// updating in-memory history. The synchronous persist-before-render order
-// keeps a crashed process from losing state observed by the user.
+// appendMessage appends one message under the history lock. Returns the
+// persisted message's per-session seq (0 when no Writer is configured
+// or the append failed).
+func (a *Agent) appendMessage(msg llm.Message) int {
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
+	return a.appendMessageLocked(msg)
+}
+
+// appendMessageIdx is appendMessage returning the new message's History
+// index as well, captured atomically under the history lock so a
+// concurrent compaction can't shift the slot between the append and the
+// caller's stampUsage.
+func (a *Agent) appendMessageIdx(msg llm.Message) (idx, seq int) {
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
+	idx = len(a.History)
+	seq = a.appendMessageLocked(msg)
+	return idx, seq
+}
+
+// appendMessageLocked persists the message (if a Writer is configured)
+// before updating in-memory history. The synchronous persist-before-render
+// order keeps a crashed process from losing state observed by the user.
+// Caller must hold a.histMu.
 //
 // Returns the persisted message's per-session seq (0 when no Writer is
 // configured or the append failed). Callers that stamp usage must pass
 // this seq to stampUsage so the usage attaches to the right row even when
 // a concurrent sub-agent shares the writer.
-func (a *Agent) appendMessage(msg llm.Message) int {
+func (a *Agent) appendMessageLocked(msg llm.Message) int {
 	seq := 0
 	if a.Writer != nil {
 		var err error
@@ -1421,8 +1489,22 @@ func (a *Agent) appendMessage(msg llm.Message) int {
 		}
 	}
 	a.History = append(a.History, msg)
+	a.histGen++
 	a.refreshEstimate()
 	return seq
+}
+
+// historySnapshot returns a shallow copy of History taken under the
+// history lock. Element values are copied, so in-place Content rewrites
+// (prune stubbing) and compaction rebuilds can't race a reader of the
+// snapshot; the strings/slices inside each element are never mutated in
+// place by anyone.
+func (a *Agent) historySnapshot() []llm.Message {
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
+	msgs := make([]llm.Message, len(a.History))
+	copy(msgs, a.History)
+	return msgs
 }
 
 // executeToolCall gates one call through the permission checker and runs
@@ -1515,8 +1597,19 @@ func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, t
 	return result.LLMOutput, result.Parts, result.Meta
 }
 
-// requestPrompt publishes a permission request and blocks for the user's reply
-// (or for the turn context to be cancelled).
+// permissionPromptTimeout bounds how long requestPrompt waits for the
+// user's answer. Bus.Publish is lossy — a burst of permission requests
+// (several concurrent sub-agents) can overflow a subscriber's buffer and
+// drop one silently, in which case nobody ever sends on respCh. Without
+// a deadline the agent goroutine would hang until the turn is cancelled
+// (in a detached daemon session: forever). Generous on purpose: a human
+// reading a prompt takes seconds-to-minutes, a dropped request never
+// answers at all. A var (not const) so tests can shorten it.
+var permissionPromptTimeout = 5 * time.Minute
+
+// requestPrompt publishes a permission request and blocks for the user's
+// reply, the turn context being cancelled, or the timeout — a lost
+// request degrades to deny instead of hanging the agent.
 func (a *Agent) requestPrompt(ctx context.Context, toolName string, args map[string]interface{}) permissions.Decision {
 	respCh := make(chan permissions.Decision, 1)
 	a.Bus.Publish(bus.Event{
@@ -1529,10 +1622,18 @@ func (a *Agent) requestPrompt(ctx context.Context, toolName string, args map[str
 			Respond:   respCh,
 		},
 	})
+	timer := time.NewTimer(permissionPromptTimeout)
+	defer timer.Stop()
 	select {
 	case d := <-respCh:
 		return d
 	case <-ctx.Done():
+		return permissions.Deny
+	case <-timer.C:
+		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
+			a.AgentCtx.Logger.Warn("permission prompt unanswered (request may have been dropped by a slow consumer); denying",
+				"tool", toolName, "timeout", permissionPromptTimeout)
+		}
 		return permissions.Deny
 	}
 }

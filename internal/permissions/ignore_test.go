@@ -44,7 +44,7 @@ func TestLoadIgnoreFileMissing(t *testing.T) {
 }
 
 func TestIgnoreToDenyPatterns(t *testing.T) {
-	got := IgnoreToDenyPatterns([]string{".env"})
+	got := IgnoreToDenyPatterns([]string{".env"}, "")
 	if len(got) != 5 {
 		t.Fatalf("expected one rule per file tool (5), got %d: %v", len(got), got)
 	}
@@ -71,12 +71,41 @@ func TestIgnoreToDenyPatterns(t *testing.T) {
 	}
 }
 
+// TestIgnoreToDenyPatterns_AnchorsRelativeToCwd locks in the H3 fix on
+// the pattern side: relative ignore entries are anchored to cwd for the
+// path tools so they match the canonical absolute paths the checker
+// compares against; absolute and `**`-rooted entries pass through; the
+// glob rule always keeps the pattern verbatim (glob's arg is itself a
+// pattern, never a resolved path).
+func TestIgnoreToDenyPatterns_AnchorsRelativeToCwd(t *testing.T) {
+	got := IgnoreToDenyPatterns([]string{".env", "/abs/**", "**/key.pem"}, "/repo")
+	want := map[string]bool{
+		"read(/repo/.env)": false, "write(/repo/.env)": false,
+		"edit(/repo/.env)": false, "grep(/repo/.env)": false,
+		"glob(.env)": false,
+		// Absolute entries are already anchored.
+		"read(/abs/**)": false, "glob(/abs/**)": false,
+		// `**/...` means "anywhere" — never narrowed to cwd.
+		"read(**/key.pem)": false, "glob(**/key.pem)": false,
+	}
+	for _, p := range got {
+		if _, ok := want[p]; ok {
+			want[p] = true
+		}
+	}
+	for p, seen := range want {
+		if !seen {
+			t.Errorf("missing expected rule %q in %v", p, got)
+		}
+	}
+}
+
 // TestIgnoreEnforcedAsDeny wires LoadIgnoreFile + IgnoreToDenyPatterns
 // through the live Allowlist to confirm `.ensoignore` content actually
 // blocks file-touching tools.
 func TestIgnoreEnforcedAsDeny(t *testing.T) {
 	patterns := []string{".env", "secrets/**"}
-	denies := IgnoreToDenyPatterns(patterns)
+	denies := IgnoreToDenyPatterns(patterns, "")
 	al := NewAllowlist(nil, nil, denies)
 
 	cases := []struct {

@@ -42,9 +42,13 @@ func TestMain(m *testing.M) {
 //     RFC1918 / metadata / …) — that is the open-relay-into-host-internal
 //     pivot the finding calls out. The yolo allowlist is empty, so the
 //     denylist applies and the dial is refused.
-//   - An EXPLICITLY allowed target IS exempt — the operator/broker named it,
-//     so a host-loopback model server is reachable on purpose (same opt-out
-//     as web_fetch's allow_hosts).
+//   - A RUNTIME grant (broker grant / interactive approval, Proxy.Allow)
+//     opens the gate but does NOT exempt the denylist — the name is
+//     worker-chosen, so DNS pointing it at loopback/metadata stays refused.
+//   - An OPERATOR-CONFIGURED target (Proxy.AllowConfigured) IS exempt —
+//     the operator named it in the config file, so a host-loopback model
+//     server is reachable on purpose (same opt-out as web_fetch's
+//     allow_hosts).
 //
 // These cases pin the REAL netsec denylist back (the test-wide TestMain
 // default permits loopback so the legacy tests can use loopback upstreams).
@@ -84,10 +88,28 @@ func TestProxySSRFGuard(t *testing.T) {
 		}
 	})
 
-	t.Run("explicit Allow exempts the denylist (local-model case)", func(t *testing.T) {
+	t.Run("runtime Allow must not exempt the denylist", func(t *testing.T) {
 		defer egress.SetDenyIP(netsec.IsDeniedIP)()
 		p, client := newProxy(t)
-		p.Allow(u.Host) // operator/broker named THIS target → opt-out
+		p.Allow(u.Host) // broker/interactive grant: worker-chosen name → gate opens…
+
+		resp, err := client.Get(internal.URL)
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		defer resp.Body.Close()
+		// …but the dial still refuses the loopback IP → 502. A yolo broker
+		// grant or an operator's "allow egress to foo" approval is a grant
+		// for the NAME, never a waiver of private-address protection.
+		if resp.StatusCode != http.StatusBadGateway {
+			t.Fatalf("runtime-granted loopback target must still be refused (want 502), got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("configured entry exempts the denylist (local-model case)", func(t *testing.T) {
+		defer egress.SetDenyIP(netsec.IsDeniedIP)()
+		p, client := newProxy(t)
+		p.AllowConfigured(u.Host) // operator named THIS target in config → opt-out
 
 		resp, err := client.Get(internal.URL)
 		if err != nil {
@@ -96,7 +118,7 @@ func TestProxySSRFGuard(t *testing.T) {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK || string(body) != "host-internal" {
-			t.Fatalf("explicitly-allowed loopback target must be reachable: %d %q", resp.StatusCode, body)
+			t.Fatalf("config-allowed loopback target must be reachable: %d %q", resp.StatusCode, body)
 		}
 	})
 }

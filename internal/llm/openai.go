@@ -337,10 +337,23 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		var lastUsage *ChunkUsage
 		finishReason := ""
 
+		// drainSSE lets ParseSSE finish any pending send and exit instead
+		// of leaking. The parser is typically parked on `done <- data`
+		// (with later chunks already buffered in its scanner), and the
+		// deferred resp.Body.Close() does NOT unblock a channel send — so
+		// every path that stops reading sseDone before it closes must
+		// drain it.
+		drainSSE := func() {
+			go func() {
+				for range sseDone {
+				}
+			}()
+		}
+
 		// abort tears down a stream we've decided to stop reading early
-		// (stall watchdog or loop guard). Closing the body unblocks
-		// ParseSSE's in-flight Read; draining sseDone lets it finish any
-		// pending send and exit instead of leaking. First reason wins.
+		// (stall watchdog, loop guard, or reasoning budget). Closing the
+		// body unblocks ParseSSE's in-flight Read; draining sseDone lets it
+		// finish any pending send and exit. First reason wins.
 		aborted := false
 		abort := func(reason string) {
 			if aborted {
@@ -349,10 +362,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			aborted = true
 			finishReason = reason
 			resp.Body.Close()
-			go func() {
-				for range sseDone {
-				}
-			}()
+			drainSSE()
 		}
 
 		// started flips once the first chunk arrives. The stall watchdog
@@ -396,6 +406,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			fmt.Fprintf(debugLog(), "sse: %s\n", string(raw))
 			var chunk ChatCompletionChunk
 			if err := json.Unmarshal(raw, &chunk); err != nil {
+				drainSSE()
 				eventCh <- Event{Type: EventError, Error: fmt.Errorf("unmarshal chunk: %w", err)}
 				return
 			}
@@ -432,6 +443,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 				if len(delta.ToolCalls) > 0 {
 					acting = true
 					if err := acc.Merge(delta); err != nil {
+						drainSSE()
 						eventCh <- Event{Type: EventError, Error: fmt.Errorf("merge tool call: %w", err)}
 						return
 					}
@@ -457,10 +469,19 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			return
 		}
 
-		if calls := acc.Finalize(); len(calls) > 0 {
-			eventCh <- Event{Type: EventToolCallComplete, ToolCalls: calls}
-			if finishReason == "" {
-				finishReason = "tool_calls"
+		// An aborted stream (stall / repetition / reasoning budget) may have
+		// cut a tool call off mid-arguments. Finalizing it would hand the
+		// agent a call with truncated JSON — and any tool call at all makes
+		// agent.turn skip maybeRecover, so the abort reason would be
+		// discarded and the corrupted call persisted into history. Drop the
+		// partial instead: the turn reaches the agent with no tool calls and
+		// goes through the designed retry-with-nudge recovery.
+		if !aborted {
+			if calls := acc.Finalize(); len(calls) > 0 {
+				eventCh <- Event{Type: EventToolCallComplete, ToolCalls: calls}
+				if finishReason == "" {
+					finishReason = "tool_calls"
+				}
 			}
 		}
 

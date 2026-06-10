@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -102,6 +103,37 @@ func TestEditTool_EmptyOldString(t *testing.T) {
 	got, _ := os.ReadFile(filepath.Join(tmp, "f.txt"))
 	if string(got) != "abc\n" {
 		t.Errorf("file corrupted despite rejection: %q", got)
+	}
+}
+
+// TestEditTool_PreservesFileMode guards M11: the atomic rewrite must keep
+// the original file's permission bits — editing a 0755 script used to
+// silently strip the exec bit via a hardcoded 0o644.
+func TestEditTool_PreservesFileMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("unix permission bits")
+	}
+	tmp := t.TempDir()
+	script := filepath.Join(tmp, "run.sh")
+	mustWriteFile(t, script, "#!/bin/sh\necho old\n")
+	if err := os.Chmod(script, 0o755); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	ac := newToolAC(tmp)
+
+	if _, err := (EditTool{}).Run(context.Background(), map[string]any{
+		"path":       "run.sh",
+		"old_string": "old",
+		"new_string": "new",
+	}, ac); err != nil {
+		t.Fatalf("edit: %v", err)
+	}
+	fi, err := os.Stat(script)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if fi.Mode().Perm() != 0o755 {
+		t.Errorf("mode = %o, want 755 preserved", fi.Mode().Perm())
 	}
 }
 

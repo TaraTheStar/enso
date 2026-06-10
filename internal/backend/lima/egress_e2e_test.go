@@ -88,7 +88,7 @@ func TestSealedGuestEgress_RealVM(t *testing.T) {
 		t.Fatalf("proxy start: %v", err)
 	}
 	defer pr.Close()
-	pr.Allow(upHost) // allowed; everything else stays denied
+	pr.AllowConfigured(upHost) // operator-config entry (loopback upstream needs the denylist opt-out); everything else stays denied
 
 	// Apply the real guest firewall with this proxy, exactly as Start
 	// does (gateway-translated URL → the firewall opens that host:port).
@@ -135,5 +135,95 @@ func TestSealedGuestEgress_RealVM(t *testing.T) {
 	//    the proxy is a policy gate, not an open relay.
 	if out, _ := guestCurl("-x", gwProxy, "http://198.51.100.7:80/"); strings.Contains(out, "EGRESS-OK") {
 		t.Fatalf("non-allowlisted egress must NOT succeed through the proxy; out=%q", out)
+	}
+}
+
+// TestSealedGuestWorkerCannotUnseal_RealVM is the H1 regression for Lima:
+// the seal is applied as guest-root (the default user's passwordless
+// sudo), but the WORKER must not be able to reach root and tear it down.
+// The worker is exec'd through `setpriv --no-new-privs` (buildShellArgs),
+// which makes the kernel ignore setuid bits — so `sudo iptables -F
+// ENSO_EGRESS` from the worker context FAILS, while the uid is unchanged
+// (writable mount stays writable). Needs no curl/internet: it asserts the
+// escalation path is closed and the chain survives.
+func TestSealedGuestWorkerCannotUnseal_RealVM(t *testing.T) {
+	if testing.Short() {
+		t.Skip("boots a real Lima VM; skipped in -short")
+	}
+	if _, err := exec.LookPath(limactlBin); err != nil {
+		t.Skip("limactl (Lima) not on PATH")
+	}
+	if _, err := os.Stat("/dev/kvm"); err != nil {
+		t.Skip("no /dev/kvm: hardware virtualization unavailable for a Lima VM")
+	}
+	limactl, err := exec.LookPath(limactlBin)
+	if err != nil {
+		t.Skip("limactl not resolvable")
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatalf("resolve test executable: %v", err)
+	}
+
+	proj := t.TempDir()
+	name := vmName(proj)
+	t.Cleanup(func() {
+		cl, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		_ = exec.CommandContext(cl, limactl, "stop", "--force", name).Run()
+		_ = exec.CommandContext(cl, limactl, "delete", "--force", name).Run()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	b := &Backend{Sealed: true}
+	if err := b.ensureRunning(ctx, limactl, name, proj, filepath.Dir(exe)); err != nil {
+		t.Skipf("Lima VM could not be brought up on this host (environment, not enso): %v", err)
+	}
+	// Fully-sealed seal (no proxy) — installs the ENSO_EGRESS chain.
+	if err := sealGuestEgress(ctx, limactl, name, ""); err != nil {
+		t.Skipf("could not seal guest (no iptables in this image?): %v", err)
+	}
+	// setpriv must be present (provisioning installs it on sealed Alpine);
+	// a custom image without it is an environment limit, not a seal bug.
+	if out, err := exec.CommandContext(ctx, limactl, "shell", name, "sh", "-c", "command -v setpriv").CombinedOutput(); err != nil {
+		t.Skipf("no setpriv in the guest image: %v\n%s", err, out)
+	}
+
+	shell := func(arg ...string) (string, error) {
+		cctx, ccancel := context.WithTimeout(context.Background(), 45*time.Second)
+		defer ccancel()
+		full := append([]string{"shell", name}, arg...)
+		out, err := exec.CommandContext(cctx, limactl, full...).CombinedOutput()
+		return string(out), err
+	}
+
+	// Baseline: the default user really does have passwordless sudo (the
+	// hole the fix closes). If this fails the test premise is wrong.
+	if _, err := shell("sudo", "-n", "true"); err != nil {
+		t.Skipf("default user lacks passwordless sudo on this image; premise N/A: %v", err)
+	}
+
+	// Worker context: exec'd exactly as buildShellArgs(sealed=true) does,
+	// i.e. through `setpriv --no-new-privs`. From here `sudo` must NOT be
+	// able to reach root, so it cannot flush the seal.
+	if out, err := shell("setpriv", "--no-new-privs", "sh", "-c",
+		"sudo -n iptables -w -F ENSO_EGRESS"); err == nil {
+		t.Fatalf("worker (no_new_privs) must NOT be able to sudo away the seal, but it succeeded: %q", out)
+	}
+
+	// The seal chain must still be intact (REJECT rule present) after that
+	// attempt — verified from a privileged shell.
+	if out, err := shell("sudo", "iptables", "-w", "-L", "ENSO_EGRESS"); err != nil || !strings.Contains(out, "REJECT") {
+		t.Fatalf("ENSO_EGRESS chain must survive the worker's flush attempt; err=%v out=%q", err, out)
+	}
+
+	// uid is unchanged under the drop (so the writable mount stays
+	// writable) — setpriv did not switch users, only set no_new_privs.
+	plain, _ := shell("id", "-u")
+	dropped, _ := shell("setpriv", "--no-new-privs", "id", "-u")
+	if strings.TrimSpace(plain) != strings.TrimSpace(dropped) {
+		t.Fatalf("privilege drop must not change uid (mount writability); plain=%q dropped=%q", plain, dropped)
 	}
 }

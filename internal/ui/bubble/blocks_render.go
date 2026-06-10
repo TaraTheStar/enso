@@ -324,11 +324,24 @@ func invalidateMarkdownRenderers() {
 	mdRenderers = map[int]*glamour.TermRenderer{}
 }
 
+// reasoningBarCached / toolBarCached hold the pre-rendered block-prefix
+// strings. Both bars are pure functions of the palette, and the
+// reasoning bar in particular is prepended to EVERY wrapped line of a
+// live reasoning block on EVERY frame — rebuilding a lipgloss style per
+// call was measurable there. applyStyles clears both on (re)theme.
+var (
+	reasoningBarCached string
+	toolBarCached      string
+)
+
 // reasoningBar returns the dim left-bar prefix that opens reasoning lines.
-// Cached at first use rather than recomputed each call.
+// Cached at first use; invalidated by applyStyles when the palette loads.
 func reasoningBar() string {
-	c := paletteHex("comment")
-	return lipgloss.NewStyle().Foreground(c).Render("▎ ")
+	if reasoningBarCached == "" {
+		c := paletteHex("comment")
+		reasoningBarCached = lipgloss.NewStyle().Foreground(c).Render("▎ ")
+	}
+	return reasoningBarCached
 }
 
 // cometBandSize is the width (in cells) of the comet-trail spinner.
@@ -441,9 +454,13 @@ func liveIndicator(b blocks.Block, started time.Time) string {
 }
 
 // toolBar returns the teal arrow prefix that opens a tool call.
+// Cached like reasoningBar.
 func toolBar() string {
-	c := paletteHex("teal")
-	return lipgloss.NewStyle().Foreground(c).Bold(true).Render("▌ ⏵ ")
+	if toolBarCached == "" {
+		c := paletteHex("teal")
+		toolBarCached = lipgloss.NewStyle().Foreground(c).Bold(true).Render("▌ ⏵ ")
+	}
+	return toolBarCached
 }
 
 // paletteHex resolves a palette colour to a color.Color usable by any

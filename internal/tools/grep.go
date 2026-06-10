@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // GrepTool searches file contents by regex.
@@ -109,6 +110,11 @@ func tryRG(ctx context.Context, path, pattern string, ac *AgentContext) *Result 
 	cmd.Cancel = func() error {
 		return killProcessGroup(cmd.Process)
 	}
+	// Stdout is an in-process buffer, so Run blocks until the pipe copy
+	// goroutine sees EOF; a grandchild holding the inherited fd past the
+	// group kill would hang it forever. WaitDelay force-closes the pipe
+	// after the grace window.
+	cmd.WaitDelay = 5 * time.Second
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	cacheKey := "grep:" + pattern + ":" + path

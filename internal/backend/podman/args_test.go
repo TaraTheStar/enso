@@ -94,6 +94,10 @@ func TestBuildRunArgs_EgressSeal(t *testing.T) {
 	if !strings.Contains(got, "--cap-add NET_ADMIN") {
 		t.Errorf("egress mode must grant NET_ADMIN for the in-guest seal, got: %s", got)
 	}
+	// no-new-privileges makes the post-seal NET_ADMIN drop irreversible.
+	if !strings.Contains(got, "--security-opt no-new-privileges") {
+		t.Errorf("egress mode must pin no-new-privileges so the cap drop is one-way, got: %s", got)
+	}
 	// The entrypoint must be the wrapped script (not a direct exec).
 	if strings.Contains(got, "alpine /usr/local/bin/enso __worker") {
 		t.Errorf("egress mode must wrap the worker in a sealing entrypoint, got: %s", got)
@@ -101,19 +105,22 @@ func TestBuildRunArgs_EgressSeal(t *testing.T) {
 	for _, want := range []string{
 		"set -e",
 		"apk add --no-cache iptables ip6tables", // fail-closed tooling bootstrap
+		"apk add --no-cache setpriv",            // setpriv for the post-seal cap drop
 		"iptables -w -A ENSO_EGRESS -p tcp -d 10.0.2.2 --dport 54321 -j ACCEPT",
 		"iptables -w -A ENSO_EGRESS -j REJECT",
 		"ip6tables -w -A ENSO_EGRESS -j REJECT", // v6 sealed too (S4 shares this)
-		"exec /usr/local/bin/enso __worker",
+		// The worker is exec'd with NET_ADMIN dropped (setpriv), so it
+		// cannot flush the seal and dial around the proxy (H1 fix).
+		"exec setpriv --bounding-set -net_admin --no-new-privs /usr/local/bin/enso __worker",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("sealing entrypoint missing %q, got: %s", want, got)
 		}
 	}
 	// Order is the security property: the seal is applied LAST, so the
-	// only thing that ever runs sealed is the worker exec.
+	// only thing that ever runs sealed is the (privilege-dropped) worker.
 	sealAt := strings.Index(got, "ENSO_EGRESS -j REJECT")
-	execAt := strings.Index(got, "exec /usr/local/bin/enso __worker")
+	execAt := strings.Index(got, "exec setpriv --bounding-set -net_admin --no-new-privs /usr/local/bin/enso __worker")
 	if sealAt < 0 || execAt < 0 || sealAt > execAt {
 		t.Errorf("seal must be applied before the worker exec, got: %s", got)
 	}
@@ -142,7 +149,7 @@ func TestBuildRunArgs_EgressSealAfterInit(t *testing.T) {
 
 	initAt := strings.Index(got, "echo provision-step")
 	sealAt := strings.Index(got, "ENSO_EGRESS -j REJECT")
-	execAt := strings.Index(got, "exec /usr/local/bin/enso __worker")
+	execAt := strings.Index(got, "exec setpriv --bounding-set -net_admin --no-new-privs /usr/local/bin/enso __worker")
 	if initAt < 0 || sealAt < 0 || execAt < 0 {
 		t.Fatalf("expected init, seal, and exec all present, got: %s", got)
 	}

@@ -213,7 +213,7 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 	// Not CommandContext: shutdown is an ordered Teardown (close the
 	// Channel → worker winds down), not an abrupt mid-frame kill. The
 	// persistent VM is NOT stopped per task (only GC stops/deletes it).
-	cmd := exec.Command(limactl, buildShellArgs(name, spec.Cwd, exe, proxyURL)...)
+	cmd := exec.Command(limactl, buildShellArgs(name, spec.Cwd, exe, proxyURL, b.Sealed)...)
 	// Own process group: `limactl shell` forks an ssh child, and a bare
 	// Kill() of the limactl leader (the old Teardown) left that ssh
 	// orphaned — it kept the SSH session into the VM open, so the
@@ -509,8 +509,10 @@ func (b *Backend) buildVMConfig(cwd, exeMount string) string {
 	}
 	if b.Sealed && alpine {
 		// ip6tables too: the seal's v6 default-deny is fail-closed, so the
-		// binary must exist or Start refuses to launch.
-		scripts = append(scripts, "apk add --no-cache iptables ip6tables")
+		// binary must exist or Start refuses to launch. setpriv (util-linux)
+		// runs the worker under no_new_privs (buildShellArgs) so it cannot
+		// sudo away the seal — the Alpine cloud image ships none of these.
+		scripts = append(scripts, "apk add --no-cache iptables ip6tables setpriv")
 	}
 	if len(b.Init) > 0 {
 		scripts = append(scripts, strings.Join(b.Init, "\n"))
@@ -545,8 +547,31 @@ func buildStartArgs(name, yamlPath string) []string {
 // out) — the Lima analogue of podman's -e proxy injection. Loopback is
 // never proxied (the worker dials no model; inference is host-proxied
 // over stdio, not the guest network).
-func buildShellArgs(name, cwd, exe, proxyURL string) []string {
+//
+// Privilege drop (security-critical): when sealed, the worker is exec'd
+// through `setpriv --no-new-privs`. `limactl shell` runs as Lima's
+// default user, which has PASSWORDLESS sudo — so without this the worker
+// could `sudo iptables -F ENSO_EGRESS` and tear down the seal applied by
+// sealGuestEgress, then dial straight out through slirp's NAT. Setting
+// no_new_privs makes the kernel ignore the setuid bit on execve, so sudo
+// (and su/doas/pkexec — every setuid escalation path) can no longer reach
+// root: the unprivileged user has no capabilities of its own and now no
+// way to acquire them, so it cannot touch netfilter. The uid is unchanged
+// (no --reuid), so the writable virtio/9p workdir mount — owned by the
+// default user — stays writable and the read-only enso mount stays
+// executable. The seal itself is applied earlier (sealGuestEgress, a
+// separate privileged `sudo` invocation) and is unaffected. Dropping the
+// capability bounding set is deliberately NOT attempted here: that needs
+// CAP_SETPCAP, which the unprivileged default user lacks.
+func buildShellArgs(name, cwd, exe, proxyURL string, sealed bool) []string {
 	args := []string{"shell", "--workdir", cwd, name}
+	if sealed {
+		// Neutralize the default user's passwordless sudo for the worker
+		// and all its children (the agent's bash tool), so the seal is out
+		// of the worker's reach. setpriv (util-linux) is bootstrapped into
+		// the Alpine guest alongside iptables.
+		args = append(args, "setpriv", "--no-new-privs")
+	}
 	if proxyURL != "" {
 		args = append(args, "env",
 			"HTTPS_PROXY="+proxyURL, "HTTP_PROXY="+proxyURL,

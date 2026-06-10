@@ -110,6 +110,11 @@ type model struct {
 	// any blocks it returns are graduated to scrollback via tea.Println.
 	conv conversation
 
+	// liveCache memoizes the wrapped/styled stable prefix of the live
+	// block so View doesn't re-wrap and re-style the whole accumulated
+	// stream on every frame (see liveRenderCache).
+	liveCache liveRenderCache
+
 	// slashReg + slashCtx drive the in-app /command dispatcher. Set by
 	// run.go before tea.Program starts.
 	slashReg *slash.Registry
@@ -1171,7 +1176,7 @@ func (m *model) View() tea.View {
 	var sb strings.Builder
 
 	if live := m.conv.Live(); live != nil {
-		if rendered := renderBlock(live, m.width, false); rendered != "" {
+		if rendered := m.liveCache.render(live, m.width); rendered != "" {
 			sb.WriteString(rendered)
 			if !strings.HasSuffix(rendered, "\n") {
 				sb.WriteByte('\n')

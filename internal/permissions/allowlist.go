@@ -63,6 +63,13 @@ func ParsePattern(s string) (*Pattern, error) {
 // returns on first hit).
 type Allowlist struct {
 	patterns []*Pattern
+	// cwd anchors relative path patterns at match time (see
+	// anchorPattern), so a relative rule like `read(.env)` matches the
+	// canonical absolute path argument the Checker hands to Match. Set
+	// by the owning Checker; the zero value means "no anchoring"
+	// (legacy lexical matching), which direct construction in tests
+	// keeps.
+	cwd string
 }
 
 // NewAllowlist builds an Allowlist from three pattern lists. The order
@@ -121,7 +128,7 @@ func (al *Allowlist) Match(tool, arg string) (matched bool, kind Kind) {
 		if p.Tool != "*" && p.Tool != tool {
 			continue
 		}
-		if matchArg(tool, p.Arg, arg) {
+		if matchArg(tool, p.Arg, arg, al.cwd) {
 			if p.Kind == KindAllow && tool == "bash" && bashHasUnchainedMetachars(p.Arg, arg) {
 				continue
 			}
@@ -136,7 +143,7 @@ func (al *Allowlist) Match(tool, arg string) (matched bool, kind Kind) {
 		// would not.
 		if p.Kind == KindDeny && tool == "bash" {
 			for _, seg := range bashDenySegments(arg) {
-				if matchArg(tool, p.Arg, seg) || matchArg(tool, p.Arg, normalizeBashSegment(seg)) {
+				if matchArg(tool, p.Arg, seg, al.cwd) || matchArg(tool, p.Arg, normalizeBashSegment(seg), al.cwd) {
 					return true, KindDeny
 				}
 			}
@@ -316,18 +323,26 @@ func bashSplitTopLevel(cmd string) []string {
 // matchArg dispatches per-tool argument matching:
 //
 //	bash      → first-word-aware (so `bash(git *)` works on any "git ...")
-//	read/write/edit/grep/glob → strict doublestar.PathMatch on the
-//	                            absolute path. No basename fallback —
-//	                            `*.go` does not match `/abs/foo.go`;
-//	                            use `**/*.go` for "any .go file".
+//	read/write/edit/grep → strict doublestar.PathMatch on the absolute
+//	                       path (the Checker canonicalizes the arg via
+//	                       canonicalPathArg), with relative patterns
+//	                       anchored to cwd first (anchorPattern). No
+//	                       basename fallback — `*.go` does not match
+//	                       `/abs/foo.go`; use `**/*.go` for "any .go
+//	                       file".
+//	glob      → strict PathMatch on the glob pattern the model passed —
+//	            never anchored or resolved (the arg is itself a
+//	            pattern, not a path)
 //	web_fetch → if pattern starts with `domain:`, match the URL's host
 //	            against the rest; otherwise treat as a glob over the URL
 //	*         → generic doublestar match
-func matchArg(tool, pattern, arg string) bool {
+func matchArg(tool, pattern, arg, cwd string) bool {
 	switch tool {
 	case "bash":
 		return MatchCommand(pattern, arg)
-	case "read", "write", "edit", "grep", "glob":
+	case "read", "write", "edit", "grep":
+		return MatchPath(anchorPattern(pattern, cwd), arg)
+	case "glob":
 		return MatchPath(pattern, arg)
 	case "web_fetch":
 		if strings.HasPrefix(pattern, "domain:") {
