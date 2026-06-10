@@ -132,7 +132,7 @@ func TestBashTool_NudgesPollingSleep(t *testing.T) {
 	ac := &AgentContext{Cwd: t.TempDir(), Bus: bus.New(), BashJobs: NewBashJobs()}
 	res, err := BashTool{}.Run(
 		context.Background(),
-		map[string]interface{}{"cmd": "sleep 30 && cat out.log"},
+		map[string]any{"cmd": "sleep 30 && cat out.log"},
 		ac,
 	)
 	if err != nil {
@@ -152,7 +152,7 @@ func TestBashTool_NudgesNonTerminating(t *testing.T) {
 	ac := &AgentContext{Cwd: t.TempDir(), Bus: bus.New(), BashJobs: NewBashJobs()}
 	res, err := BashTool{}.Run(
 		context.Background(),
-		map[string]interface{}{"cmd": "tail -f /etc/hostname"},
+		map[string]any{"cmd": "tail -f /etc/hostname"},
 		ac,
 	)
 	if err != nil {
@@ -173,7 +173,7 @@ func TestBashTool_ExplicitTimeoutSkipsNudge(t *testing.T) {
 	ac := &AgentContext{Cwd: t.TempDir(), Bus: bus.New(), BashJobs: NewBashJobs()}
 	res, err := BashTool{}.Run(
 		context.Background(),
-		map[string]interface{}{"cmd": "tail -f /etc/hostname", "timeout": 1},
+		map[string]any{"cmd": "tail -f /etc/hostname", "timeout": 1},
 		ac,
 	)
 	if err != nil {

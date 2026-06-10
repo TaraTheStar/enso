@@ -619,7 +619,7 @@ func toAnthropicTools(in []ToolDef) ([]anthropic.ToolUnionParam, error) {
 // thing — `type`, `properties`, `required`, plus any extras) into
 // Anthropic's ToolInputSchemaParam, which has dedicated fields for
 // Properties + Required and an ExtraFields catch-all for the rest.
-func toAnthropicSchema(params map[string]interface{}) (anthropic.ToolInputSchemaParam, error) {
+func toAnthropicSchema(params map[string]any) (anthropic.ToolInputSchemaParam, error) {
 	var schema anthropic.ToolInputSchemaParam
 	if params == nil {
 		return schema, nil
@@ -648,13 +648,13 @@ func toAnthropicSchema(params map[string]interface{}) (anthropic.ToolInputSchema
 	return schema, nil
 }
 
-func toStringSlice(v interface{}) ([]string, error) {
+func toStringSlice(v any) ([]string, error) {
 	switch s := v.(type) {
 	case nil:
 		return nil, nil
 	case []string:
 		return s, nil
-	case []interface{}:
+	case []any:
 		out := make([]string, 0, len(s))
 		for i, item := range s {
 			str, ok := item.(string)

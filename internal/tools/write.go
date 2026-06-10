@@ -16,18 +16,18 @@ func (t WriteTool) Name() string { return "write" }
 func (t WriteTool) Description() string {
 	return "Overwrite a file with content. Args: path (string), content (string)"
 }
-func (t WriteTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t WriteTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"path":    map[string]interface{}{"type": "string"},
-			"content": map[string]interface{}{"type": "string"},
+		"properties": map[string]any{
+			"path":    map[string]any{"type": "string"},
+			"content": map[string]any{"type": "string"},
 		},
 		"required": []string{"path", "content"},
 	}
 }
 
-func (t WriteTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t WriteTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	path, _ := args["path"].(string)
 	content, _ := args["content"].(string)
 

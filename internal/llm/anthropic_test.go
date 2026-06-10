@@ -121,14 +121,14 @@ func TestToAnthropicParams_ToolResultRoundtrip(t *testing.T) {
 
 // TestToAnthropicSchema_LiftsRequired exercises the schema translator's
 // Required + Properties extraction. The OpenAI tool schema arrives as a
-// generic map[string]interface{} so the type-assertion fallbacks matter.
+// generic map[string]any so the type-assertion fallbacks matter.
 func TestToAnthropicSchema_LiftsRequired(t *testing.T) {
-	params := map[string]interface{}{
+	params := map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"path": map[string]interface{}{"type": "string"},
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string"},
 		},
-		"required":             []interface{}{"path"},
+		"required":             []any{"path"},
 		"additionalProperties": false,
 	}
 	schema, err := toAnthropicSchema(params)
@@ -359,7 +359,7 @@ func TestAnthropicBuildParams_PromptCaching(t *testing.T) {
 			Function: ToolFunctionDef{
 				Name:        "read",
 				Description: "read a file",
-				Parameters:  map[string]interface{}{"type": "object"},
+				Parameters:  map[string]any{"type": "object"},
 			},
 		}},
 	}, 8192)
@@ -400,7 +400,7 @@ func TestAnthropicBuildParams_PromptCachingCapsAtFour(t *testing.T) {
 		Tools: []ToolDef{{
 			Type: "function",
 			Function: ToolFunctionDef{
-				Name: "read", Description: "x", Parameters: map[string]interface{}{"type": "object"},
+				Name: "read", Description: "x", Parameters: map[string]any{"type": "object"},
 			},
 		}},
 	}, 8192)
@@ -424,7 +424,7 @@ func TestAnthropicBuildParams_PromptCachingDisabled(t *testing.T) {
 			{Role: "system", Content: "you are concise"},
 			{Role: "user", Content: "hi"},
 		},
-		Tools: []ToolDef{{Type: "function", Function: ToolFunctionDef{Name: "read", Description: "x", Parameters: map[string]interface{}{"type": "object"}}}},
+		Tools: []ToolDef{{Type: "function", Function: ToolFunctionDef{Name: "read", Description: "x", Parameters: map[string]any{"type": "object"}}}},
 	}, 8192)
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)

@@ -395,13 +395,13 @@ func buildConverseInput(req ChatRequest, model string, maxTokens int64) (*bedroc
 				content = append(content, blk)
 			}
 			for _, tc := range m.ToolCalls {
-				var arg interface{}
+				var arg any
 				if tc.Function.Arguments != "" {
 					if err := json.Unmarshal([]byte(tc.Function.Arguments), &arg); err != nil {
 						return nil, fmt.Errorf("tool call %q: arguments: %w", tc.Function.Name, err)
 					}
 				} else {
-					arg = map[string]interface{}{}
+					arg = map[string]any{}
 				}
 				id := tc.ID
 				name := tc.Function.Name
@@ -513,8 +513,8 @@ func applyExtendedThinking(input *bedrockruntime.ConverseStreamInput, budget int
 
 	// Bedrock surfaces thinking via additionalModelRequestFields with
 	// the same `thinking` schema as api.anthropic.com.
-	input.AdditionalModelRequestFields = document.NewLazyDocument(map[string]interface{}{
-		"thinking": map[string]interface{}{
+	input.AdditionalModelRequestFields = document.NewLazyDocument(map[string]any{
+		"thinking": map[string]any{
 			"type":          "enabled",
 			"budget_tokens": budget,
 		},

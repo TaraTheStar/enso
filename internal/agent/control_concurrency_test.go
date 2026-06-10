@@ -104,7 +104,7 @@ func TestRequestPrompt_TimesOutToDeny(t *testing.T) {
 
 	done := make(chan permissions.Decision, 1)
 	go func() {
-		done <- a.requestPrompt(context.Background(), "bash", map[string]interface{}{"command": "ls"})
+		done <- a.requestPrompt(context.Background(), "bash", map[string]any{"command": "ls"})
 	}()
 
 	select {

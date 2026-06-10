@@ -47,12 +47,12 @@ type PersistMessage struct {
 // session.Writer.AppendToolCall(callID, name, args, llmOutput,
 // fullOutput, status).
 type PersistToolCall struct {
-	CallID     string                 `json:"call_id"`
-	Name       string                 `json:"name"`
-	Args       map[string]interface{} `json:"args,omitempty"`
-	LLMOutput  string                 `json:"llm_output,omitempty"`
-	FullOutput string                 `json:"full_output,omitempty"`
-	Status     string                 `json:"status"`
+	CallID     string         `json:"call_id"`
+	Name       string         `json:"name"`
+	Args       map[string]any `json:"args,omitempty"`
+	LLMOutput  string         `json:"llm_output,omitempty"`
+	FullOutput string         `json:"full_output,omitempty"`
+	Status     string         `json:"status"`
 }
 
 // PersistMessageUsage is the body of MsgPersistMessageUsage: mirrors

@@ -31,11 +31,11 @@ func (CheckpointTool) Description() string {
 	return "Mark a logical step boundary. The agent will compact older conversation history before the next model response, replacing it with a summary. Call this last in a step (e.g. right after a successful git commit), not in the middle. Args: reason (optional short string describing what was just completed; included in the compaction event and the summariser's seed)."
 }
 
-func (CheckpointTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (CheckpointTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"reason": map[string]interface{}{
+		"properties": map[string]any{
+			"reason": map[string]any{
 				"type":        "string",
 				"description": "Short description of what step was just completed.",
 			},
@@ -43,7 +43,7 @@ func (CheckpointTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (CheckpointTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (CheckpointTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	reason, _ := args["reason"].(string)
 	reason = strings.TrimSpace(reason)
 

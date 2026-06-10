@@ -33,12 +33,12 @@ const (
 // roles so the prompt UI can show "[reviewer abc123]" instead of a
 // faceless tool call the user can't trace.
 type PromptRequest struct {
-	ToolName  string                 `json:"tool_name"`
-	ArgString string                 `json:"arg_string,omitempty"`
-	Args      map[string]interface{} `json:"args,omitempty"`
-	Diff      string                 `json:"diff,omitempty"` // optional unified diff for edit-like calls
-	AgentID   string                 `json:"agent_id,omitempty"`
-	AgentRole string                 `json:"agent_role,omitempty"`
+	ToolName  string         `json:"tool_name"`
+	ArgString string         `json:"arg_string,omitempty"`
+	Args      map[string]any `json:"args,omitempty"`
+	Diff      string         `json:"diff,omitempty"` // optional unified diff for edit-like calls
+	AgentID   string         `json:"agent_id,omitempty"`
+	AgentRole string         `json:"agent_role,omitempty"`
 	// Respond is the in-process channel the agent loop blocks on for the
 	// user's decision. Host-local only — never serialized. Daemon-socket
 	// subscribers see PermissionRequest events without it (and so cannot
@@ -314,7 +314,7 @@ func derivePathPattern(tool, path, cwd string) string {
 // Turn" on a pattern, an `ask` rule that would otherwise re-prompt
 // for that pattern is what they're trying to silence. Deny rules
 // still win, so a user grant can never override a hard "never".
-func (c *Checker) Check(toolName string, args map[string]interface{}, busInst *bus.Bus) (Decision, error) {
+func (c *Checker) Check(toolName string, args map[string]any, busInst *bus.Bus) (Decision, error) {
 	// Evaluate all mutable state under the lock; defer the bus emission
 	// and error formatting until after unlock so a slow bus subscriber
 	// can't pin the checker (and to keep the critical section pure —
@@ -438,7 +438,7 @@ func canonicalPathArg(path, cwd string) string {
 // emitAutoAllow records an auto-allow decision (yolo bypass or allowlist
 // match). Goes to slog for the audit trail and to the bus so future UI
 // could surface it.
-func emitAutoAllow(b *bus.Bus, tool string, args map[string]interface{}, reason string) {
+func emitAutoAllow(b *bus.Bus, tool string, args map[string]any, reason string) {
 	slog.Info("permission auto-allow", "tool", tool, "reason", reason)
 	if b == nil {
 		return
@@ -457,7 +457,7 @@ func emitAutoAllow(b *bus.Bus, tool string, args map[string]interface{}, reason 
 // iteration is randomized, so without the sort an arg-scoped
 // allow/ask/deny glob would match nondeterministically for any tool
 // without a dedicated extractArg case (MCP tools, memory_save, ...).
-func buildArgString(args map[string]interface{}) string {
+func buildArgString(args map[string]any) string {
 	keys := make([]string, 0, len(args))
 	for k := range args {
 		keys = append(keys, k)

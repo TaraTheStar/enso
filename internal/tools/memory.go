@@ -25,15 +25,15 @@ func (t MemoryTool) Name() string { return "memory_save" }
 func (t MemoryTool) Description() string {
 	return "Save a persistent memory that future sessions in this project will read. Use this when the user shares a stable preference, project fact, or correction that's worth remembering across runs (\"don't mock the database\", \"the staging endpoint is X\", \"this team prefers Y\"). Args: name (short slug — becomes the filename), content (markdown body — what to remember and *why*). Calling memory_save with the same name overwrites; pick descriptive names so updates stay coherent. Don't save ephemeral state, in-progress work, or anything already in code/git history."
 }
-func (t MemoryTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t MemoryTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"name": map[string]interface{}{
+		"properties": map[string]any{
+			"name": map[string]any{
 				"type":        "string",
 				"description": "Short, descriptive slug used as the filename (e.g. \"db-test-policy\", \"staging-endpoint\"). Slashes and unsafe characters are stripped.",
 			},
-			"content": map[string]interface{}{
+			"content": map[string]any{
 				"type":        "string",
 				"description": "Markdown body describing the fact or preference. Lead with the rule itself, then *why* (one line) and *when to apply* (one line) — the why lets future sessions judge edge cases.",
 			},
@@ -42,7 +42,7 @@ func (t MemoryTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t MemoryTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t MemoryTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	name, _ := args["name"].(string)
 	content, _ := args["content"].(string)
 

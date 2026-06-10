@@ -24,7 +24,7 @@ func TestSpawn_RejectsAtMaxDepth(t *testing.T) {
 		GlobalAgents: &atomic.Int64{},
 	}
 	res, err := SpawnTool{}.Run(context.Background(),
-		map[string]interface{}{"prompt": "do work"}, ac)
+		map[string]any{"prompt": "do work"}, ac)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestSpawn_RejectsAtMaxAgents(t *testing.T) {
 		GlobalAgents: gc,
 	}
 	res, err := SpawnTool{}.Run(context.Background(),
-		map[string]interface{}{"prompt": "do work"}, ac)
+		map[string]any{"prompt": "do work"}, ac)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestSpawn_RequiresPrompt(t *testing.T) {
 		GlobalAgents: &atomic.Int64{},
 	}
 	_, err := SpawnTool{}.Run(context.Background(),
-		map[string]interface{}{}, ac)
+		map[string]any{}, ac)
 	if err == nil {
 		t.Errorf("missing prompt: want error")
 	}
@@ -83,7 +83,7 @@ func TestSpawn_RequiresGlobalAgentsCounter(t *testing.T) {
 		// GlobalAgents is nil — must not panic
 	}
 	_, err := SpawnTool{}.Run(context.Background(),
-		map[string]interface{}{"prompt": "x"}, ac)
+		map[string]any{"prompt": "x"}, ac)
 	if err == nil {
 		t.Errorf("nil GlobalAgents: want error, not panic")
 	}
@@ -91,7 +91,7 @@ func TestSpawn_RequiresGlobalAgentsCounter(t *testing.T) {
 
 func TestFilterRegistry_PicksNamedToolsOnly(t *testing.T) {
 	parent := tools.BuildDefault()
-	child := parent.Filter(asStringSlice([]interface{}{"read", "grep", "nonexistent"}))
+	child := parent.Filter(asStringSlice([]any{"read", "grep", "nonexistent"}))
 
 	if got := child.Get("read"); got == nil {
 		t.Errorf("child should have read")
@@ -130,7 +130,7 @@ func TestSpawn_PerCallModelRoutesToCorrectProvider(t *testing.T) {
 	}
 
 	res, err := SpawnTool{}.Run(context.Background(),
-		map[string]interface{}{"prompt": "deep think", "model": "deep"}, ac)
+		map[string]any{"prompt": "deep think", "model": "deep"}, ac)
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
 	}
@@ -159,7 +159,7 @@ func TestSpawn_UnknownModelArgReportsToLLM(t *testing.T) {
 		GlobalAgents: &atomic.Int64{},
 	}
 	res, err := SpawnTool{}.Run(context.Background(),
-		map[string]interface{}{"prompt": "x", "model": "ghost"}, ac)
+		map[string]any{"prompt": "x", "model": "ghost"}, ac)
 	if err != nil {
 		t.Fatalf("err: %v", err)
 	}

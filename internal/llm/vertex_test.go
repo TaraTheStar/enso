@@ -218,12 +218,12 @@ func TestBuildVertexRequest_ConsecutiveToolResponsesCollapse(t *testing.T) {
 // the SDK's *Schema type — it strips features like oneOf and
 // additionalProperties that the agent's tool definitions rely on.
 func TestBuildVertexRequest_ToolSchemaTranslation(t *testing.T) {
-	schema := map[string]interface{}{
+	schema := map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"path": map[string]interface{}{"type": "string"},
+		"properties": map[string]any{
+			"path": map[string]any{"type": "string"},
 		},
-		"required":             []interface{}{"path"},
+		"required":             []any{"path"},
 		"additionalProperties": false,
 	}
 	_, cfg, err := buildVertexRequest(ChatRequest{
@@ -252,9 +252,9 @@ func TestBuildVertexRequest_ToolSchemaTranslation(t *testing.T) {
 	}
 	// ParametersJsonSchema must be the raw map (preserves
 	// additionalProperties, which the SDK's *Schema doesn't model).
-	got, ok := decl.ParametersJsonSchema.(map[string]interface{})
+	got, ok := decl.ParametersJsonSchema.(map[string]any)
 	if !ok {
-		t.Fatalf("ParametersJsonSchema: want map[string]interface{}, got %T", decl.ParametersJsonSchema)
+		t.Fatalf("ParametersJsonSchema: want map[string]any, got %T", decl.ParametersJsonSchema)
 	}
 	if got["additionalProperties"] != false {
 		t.Errorf("additionalProperties not preserved: %+v", got)

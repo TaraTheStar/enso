@@ -474,7 +474,7 @@ func (rw *remoteWriter) AppendMessageUsage(seq int, usage llm.MessageUsage, agen
 	return rw.s.send(backend.Envelope{Kind: backend.MsgPersistMessageUsage, Body: body})
 }
 
-func (rw *remoteWriter) AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error {
+func (rw *remoteWriter) AppendToolCall(callID, name string, args map[string]any, llmOutput, fullOutput, status string) error {
 	body, err := backend.NewBody(wire.PersistToolCall{
 		CallID: callID, Name: name, Args: args,
 		LLMOutput: llmOutput, FullOutput: fullOutput, Status: status,
