@@ -43,8 +43,7 @@ type RunDeps struct {
 	MaxAgents          int
 	MaxDepth           int
 	Depth              int
-	Transcripts        *tools.Transcripts // optional; captures per-role histories
-	Writer             *session.Writer    // optional; persists per-role messages with role's agent id
+	Writer             *session.Writer // optional; persists per-role messages with role's agent id
 	GitAttribution     string
 	GitAttributionName string
 	WebFetchAllowHosts []string
@@ -310,7 +309,6 @@ func runRole(
 		GlobalAgents:       deps.GlobalAgents,
 		AgentID:            agentID,
 		AgentRole:          name,
-		Transcripts:        deps.Transcripts,
 		Writer:             deps.Writer,
 		GitAttribution:     deps.GitAttribution,
 		GitAttributionName: deps.GitAttributionName,
@@ -336,9 +334,6 @@ func runRole(
 	})
 
 	text, runErr := child.RunOneShot(ctx, prompt)
-
-	// Capture transcript for click-to-expand in agents pane.
-	deps.Transcripts.Store(agentID, child.History)
 
 	endPayload := map[string]any{"id": agentID, "parent_id": "", "role": name}
 	if runErr != nil {

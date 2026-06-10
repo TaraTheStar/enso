@@ -294,7 +294,6 @@ in either mode.
 | `/mcp` | Configured MCP servers, state, and tool counts |
 | `/git` | Current branch + working-tree status |
 | `/cost` | Cumulative token totals for this session |
-| `/transcript [<id>]` | List captured subagent transcripts; show one with the id-or-prefix |
 | `/<skill-name> <args>` | Any user-defined skill (project shadows user) |
 | `/quit` | Exit |
 
@@ -383,10 +382,8 @@ Headline features:
 - Interactive `enso config init --wizard` flow for first-run onboarding.
 
 **Subagents** — `spawn_agent` tool. Depth ≤3, global cap 16; child shares
-parent's provider/bus/permissions. Subagent transcripts are captured for
-inspection; list them with `/transcript` and view one with
-`/transcript <id-or-prefix>`. The session-inspector overlay (Ctrl-Space)
-also surfaces in-flight agent state at a glance.
+parent's provider/bus/permissions. The session-inspector overlay
+(Ctrl-Space) surfaces in-flight agent state at a glance.
 
 **MCP** — servers (stdio or Streamable-HTTP) are configured under
 `[mcp.<name>]` in `config.toml`. Their tools surface as `mcp__<server>__<tool>`

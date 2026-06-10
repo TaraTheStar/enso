@@ -12,13 +12,12 @@ import (
 	"github.com/TaraTheStar/enso/internal/llm"
 )
 
-// agentControl is exactly the slice of *agent.Agent the slash commands
-// and the Ctrl-Space overlay drive. Naming the surface as an interface
-// is what lets the TUI run either in-process (legacy / sandbox-on path,
-// where *agent.Agent satisfies it directly) or behind the Backend seam
-// (sandbox-off, where a host.Session-backed shim satisfies it). The
-// signatures match *agent.Agent verbatim so the in-process path is a
-// zero-cost assignment with no behavior change.
+// agentControl is the surface the slash commands and the Ctrl-Space
+// overlay drive. The agent core always runs behind the Backend seam, so
+// the only implementation is sessionAgentControl below: a shim over
+// host.Session that turns each verb into a control RPC to the worker
+// over the Channel (or serves it from the coalesced telemetry snapshot
+// / the host's own provider set where no RPC is needed).
 type agentControl interface {
 	Provider() *llm.Provider
 	ProviderCtx() *instructions.ProviderContext
@@ -33,9 +32,6 @@ type agentControl interface {
 	ForcePrune() (stubbed, beforeTokens, afterTokens int)
 	SetNextTurnTools(names []string)
 }
-
-// The real agent is the in-process implementation (legacy path).
-var _ agentControl = (*agent.Agent)(nil)
 
 // controlRPCTimeout bounds the synchronous control RPCs the slash
 // commands make to the worker. These calls run inside the Bubble Tea

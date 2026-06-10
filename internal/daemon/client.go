@@ -32,14 +32,6 @@ func Dial() (*Client, error) {
 // Close drops the connection.
 func (c *Client) Close() error { return c.conn.Close() }
 
-// Send writes a request and decodes the next response.
-func (c *Client) Send(kind MessageKind, body interface{}) (Message, error) {
-	if err := WriteMessage(c.conn, kind, body); err != nil {
-		return Message{}, err
-	}
-	return ReadMessage(c.conn)
-}
-
 // CreateSession submits a new prompt and returns the session info plus the
 // underlying connection (kept open for streaming).
 func (c *Client) CreateSession(req CreateSessionReq) (*SessionInfo, error) {

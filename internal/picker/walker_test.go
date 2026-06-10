@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestWalkSkipsNoiseDirs(t *testing.T) {
+func TestWalkAllSkipsNoiseDirs(t *testing.T) {
 	root := t.TempDir()
 
 	files := []string{
@@ -34,7 +34,7 @@ func TestWalkSkipsNoiseDirs(t *testing.T) {
 		}
 	}
 
-	got, err := Walk(root)
+	got, err := WalkAll(root, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,11 +46,11 @@ func TestWalkSkipsNoiseDirs(t *testing.T) {
 		"sub/thing.txt": true,
 	}
 	if len(got) != len(want) {
-		t.Errorf("Walk returned %d files, want %d: %v", len(got), len(want), got)
+		t.Errorf("WalkAll returned %d files, want %d: %v", len(got), len(want), got)
 	}
 	for _, f := range got {
 		if !want[f] {
-			t.Errorf("Walk surfaced unexpected file %q", f)
+			t.Errorf("WalkAll surfaced unexpected file %q", f)
 		}
 	}
 }

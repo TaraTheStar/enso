@@ -73,7 +73,6 @@ INSERT, `h l 0 $ w b x` for navigation and edit.
 | `/mcp`                                 | Configured MCP servers, state, and tool counts.                 |
 | `/git`                                 | Current branch + working-tree status.                           |
 | `/cost`                                | Cumulative token totals for this session.                       |
-| `/transcript [<id-or-prefix>]`         | List captured subagent transcripts; show one by id-or-prefix.   |
 | `/<skill-name> <args>`                 | Any user-defined skill (project shadows user).                  |
 | `/quit`                                | Exit.                                                           |
 
@@ -104,14 +103,6 @@ Different message types render with distinct prefixes:
 - Red `✘` — errors.
 - Teal parentheticals — system notes (cancelled, compacted, connect,
   disconnect, discarded queued messages).
-
-## Subagent transcripts
-
-Subagents (from `spawn_agent` or workflow roles) write their
-transcripts to an in-memory store. List them with `/transcript` and
-view a specific one with `/transcript <id-or-prefix>`. The
-session-inspector overlay (`Ctrl+Space`) also surfaces in-flight agent
-state.
 
 ## File picker
 

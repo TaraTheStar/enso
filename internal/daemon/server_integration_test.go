@@ -6,8 +6,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -241,5 +243,89 @@ func TestDaemon_FollowupSubmitTriggersSecondTurn(t *testing.T) {
 
 	if mock.CallCount() != 2 {
 		t.Errorf("expected 2 model turns, got %d", mock.CallCount())
+	}
+}
+
+// TestDaemon_SubmitQueueFullReturnsError: while the agent is mid-turn it
+// does not drain inputCh, so a client flooding submits must get a
+// "queue full" error frame back — NOT block the connection's read loop
+// (which would also wedge Cancel/PermissionResponse on that conn).
+func TestDaemon_SubmitQueueFullReturnsError(t *testing.T) {
+	socketPath, mock, _ := startTestServer(t)
+
+	// Gate the first (and only) turn so the agent is provably mid-turn
+	// and not reading inputCh. Never released: the session cancel in
+	// startTestServer's cleanup unblocks the mock's stream goroutine.
+	gate := make(chan struct{})
+	mock.Push(llmtest.Script{Text: "stuck", Gate: gate})
+
+	control := dial(t, socketPath)
+	info, err := control.CreateSession(CreateSessionReq{
+		Prompt: "first",
+		Cwd:    t.TempDir(),
+		Yolo:   true,
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	// The initial prompt is consumed before the turn starts, so once the
+	// mock has seen the call, inputCh is empty and nobody is draining it.
+	waitForScripts(t, mock, 1)
+
+	// Fill all 16 slots; each succeeds silently (submit has no ack).
+	for i := 0; i < 16; i++ {
+		if err := control.Submit(SubmitReq{SessionID: info.ID, Message: "queued"}); err != nil {
+			t.Fatalf("submit %d: %v", i, err)
+		}
+	}
+
+	// The 17th must come back as an error frame, not block handleConn.
+	if err := WriteMessage(control.conn, KindSubmit, SubmitReq{SessionID: info.ID, Message: "overflow"}); err != nil {
+		t.Fatalf("write overflow submit: %v", err)
+	}
+	_ = control.conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	resp, err := ReadMessage(control.conn)
+	if err != nil {
+		t.Fatalf("read overflow response (read loop wedged?): %v", err)
+	}
+	if resp.Kind != KindError {
+		t.Fatalf("overflow response kind = %s, want %s", resp.Kind, KindError)
+	}
+	var er ErrorResp
+	if err := json.Unmarshal(resp.Body, &er); err != nil {
+		t.Fatalf("decode error resp: %v", err)
+	}
+	if !strings.Contains(er.Message, "input queue full") {
+		t.Fatalf("error message = %q, want it to mention the full input queue", er.Message)
+	}
+
+	// The same conn must still dispatch — Cancel aborts the gated turn,
+	// which also drains the queued submits so no extra model calls fire.
+	streamConn := dial(t, socketPath)
+	events, err := streamConn.Subscribe(SubscribeReq{SessionID: info.ID, FromSeq: 0})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	_ = control.conn.SetReadDeadline(time.Time{})
+	if err := control.Cancel(CancelReq{SessionID: info.ID}); err != nil {
+		t.Fatalf("cancel after queue-full error: %v", err)
+	}
+	// Wait for the post-drain AgentIdle before the test ends: cleanup's
+	// session cancel must not race the 16 still-queued inputs (Run's
+	// select picks randomly between ctx.Done and a non-empty inputCh,
+	// which would start turns the mock has no scripts for).
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case e, ok := <-events:
+			if !ok {
+				t.Fatal("event stream closed before AgentIdle")
+			}
+			if e.Type == "AgentIdle" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timeout waiting for AgentIdle after cancel")
+		}
 	}
 }

@@ -225,7 +225,7 @@ type IsolationSpec struct {
 // Channel is a typed, bidirectional message conn between host and
 // Worker. It is transport-agnostic: LocalBackend backs it with
 // in-process OS pipes, PodmanBackend with the daemon protocol socket.
-// The framing (NewStreamChannel) is the proven length-prefixed-JSON
+// The framing (NewStreamChannelRW) is the proven length-prefixed-JSON
 // scheme the daemon already uses, generalized to any io stream so it
 // works over a pipe.
 //
@@ -406,13 +406,6 @@ type streamChannel struct {
 	r io.Reader
 	w io.Writer
 	c io.Closer
-}
-
-// NewStreamChannel builds a Channel over a duplex stream. For
-// LocalBackend the read and write halves are two OS pipes; rwc bundles
-// them with a Closer that closes both.
-func NewStreamChannel(rwc io.ReadWriteCloser) Channel {
-	return &streamChannel{r: rwc, w: rwc, c: rwc}
 }
 
 // NewStreamChannelRW builds a Channel from separate read and write

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -98,7 +99,7 @@ func ComputeStats(s *Store, since time.Time) (Stats, error) {
 
 func tallyMessages(db *sql.DB, ids []string, st *Stats) error {
 	rows, err := db.Query(
-		`SELECT role, content, tool_call_id, tool_calls FROM messages
+		`SELECT session_id, seq, role, content, tool_call_id, tool_calls FROM messages
 		 WHERE session_id IN (`+placeholders(len(ids))+`)`, anySlice(ids)...,
 	)
 	if err != nil {
@@ -107,12 +108,18 @@ func tallyMessages(db *sql.DB, ids []string, st *Stats) error {
 	defer rows.Close()
 	for rows.Next() {
 		var m llm.Message
-		var toolCallsJSON string
-		if err := rows.Scan(&m.Role, &m.Content, &m.ToolCallID, &toolCallsJSON); err != nil {
+		var sessionID, toolCallsJSON string
+		var seq int
+		if err := rows.Scan(&sessionID, &seq, &m.Role, &m.Content, &m.ToolCallID, &toolCallsJSON); err != nil {
 			return err
 		}
 		if toolCallsJSON != "" {
-			_ = json.Unmarshal([]byte(toolCallsJSON), &m.ToolCalls)
+			// Stats are best-effort, so a corrupt row doesn't abort the
+			// whole tally — but it must be discoverable, not silent.
+			if err := json.Unmarshal([]byte(toolCallsJSON), &m.ToolCalls); err != nil {
+				slog.Warn("stats: bad tool_calls JSON in messages row",
+					"session", sessionID, "seq", seq, "err", err)
+			}
 		}
 		st.MessagesByRole[m.Role]++
 		st.ApproxTotalTokens += llm.Estimate([]llm.Message{m})

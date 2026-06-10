@@ -28,6 +28,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -120,7 +121,7 @@ func Run(opts Options) error {
 //   - Permission y/n decisions cross the wire faithfully; the modal's
 //     "always"/"turn" pattern-persistence degrades to allow-once with
 //     the existing notice (the enforcing checker is worker-side, like
-//     attach mode). /lsp /mcp /transcript reflect worker-side managers
+//     attach mode). /lsp /mcp reflect worker-side managers
 //     and show a host-derived view.
 func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.Option, opts Options, cwd string, cfg *config.Config, providers map[string]*llm.Provider, defaultName string) error {
 	provider := providers[defaultName]
@@ -366,13 +367,7 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		go func() {
 			defer close(auditDone)
 			for evt := range auditCh {
-				typ := auditTypeName(evt.Type)
-				if typ == "" {
-					continue
-				}
-				if err := writer.AppendEvent(typ, sanitizePayload(evt.Payload)); err != nil {
-					slog.Warn("session: append event", "type", typ, "err", err)
-				}
+				appendAuditEvent(writer, evt)
 			}
 		}()
 	} else {
@@ -405,7 +400,7 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		// /workflow gating: workflows execute host-side, outside the
 		// Backend seam — the handler refuses unless this is "local".
 		backendKind: cfg.ResolveBackend(),
-		// lspMgr/mcpMgr/transcripts live worker-side; nil here → the
+		// lspMgr/mcpMgr live worker-side; nil here → the
 		// handlers' existing nil guards render a host-side view.
 	}
 	slashContext.submit = func(text string) {
@@ -570,19 +565,29 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 }
 
 // forwardBus reads bus events and sends them into the program as
-// busEventMsg. Coalesces at 16ms (~60fps) — without it, fast streams
-// (>100 t/s) would flood program.Send and bog the renderer.
+// busEventMsg. Coalesces at 16ms (~60fps): each flush merges runs of
+// consecutive same-type streaming deltas into one event (see
+// coalesceDeltas), so a fast stream (>100 t/s) costs one program
+// message — one Update()/View() — per frame per stream type instead of
+// one per token. The flush timer is armed only while events are
+// pending, so an idle session takes no periodic wakeups.
 func forwardBus(p *tea.Program, sub <-chan bus.Event) {
+	forwardBusFunc(func(ev bus.Event) { p.Send(busEventMsg{ev: ev}) }, sub)
+}
+
+// forwardBusFunc is forwardBus with the program send abstracted out
+// for testing.
+func forwardBusFunc(send func(bus.Event), sub <-chan bus.Event) {
 	const flushInterval = 16 * time.Millisecond
-	ticker := time.NewTicker(flushInterval)
-	defer ticker.Stop()
+	timer := time.NewTimer(flushInterval)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
 	var pending []bus.Event
 	flush := func() {
-		if len(pending) == 0 {
-			return
-		}
-		for _, ev := range pending {
-			p.Send(busEventMsg{ev: ev})
+		for _, ev := range coalesceDeltas(pending) {
+			send(ev)
 		}
 		pending = pending[:0]
 	}
@@ -593,11 +598,58 @@ func forwardBus(p *tea.Program, sub <-chan bus.Event) {
 				flush()
 				return
 			}
+			if len(pending) == 0 {
+				// First buffered event of a window: arm the flush
+				// timer. It is guaranteed idle and drained here (it
+				// either fired — emptying pending — or was never armed),
+				// so Reset is race-free.
+				timer.Reset(flushInterval)
+			}
 			pending = append(pending, ev)
-		case <-ticker.C:
+		case <-timer.C:
 			flush()
 		}
 	}
+}
+
+// coalesceDeltas merges runs of CONSECUTIVE streaming-delta events
+// (EventAssistantDelta / EventReasoningDelta, string payloads) into a
+// single event carrying the concatenated payload. Only adjacent
+// same-type deltas merge — a non-delta event (or the other delta type)
+// between two runs keeps them separate, so ordering is preserved
+// exactly. Rewrites events in place and returns the shortened prefix.
+func coalesceDeltas(events []bus.Event) []bus.Event {
+	out := events[:0]
+	for i := 0; i < len(events); {
+		ev := events[i]
+		j := i + 1
+		if isStreamDelta(ev.Type) {
+			if _, ok := ev.Payload.(string); ok {
+				for j < len(events) && events[j].Type == ev.Type {
+					if _, ok := events[j].Payload.(string); !ok {
+						break
+					}
+					j++
+				}
+			}
+		}
+		if j > i+1 {
+			var sb strings.Builder
+			for k := i; k < j; k++ {
+				sb.WriteString(events[k].Payload.(string))
+			}
+			ev = bus.Event{Type: ev.Type, Payload: sb.String()}
+		}
+		out = append(out, ev)
+		i = j
+	}
+	return out
+}
+
+// isStreamDelta reports whether t is a per-token streaming delta that
+// coalesceDeltas may merge.
+func isStreamDelta(t bus.EventType) bool {
+	return t == bus.EventAssistantDelta || t == bus.EventReasoningDelta
 }
 
 // pickDefaultProvider mirrors internal/agent.pickDefaultProvider; we
@@ -725,4 +777,52 @@ func sanitizePayload(p any) any {
 	default:
 		return v
 	}
+}
+
+// appendAuditEvent persists one auditable bus event into the events
+// table. ToolCallEnd payloads get their bulky output fields truncated
+// first — the full tool output is already persisted in the messages
+// and tool_calls tables, so auditing it verbatim a third time grew
+// enso.db ~3-4× the actual output volume.
+func appendAuditEvent(writer *session.Writer, evt bus.Event) {
+	typ := auditTypeName(evt.Type)
+	if typ == "" {
+		return
+	}
+	payload := sanitizePayload(evt.Payload)
+	if evt.Type == bus.EventToolCallEnd {
+		// Safe to mutate: sanitizePayload deep-copied the map, so the
+		// shared bus payload other subscribers (the renderer!) receive
+		// keeps the full strings.
+		payload = truncateAuditedToolEnd(payload)
+	}
+	if err := writer.AppendEvent(typ, payload); err != nil {
+		slog.Warn("session: append event", "type", typ, "err", err)
+	}
+}
+
+// auditToolOutputCap bounds the result/display strings persisted to
+// the events (audit) table for one ToolCallEnd.
+const auditToolOutputCap = 256
+
+// truncateAuditedToolEnd caps the result/display fields of an
+// audit-path ToolCallEnd payload. Must only be called on the audit
+// path's own sanitized copy — never on the shared bus event payload.
+func truncateAuditedToolEnd(p any) any {
+	m, ok := p.(map[string]any)
+	if !ok {
+		return p
+	}
+	for _, k := range []string{"result", "display"} {
+		s, ok := m[k].(string)
+		if !ok || len(s) <= auditToolOutputCap {
+			continue
+		}
+		cut := auditToolOutputCap
+		for cut > 0 && !utf8.RuneStart(s[cut]) {
+			cut-- // don't split a multi-byte rune
+		}
+		m[k] = s[:cut] + fmt.Sprintf("...[truncated, %d bytes total]", len(s))
+	}
+	return m
 }

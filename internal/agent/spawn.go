@@ -141,7 +141,6 @@ func (SpawnTool) Run(ctx context.Context, args map[string]interface{}, ac *tools
 		History:            history,
 		AgentID:            agentID,
 		AgentRole:          roleLabel,
-		Transcripts:        ac.Transcripts,
 		Writer:             childWriter,
 		WebFetchAllowHosts: ac.WebFetchAllowHosts,
 		ToolTimeouts:       ac.ToolTimeouts, // inherit the parent's bash budget
@@ -166,11 +165,6 @@ func (SpawnTool) Run(ctx context.Context, args map[string]interface{}, ac *tools
 	})
 
 	text, runErr := child.RunOneShot(ctx, prompt)
-
-	// Capture the completed transcript for click-to-expand in the
-	// agents pane. We store regardless of error — partial histories are
-	// still useful diagnostically.
-	ac.Transcripts.Store(agentID, child.History)
 
 	endPayload := map[string]any{"id": agentID, "parent_id": ac.AgentID}
 	if runErr != nil {
