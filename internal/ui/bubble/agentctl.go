@@ -4,6 +4,7 @@ package bubble
 
 import (
 	"context"
+	"time"
 
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/backend/host"
@@ -36,6 +37,23 @@ type agentControl interface {
 // The real agent is the in-process implementation (legacy path).
 var _ agentControl = (*agent.Agent)(nil)
 
+// controlRPCTimeout bounds the synchronous control RPCs the slash
+// commands make to the worker. These calls run inside the Bubble Tea
+// Update loop (dispatchSlash is synchronous — see the comment there),
+// so an unbounded host.Session.control on a wedged-but-alive worker
+// would freeze the entire TUI permanently: Update never returns, no
+// input (including quit) is processed. 10s is generous for what are
+// in-memory lookups/mutations worker-side (no LLM call — ForceCompact,
+// the one genuinely slow verb, takes the caller's ctx and already runs
+// off the Update loop in /compact's goroutine).
+const controlRPCTimeout = 10 * time.Second
+
+// controlCtx returns the bounded context every sessionAgentControl RPC
+// uses. The caller must cancel.
+func controlCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), controlRPCTimeout)
+}
+
 // sessionAgentControl adapts a host.Session (the worker behind the
 // Backend seam) to agentControl. Mutating / history-reading verbs are
 // control RPCs to the worker (where the agent's history lives);
@@ -63,7 +81,9 @@ func (s *sessionAgentControl) ProviderCtx() *instructions.ProviderContext {
 }
 
 func (s *sessionAgentControl) SetProvider(name string) error {
-	return s.sess.SetProvider(context.Background(), name)
+	ctx, cancel := controlCtx()
+	defer cancel()
+	return s.sess.SetProvider(ctx, name)
 }
 
 func (s *sessionAgentControl) EstimateTokens() int {
@@ -83,7 +103,9 @@ func (s *sessionAgentControl) ContextWindow() int {
 }
 
 func (s *sessionAgentControl) PrefixBreakdown() agent.PrefixBreakdown {
-	bd, err := s.sess.PrefixBreakdown(context.Background())
+	ctx, cancel := controlCtx()
+	defer cancel()
+	bd, err := s.sess.PrefixBreakdown(ctx)
 	if err != nil {
 		return agent.PrefixBreakdown{}
 	}
@@ -98,7 +120,9 @@ func (s *sessionAgentControl) PrefixBreakdown() agent.PrefixBreakdown {
 }
 
 func (s *sessionAgentControl) CompactPreview() agent.CompactPreviewResult {
-	p, err := s.sess.CompactPreview(context.Background())
+	ctx, cancel := controlCtx()
+	defer cancel()
+	p, err := s.sess.CompactPreview(ctx)
 	if err != nil {
 		// Mirror the agent's "nothing to do" so /compact degrades to a
 		// harmless message rather than a misleading preview.
@@ -117,7 +141,9 @@ func (s *sessionAgentControl) ForceCompact(ctx context.Context) (bool, error) {
 }
 
 func (s *sessionAgentControl) ForcePrune() (int, int, int) {
-	stubbed, before, after, err := s.sess.ForcePrune(context.Background())
+	ctx, cancel := controlCtx()
+	defer cancel()
+	stubbed, before, after, err := s.sess.ForcePrune(ctx)
 	if err != nil {
 		return 0, 0, 0
 	}
@@ -125,7 +151,9 @@ func (s *sessionAgentControl) ForcePrune() (int, int, int) {
 }
 
 func (s *sessionAgentControl) SetNextTurnTools(names []string) {
-	_ = s.sess.SetNextTurnTools(context.Background(), names)
+	ctx, cancel := controlCtx()
+	defer cancel()
+	_ = s.sess.SetNextTurnTools(ctx, names)
 }
 
 // providerContextFrom mirrors agent.providerContext (unexported): the

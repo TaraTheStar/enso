@@ -225,8 +225,11 @@ func (a *Agent) MaybeCompact(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	budget := a.inputBudget(p, window)
+
+	a.histMu.Lock()
 	used := a.estimateTokens()
 	if used < budget {
+		a.histMu.Unlock()
 		return false, nil
 	}
 
@@ -239,22 +242,23 @@ func (a *Agent) MaybeCompact(ctx context.Context) (bool, error) {
 	// prompt), so measure the saving directly from the heuristic delta and
 	// subtract it: if that drops us back under budget, skip the expensive
 	// LLM summary entirely.
-	if estBefore := llm.Estimate(a.History); a.reclaimToolOutputs() > 0 {
-		saved := estBefore - llm.Estimate(a.History)
-		if used-saved < budget {
-			if a.Bus != nil {
-				a.Bus.Publish(bus.Event{
-					Type: bus.EventCompacted,
-					Payload: map[string]any{
-						"reason":        "reclaim",
-						"summary":       "",
-						"before_tokens": used,
-						"after_tokens":  used - saved,
-					},
-				})
-			}
-			return true, nil
+	estBefore := llm.Estimate(a.History)
+	reclaimed := a.reclaimToolOutputs()
+	saved := estBefore - llm.Estimate(a.History)
+	a.histMu.Unlock()
+	if reclaimed > 0 && used-saved < budget {
+		if a.Bus != nil {
+			a.Bus.Publish(bus.Event{
+				Type: bus.EventCompacted,
+				Payload: map[string]any{
+					"reason":        "reclaim",
+					"summary":       "",
+					"before_tokens": used,
+					"after_tokens":  used - saved,
+				},
+			})
 		}
+		return true, nil
 	}
 
 	// Tier 2 — still over budget: summarise the older block.
@@ -291,8 +295,11 @@ const estSummaryTokens = 500
 // would do — enough info for the user to confirm before committing.
 // Does not call the LLM and does not mutate history. Boundary logic
 // matches forceCompact exactly so "nothing to do" here means
-// ForceCompact would also be a no-op.
+// ForceCompact would also be a no-op. Safe to call from any goroutine
+// (control RPCs / slash commands) — it takes the history lock.
 func (a *Agent) CompactPreview() CompactPreviewResult {
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
 	_, oldStart, oldEnd, ok := compactionBoundary(a.History, a.recentTurnBudget())
 	if !ok || oldEnd-oldStart == 0 {
 		return CompactPreviewResult{NothingToDo: true}
@@ -346,9 +353,19 @@ func (a *Agent) forceCompact(ctx context.Context, reason string) (bool, error) {
 // passed to the summariser. The seed is shown to the summariser as the
 // user's stated reason for the compaction ("just finished refactor of
 // X") so the produced summary keeps the right framing.
+//
+// Concurrency: runs in three phases so the history lock is never held
+// across the summarisation LLM call. Phase 1 (locked) picks the
+// boundary and copies out the older block; phase 2 (unlocked) calls the
+// summariser; phase 3 (re-locked) rewrites History, but only if histGen
+// proves nothing mutated the conversation in between — otherwise the
+// compaction aborts with an error and History is left untouched.
 func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (bool, error) {
+	// Phase 1 — boundary + partition, under the history lock.
+	a.histMu.Lock()
 	systemIdx, oldStart, oldEnd, ok := compactionBoundary(a.History, a.recentTurnBudget())
 	if !ok {
+		a.histMu.Unlock()
 		return false, nil
 	}
 
@@ -358,23 +375,30 @@ func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (
 	// verbatim and re-inserted after the summary so their content
 	// stays available across compactions. The summariser sees only
 	// the non-pinned remainder, which keeps the summary focused.
+	//
+	// Pinned messages travel WITH their toolMeta as (value, pointer)
+	// pairs — never keyed by element address: a map keyed on &slice[i]
+	// goes stale the moment a later append reallocates the backing
+	// array, which is exactly the bug that silently dropped pinned
+	// metadata after the first compaction.
+	type pinnedEntry struct {
+		msg  llm.Message
+		meta *toolMessageMeta
+	}
 	older := a.History[oldStart:oldEnd]
-	var pinnedOlder, summarisable []llm.Message
-	pinnedMeta := map[*llm.Message]*toolMessageMeta{}
+	var pinnedOlder []pinnedEntry
+	var summarisable []llm.Message
 	for i, msg := range older {
 		absIdx := oldStart + i
 		if tm := a.toolMeta[absIdx]; tm != nil && tm.pinned {
-			pinnedOlder = append(pinnedOlder, msg)
-			// Track the meta entry so rebuildToolMeta can re-key
-			// it once History is rewritten. Map keys by *Message
-			// pointer in the post-rewrite History — set later.
-			pinnedMeta[&pinnedOlder[len(pinnedOlder)-1]] = tm
+			pinnedOlder = append(pinnedOlder, pinnedEntry{msg: msg, meta: tm})
 			continue
 		}
 		summarisable = append(summarisable, msg)
 	}
 
 	if len(summarisable) == 0 && len(pinnedOlder) == 0 {
+		a.histMu.Unlock()
 		return false, nil
 	}
 
@@ -388,7 +412,12 @@ func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (
 	}
 
 	beforeTokens := llm.Estimate(a.History)
+	gen := a.histGen
+	a.histMu.Unlock()
 
+	// Phase 2 — the slow summarisation call, lock released. summarisable
+	// holds copies of the messages, so concurrent in-place stubbing can't
+	// race the render; any such mutation bumps histGen and aborts below.
 	var summary string
 	if len(summarisable) > 0 {
 		s, err := a.summariseHistory(ctx, summarisable, seed)
@@ -398,12 +427,29 @@ func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (
 		summary = s
 	}
 
+	// Phase 3 — rewrite, unless the conversation moved underneath us
+	// (e.g. a control-RPC compaction racing the run loop's appends).
+	a.histMu.Lock()
+	defer a.histMu.Unlock()
+	if a.histGen != gen {
+		return false, fmt.Errorf("history changed during summarisation; compaction aborted")
+	}
+
 	// Rebuild History as: [system...] + [pinnedOlder...] + [synth?] + [recent...]
 	// Pinned messages go *before* the summary so the model sees their
 	// content first, then a summary of the rest. The summary message
 	// itself is omitted entirely when nothing was summarisable.
+	//
+	// toolMeta is rebuilt alongside, keyed by each message's index in
+	// `rebuilt` at the moment it is appended — index bookkeeping is
+	// immune to the slice reallocations that invalidated the old
+	// pointer-keyed scheme.
 	rebuilt := append([]llm.Message{}, a.History[:systemIdx+1]...)
-	rebuilt = append(rebuilt, pinnedOlder...)
+	newMeta := map[int]*toolMessageMeta{}
+	for _, pe := range pinnedOlder {
+		newMeta[len(rebuilt)] = pe.meta
+		rebuilt = append(rebuilt, pe.msg)
+	}
 	if summary != "" {
 		// Synthetic = true so a resumed session can find this row again
 		// via prior-summary detection. Without the flag we'd have to
@@ -416,28 +462,17 @@ func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (
 		}
 		rebuilt = append(rebuilt, synth)
 	}
-	// Track the post-rewrite address of each pinned message so the
-	// toolMeta map can be rebuilt against the new index space.
-	preserve := map[*llm.Message]*toolMessageMeta{}
-	pinnedStart := systemIdx + 1
-	for i := range pinnedOlder {
-		// rebuilt[pinnedStart+i] is the post-rewrite address.
-		if tm, ok := pinnedMeta[&pinnedOlder[i]]; ok {
-			preserve[&rebuilt[pinnedStart+i]] = tm
-		}
-	}
-	// Recent messages (oldEnd..) — preserve their toolMeta entries too.
-	recentStart := len(rebuilt)
-	rebuilt = append(rebuilt, a.History[oldEnd:]...)
+	// Recent messages (oldEnd..) — carry their toolMeta entries across.
 	for i := oldEnd; i < len(a.History); i++ {
 		if tm := a.toolMeta[i]; tm != nil {
-			newIdx := recentStart + (i - oldEnd)
-			preserve[&rebuilt[newIdx]] = tm
+			newMeta[len(rebuilt)] = tm
 		}
+		rebuilt = append(rebuilt, a.History[i])
 	}
 
 	a.History = rebuilt
-	a.rebuildToolMeta(preserve)
+	a.toolMeta = newMeta
+	a.histGen++
 	// lastUsage's InputTokens count described a History prefix that no
 	// longer exists. Drop both lastUsage and the messageUsage sidecar;
 	// the next assistant turn will repopulate.
@@ -523,15 +558,34 @@ func (a *Agent) summariseHistory(ctx context.Context, older []llm.Message, seed 
 	}
 
 	var out strings.Builder
+	var finishReason string
 	for evt := range events {
 		switch evt.Type {
 		case llm.EventTextDelta:
 			out.WriteString(evt.Text)
 		case llm.EventError:
 			return "", evt.Error
+		case llm.EventDone:
+			finishReason = evt.FinishReason
 		}
 	}
-	return strings.TrimSpace(out.String()), nil
+
+	// A summary that didn't finish cleanly must be an error, not a
+	// silent "". The caller rewrites History around the returned string;
+	// accepting an empty one (a local reasoning model that emitted only
+	// reasoning deltas) or a truncated one (cut off at max_tokens, loop
+	// guard, stall) would permanently discard every summarisable message
+	// with no summary in its place. Erroring makes MaybeCompact /
+	// forceCompact abort before touching History.
+	switch finishReason {
+	case llm.FinishLength, llm.FinishRepetition, llm.FinishStall, llm.FinishReasoningBudget:
+		return "", fmt.Errorf("summariser stopped early (finish reason %q); history left un-compacted", finishReason)
+	}
+	summary := strings.TrimSpace(out.String())
+	if summary == "" {
+		return "", fmt.Errorf("summariser produced no text (finish reason %q); history left un-compacted", finishReason)
+	}
+	return summary, nil
 }
 
 func truncateForSummary(s string, max int) string {

@@ -181,11 +181,23 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 	// enforce (the worker's checker does); /yolo mirrors here and
 	// RPC-toggles the worker's real one.
 	denies := append([]string{}, cfg.Permissions.Deny...)
-	ignorePatterns, _ := permissions.LoadIgnoreFile(filepath.Join(cwd, ".ensoignore"))
+	ignorePath := filepath.Join(cwd, ".ensoignore")
+	ignorePatterns, ierr := permissions.LoadIgnoreFile(ignorePath)
+	if ierr != nil {
+		// Fail loud, not open: LoadIgnoreFile returns (nil, nil) for a
+		// missing file, so any error here means the file exists but
+		// couldn't be read or scanned — its deny rules would otherwise
+		// be silently dropped. Keep whatever partial patterns we got.
+		slog.Warn(".ensoignore unreadable — ignore-derived deny rules may be missing",
+			"path", ignorePath, "err", ierr)
+	}
 	if len(ignorePatterns) > 0 {
-		denies = append(denies, permissions.IgnoreToDenyPatterns(ignorePatterns)...)
+		denies = append(denies, permissions.IgnoreToDenyPatterns(ignorePatterns, cwd)...)
 	}
 	dispChecker := permissions.NewChecker(cfg.Permissions.Allow, cfg.Permissions.Ask, denies, cfg.Permissions.Mode)
+	// Canonicalize path args against the session cwd, mirroring the
+	// worker's enforcing checker.
+	dispChecker.SetCwd(cwd)
 	if opts.Yolo {
 		dispChecker.SetYolo(true)
 	}
@@ -390,6 +402,9 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		writer:    writer,
 		providers: providers,
 		cwd:       cwd,
+		// /workflow gating: workflows execute host-side, outside the
+		// Backend seam — the handler refuses unless this is "local".
+		backendKind: cfg.ResolveBackend(),
 		// lspMgr/mcpMgr/transcripts live worker-side; nil here → the
 		// handlers' existing nil guards render a host-side view.
 	}

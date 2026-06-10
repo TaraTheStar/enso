@@ -390,8 +390,13 @@ func (c *yoloCmd) Run(ctx context.Context, args string) error {
 	if c.sc.sess != nil {
 		// Behind the seam the enforcing checker lives in the worker;
 		// the local SetYolo above only keeps /info + the overlay in
-		// sync. This RPC is what actually changes tool gating.
-		if err := c.sc.sess.SetYolo(ctx, enable); err != nil {
+		// sync. This RPC is what actually changes tool gating. Bounded
+		// like every other in-Update control RPC (see controlRPCTimeout)
+		// so a wedged worker can't freeze the TUI.
+		rpcCtx, cancel := controlCtx()
+		err := c.sc.sess.SetYolo(rpcCtx, enable)
+		cancel()
+		if err != nil {
 			c.sc.printf("yolo: worker did not apply the change: %v", err)
 			return nil
 		}
@@ -1254,6 +1259,18 @@ func (c *workflowCmd) Run(ctx context.Context, args string) error {
 			len(wf.Edges), plural(len(wf.Edges)), conditional,
 		)
 		return nil
+	}
+
+	// Seam invariant guard (see internal/backend/backend.go): the
+	// session's agent runs as a Worker behind the configured Backend,
+	// but workflow.Run executes its tool calls through a live registry
+	// in THIS host process — including the display-only dispRegistry/
+	// dispChecker wired into workflowDeps, which do not enforce
+	// anything. Running a workflow beside a sealed worker would
+	// silently bypass the isolation the user configured, so refuse.
+	// (/workflow validate above stays available — it only parses.)
+	if c.sc.backendKind != "" && c.sc.backendKind != config.BackendLocal {
+		return fmt.Errorf("workflows currently run on the host and are not routed through the configured %q backend; run with [backend] type=\"local\" or in a trusted project", c.sc.backendKind)
 	}
 
 	name := parts[0]

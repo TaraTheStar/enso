@@ -11,6 +11,7 @@ import (
 
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/lsp"
 	"github.com/TaraTheStar/enso/internal/mcp"
@@ -70,6 +71,13 @@ type slashCtx struct {
 	// flags) are wired in one place.
 	workflowDeps workflow.RunDeps
 
+	// backendKind is the resolved [backend] type the session runs
+	// behind ("local", "podman", "lima"; set by run.go). /workflow
+	// refuses to execute when it isn't local: workflow.Run drives a
+	// live tools.Registry in the HOST process, not behind the Backend
+	// seam the agent is sealed in (see internal/backend/backend.go).
+	backendKind config.BackendKind
+
 	out  strings.Builder
 	quit bool
 	// openRewind, when set by the /rewind handler, tells the model to open
@@ -96,6 +104,20 @@ func (c *slashCtx) printf(format string, args ...any) {
 // confirmed it begins with `/`) and returns the Cmd the model should
 // emit — typically a tea.Println echoing the command and its output to
 // scrollback. Returns nil if the line is empty or unparseable.
+//
+// Dispatch is deliberately SYNCHRONOUS inside model.Update rather than
+// a tea.Cmd: handlers communicate with the model by mutating slashCtx
+// flags (sc.quit, sc.openRewind, sc.pendingNew) that the enter handler
+// reads immediately after Run returns, and the model refreshes its
+// status-line provider name on the same assumption — moving Run onto a
+// goroutine would race all of those and the shared sc.out buffer.
+// What makes this safe is that nothing a handler does may block
+// unboundedly: the worker control RPCs underneath (sessionAgentControl)
+// are capped at controlRPCTimeout, and the genuinely long verbs
+// (/compact's ForceCompact LLM call, /loop's ticker) already run on
+// their own goroutines and report back via the bus. The worst case for
+// a wedged-but-alive worker is therefore one bounded stall, not a
+// permanently frozen TUI.
 func dispatchSlash(reg *slash.Registry, sc *slashCtx, line string) tea.Cmd {
 	name, args, ok := slash.Parse(line)
 	if !ok {

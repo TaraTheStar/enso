@@ -22,6 +22,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/egress"
@@ -174,17 +175,18 @@ func egressBrokerOpts(eg config.EgressConfig, yolo, interactive bool, setProxy f
 			if yolo {
 				pr.AllowAll()
 			}
-			// Seed the proxy allowlist with the statically-configured
-			// entries up front. Without this they only reach p.allowed
-			// lazily on a broker grant — which --yolo bypasses (AllowAll
-			// short-circuits the gate), so a configured host that resolves
-			// to a private address (e.g. a LAN-hosted SearXNG) would still
-			// be refused by the SSRF denylist, since that exemption keys off
-			// the EXPLICIT allowlist, not AllowAll. Seeding here means an
-			// operator who named a host gets the documented loopback/LAN
-			// opt-out regardless of yolo/interactive.
+			// Seed the proxy's CONFIGURED allowlist with the config-file
+			// entries up front. AllowConfigured is the only path that
+			// confers the SSRF-denylist opt-out, and this is its only
+			// call site: the operator typed these names, so a configured
+			// host that resolves to a private address (e.g. a LAN-hosted
+			// SearXNG) gets the documented loopback/LAN opt-out
+			// regardless of yolo/interactive. Runtime grants (broker /
+			// interactive) go through pr.Allow instead and stay subject
+			// to the denylist — a worker-chosen host:port must never
+			// waive private-address protection.
 			for _, e := range eg.Allow {
-				pr.Allow(e)
+				pr.AllowConfigured(e)
 			}
 			static.Proxy = pr
 			setProxy(pr.ProxyURL()) // box's only route out
@@ -216,6 +218,14 @@ type Session struct {
 	done     chan error
 
 	inputClosed sync.Once
+
+	// shutdownRequested flips when WE asked the worker to go away
+	// (CloseInput's MsgShutdown or Close's Teardown). The loop uses it
+	// to tell an expected channel EOF apart from an abnormal one: a
+	// drop with no terminal message and no requested shutdown is a
+	// worker crash (OOM-kill, VM death, panic) and must surface as an
+	// error from Wait(), not a clean nil.
+	shutdownRequested atomic.Bool
 
 	telemMu sync.Mutex
 	telem   wire.Telemetry
@@ -331,6 +341,11 @@ func (a *AllowlistBroker) Authorize(_ context.Context, req wire.CapabilityReques
 	case wire.CapEgress:
 		if a.AllowAllEgress || a.Egress[req.Name] {
 			if a.Proxy != nil {
+				// Runtime grant: opens the proxy gate for this target but
+				// does NOT exempt it from the SSRF denylist — req.Name is
+				// worker-supplied, so under yolo (grant-everything) this
+				// must not become a loopback/metadata relay. Only
+				// operator config entries (AllowConfigured) opt out.
 				a.Proxy.Allow(req.Name)
 			}
 			return wire.CapabilityGrant{Granted: true, TTLSeconds: a.TTL}
@@ -513,6 +528,7 @@ func (s *Session) Cancel() { _ = s.send(backend.Envelope{Kind: backend.MsgCancel
 // winds down when quiescent.
 func (s *Session) CloseInput() {
 	s.inputClosed.Do(func() {
+		s.shutdownRequested.Store(true)
 		_ = s.send(backend.Envelope{Kind: backend.MsgShutdown})
 	})
 }
@@ -523,7 +539,12 @@ func (s *Session) CloseInput() {
 func (s *Session) Wait() error { return <-s.done }
 
 // Close tears the worker down. Idempotent; safe after Wait.
-func (s *Session) Close() error { return s.worker.Teardown(context.Background()) }
+func (s *Session) Close() error {
+	// Flag BEFORE Teardown closes the Channel so the loop's Recv error
+	// reads as the requested shutdown it is, not a worker crash.
+	s.shutdownRequested.Store(true)
+	return s.worker.Teardown(context.Background())
+}
 
 func (s *Session) finish(err error) {
 	s.doneOnce.Do(func() { s.done <- err; close(s.done) })
@@ -571,10 +592,27 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 	for {
 		env, err := s.ch.Recv()
 		if err != nil {
-			// Channel dropped. If the worker never reported a terminal
-			// status this is an abnormal exit.
+			// Channel dropped without a terminal message. Before ready
+			// this fails the handshake (Start surfaces it). After ready,
+			// it is an abnormal exit (container OOM-killed, VM died,
+			// worker panic/SIGKILL) UNLESS we asked for the teardown
+			// ourselves (Close/CloseInput) or our ctx ended — those EOFs
+			// are the expected wind-down and stay a clean nil.
 			signalReady(fmt.Errorf("host: worker channel closed before ready: %w", err))
-			s.finish(nil)
+			if s.shutdownRequested.Load() || ctx.Err() != nil {
+				s.finish(nil)
+				return
+			}
+			werr := fmt.Errorf("worker channel closed unexpectedly: %w", err)
+			// The backend may have captured WHY the box died (podman/lima
+			// keep a stderr ring buffer; the same hook Start uses for a
+			// failed handshake). Enrich the error when there is anything.
+			if d, ok := s.worker.(interface{ StartupDiagnostic() string }); ok {
+				if msg := d.StartupDiagnostic(); msg != "" {
+					werr = fmt.Errorf("%w\n\n%s", werr, msg)
+				}
+			}
+			s.finish(werr)
 			return
 		}
 		switch env.Kind {
@@ -592,18 +630,29 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 		case backend.MsgPersistMessage:
 			// An isolated worker can't write the host DB; apply its
 			// append here. Best-effort: a persist failure must not kill
-			// the session loop (the turn already happened).
+			// the session loop (the turn already happened) — but it must
+			// not be SILENT either, or a dead DB looks like a healthy run.
 			if s.writer != nil {
 				var pm wire.PersistMessage
-				if json.Unmarshal(env.Body, &pm) == nil {
-					// Reasoning is `json:"-"` on llm.Message so it doesn't
-					// survive pm.Msg's unmarshal; re-attach from the explicit
-					// wire field before persisting (replay-only chain-of-thought).
-					pm.Msg.Reasoning = pm.Reasoning
-					if seq, err := s.writer.AppendMessage(pm.Msg, pm.AgentID); err == nil {
-						lastSeqByAgent[pm.AgentID] = seq
-					}
+				if err := json.Unmarshal(env.Body, &pm); err != nil {
+					slog.Warn("host: persist message: decode failed", "err", err)
+					break
 				}
+				// Reasoning is `json:"-"` on llm.Message so it doesn't
+				// survive pm.Msg's unmarshal; re-attach from the explicit
+				// wire field before persisting (replay-only chain-of-thought).
+				pm.Msg.Reasoning = pm.Reasoning
+				seq, err := s.writer.AppendMessage(pm.Msg, pm.AgentID)
+				if err != nil {
+					slog.Warn("host: persist message failed", "agent", pm.AgentID, "err", err)
+					// Invalidate the cursor: the following usage record
+					// belongs to THIS failed append, so attributing it to
+					// the previous row would corrupt accounting. Dropping
+					// the stale entry makes the usage handler skip instead.
+					delete(lastSeqByAgent, pm.AgentID)
+					break
+				}
+				lastSeqByAgent[pm.AgentID] = seq
 			}
 
 		case backend.MsgPersistMessageUsage:
@@ -612,16 +661,31 @@ func (s *Session) loop(ctx context.Context, ready chan<- error) {
 			// last-applied message seq.
 			if s.writer != nil {
 				var pu wire.PersistMessageUsage
-				if json.Unmarshal(env.Body, &pu) == nil {
-					_ = s.writer.AppendMessageUsage(lastSeqByAgent[pu.AgentID], pu.Usage, pu.AgentID)
+				if err := json.Unmarshal(env.Body, &pu); err != nil {
+					slog.Warn("host: persist usage: decode failed", "err", err)
+					break
+				}
+				seq, ok := lastSeqByAgent[pu.AgentID]
+				if !ok {
+					// The matching message append failed (or never arrived);
+					// skip rather than misattribute to the wrong row.
+					slog.Warn("host: persist usage skipped: no applied message to attach to", "agent", pu.AgentID)
+					break
+				}
+				if err := s.writer.AppendMessageUsage(seq, pu.Usage, pu.AgentID); err != nil {
+					slog.Warn("host: persist usage failed", "agent", pu.AgentID, "seq", seq, "err", err)
 				}
 			}
 
 		case backend.MsgPersistToolCall:
 			if s.writer != nil {
 				var pt wire.PersistToolCall
-				if json.Unmarshal(env.Body, &pt) == nil {
-					_ = s.writer.AppendToolCall(pt.CallID, pt.Name, pt.Args, pt.LLMOutput, pt.FullOutput, pt.Status)
+				if err := json.Unmarshal(env.Body, &pt); err != nil {
+					slog.Warn("host: persist tool call: decode failed", "err", err)
+					break
+				}
+				if err := s.writer.AppendToolCall(pt.CallID, pt.Name, pt.Args, pt.LLMOutput, pt.FullOutput, pt.Status); err != nil {
+					slog.Warn("host: persist tool call failed", "call", pt.CallID, "tool", pt.Name, "err", err)
 				}
 			}
 

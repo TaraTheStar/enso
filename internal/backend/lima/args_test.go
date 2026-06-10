@@ -100,10 +100,13 @@ func TestBuildVMConfig_IptablesBootstrap(t *testing.T) {
 	// strand the seal.
 	y := (&Backend{Sealed: true, Init: []string{"echo user-step"}}).buildVMConfig(cwd, "/e/exe")
 	speed := strings.Index(y, "set timeout=0")
-	boot := strings.Index(y, "apk add --no-cache iptables ip6tables")
+	boot := strings.Index(y, "apk add --no-cache iptables ip6tables setpriv")
 	user := strings.Index(y, "echo user-step")
 	if boot < 0 || !strings.Contains(y, "ip6tables") {
 		t.Errorf("sealed Alpine bootstrap must install ip6tables for the fail-closed v6 seal, got:\n%s", y)
+	}
+	if !strings.Contains(y, "setpriv") {
+		t.Errorf("sealed Alpine bootstrap must install setpriv for the worker privilege drop, got:\n%s", y)
 	}
 	if speed < 0 || boot < 0 {
 		t.Errorf("sealed Alpine must emit boot-speedup AND iptables bootstrap, got:\n%s", y)
@@ -173,7 +176,7 @@ func TestBuildVMConfig_ProvisionInit(t *testing.T) {
 }
 
 func TestBuildShellArgs_NoPTYRealCwd(t *testing.T) {
-	got := joinArgs(buildShellArgs("enso-proj-deadbeef", "/home/u/proj", "/host/bin/enso", ""))
+	got := joinArgs(buildShellArgs("enso-proj-deadbeef", "/home/u/proj", "/host/bin/enso", "", false))
 	// Worker pinned to the REAL cwd, exec the bind-mounted enso.
 	if !strings.Contains(got, "shell --workdir /home/u/proj enso-proj-deadbeef /host/bin/enso __worker") {
 		t.Errorf("shell must run the worker at the real cwd, got: %s", got)
@@ -182,14 +185,20 @@ func TestBuildShellArgs_NoPTYRealCwd(t *testing.T) {
 	if strings.Contains(got, "--tty") || strings.Contains(got, " -t ") {
 		t.Errorf("worker shell must not allocate a tty, got: %s", got)
 	}
+	// Unsealed launch must not drop privileges (no seal to protect).
+	if strings.Contains(got, "setpriv") {
+		t.Errorf("unsealed worker must not be wrapped in setpriv, got: %s", got)
+	}
 }
 
 func TestBuildShellArgs_ProxyInjection(t *testing.T) {
-	got := joinArgs(buildShellArgs("vm", "/p", "/e/enso", "http://192.168.5.2:54321"))
+	got := joinArgs(buildShellArgs("vm", "/p", "/e/enso", "http://192.168.5.2:54321", true))
 	// Worker wrapped in `env` so its only route out is the host proxy
 	// (reached at the Lima gateway), and loopback is never proxied.
 	for _, want := range []string{
-		"shell --workdir /p vm env ",
+		// Sealed → no_new_privs neutralizes the default user's passwordless
+		// sudo so the worker can't `sudo iptables -F` away the seal (H1).
+		"shell --workdir /p vm setpriv --no-new-privs env ",
 		"HTTPS_PROXY=http://192.168.5.2:54321",
 		"HTTP_PROXY=http://192.168.5.2:54321",
 		"NO_PROXY=127.0.0.1,localhost",
@@ -199,9 +208,13 @@ func TestBuildShellArgs_ProxyInjection(t *testing.T) {
 			t.Errorf("missing %q in: %s", want, got)
 		}
 	}
-	// No proxy → no env wrapper (fully sealed box).
-	if bare := joinArgs(buildShellArgs("vm", "/p", "/e/enso", "")); strings.Contains(bare, "env ") || strings.Contains(bare, "PROXY") {
-		t.Errorf("no-proxy launch must not inject env: %s", bare)
+	// Sealed, no proxy → still privilege-dropped, just no env wrapper.
+	sealedNoProxy := joinArgs(buildShellArgs("vm", "/p", "/e/enso", "", true))
+	if !strings.Contains(sealedNoProxy, "shell --workdir /p vm setpriv --no-new-privs /e/enso __worker") {
+		t.Errorf("sealed no-proxy launch must drop privileges directly before the worker: %s", sealedNoProxy)
+	}
+	if strings.Contains(sealedNoProxy, "env ") || strings.Contains(sealedNoProxy, "PROXY") {
+		t.Errorf("no-proxy launch must not inject env: %s", sealedNoProxy)
 	}
 }
 
