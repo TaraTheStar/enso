@@ -6,7 +6,7 @@ This PR performs a series of architectural refinements to improve stability, sec
 
 ### 🛠️ Stability & Security: Exestage Locking
 Implemented an advisory `flock` mechanism in `exestage`.
-- **Problem:** A concurrent `enso prune` could delete a staged binary while a long-running worker was still executing it.
+- **Problem:** A concurrent `enso prune` could have deleted a staged binary while a long-running worker was still executing it.
 - **Fix:** `Acquire` takes a shared lock on a `.inuse.lock` file; `Sweep` attempts an exclusive lock and skips any snapshot currently being held.
 
 ### ⚡ Performance: TUI Event Coalescing
