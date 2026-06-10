@@ -171,5 +171,15 @@ If the run ended in error, the field `error` carries the message:
   the response and don't serialize. In non-interactive mode requests
   are auto-denied (and surface as `permission_auto_deny`). For
   interactive permission flow, use `enso tui` or `enso attach`.
+- `EventToolCallProgress` — incremental tool-output chunks streamed
+  while a tool runs. The full result arrives in `tool_call_end`, so
+  the JSON stream skips the intermediate frames.
+- `EventAgentIdle` — an internal turn-boundary signal used by the
+  TUI and daemon; `assistant_done` / `agent_end` already mark turn
+  completion in the JSON stream.
+- `EventInputDiscarded` — fires when queued input is dropped after a
+  cancel. `enso run` has no input queue, so it can't occur here.
+- `EventNotice` — host-local informational scrollback lines (e.g.
+  attachment confirmations) rendered only by the TUI.
 - Per-character cursor / focus events from the TUI; the JSON stream
   is agent-level only.

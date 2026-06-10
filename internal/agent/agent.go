@@ -123,7 +123,7 @@ type Agent struct {
 
 	// estTokens caches the best available token-count estimate for
 	// History so the UI goroutine can read without racing the agent
-	// goroutine's mutations. Updated on every appendMessage and after
+	// goroutine's mutations. Updated on every appendMessageLocked and after
 	// compaction. Prefers provider-reported usage from lastUsage when
 	// present; falls back to the 4-char heuristic otherwise.
 	estTokens atomic.Int64
@@ -393,7 +393,7 @@ func (a *Agent) ContextWindow() int {
 }
 
 // refreshEstimate recomputes the cached token count from the current history.
-// Must be called whenever history changes — appendMessage and compaction.
+// Must be called whenever history changes — appendMessageLocked and compaction.
 // Caller must hold a.histMu (it reads History).
 func (a *Agent) refreshEstimate() {
 	a.estTokens.Store(int64(a.estimateTokens()))
@@ -491,7 +491,7 @@ func (a *Agent) LastUsage() llm.MessageUsage {
 
 // stampUsage records provider-reported usage for the assistant message
 // at History index historyIdx, persisted against persistSeq (the value
-// returned by the appendMessage that wrote the row — 0 when there's no
+// returned by the append that wrote the row — 0 when there's no
 // Writer). No-op when usage is empty (provider didn't supply numbers —
 // keep lastUsage at whatever it was and don't pollute messageUsage with
 // zero rows). Updates cumIn/cumOut from the real values; persists via the
@@ -1433,7 +1433,7 @@ func recoverWord(finishReason string) string {
 
 // appendUserMessage appends a user-role message and bumps the
 // session-wide user-turn counter the prune subsystem keys off of.
-// All user messages should land here (not appendMessage directly) so
+// All user messages should land here (not appendMessageLocked directly) so
 // turn-age accounting stays consistent. Returns the persisted message's
 // seq (0 when no Writer is configured), so the Run loop can hand a
 // genuine user turn's seq to OnUserTurn for checkpointing.
@@ -1444,19 +1444,12 @@ func (a *Agent) appendUserMessage(content string, parts []llm.MessagePart) int {
 	return a.appendMessageLocked(llm.Message{Role: "user", Content: content, Parts: parts})
 }
 
-// appendMessage appends one message under the history lock. Returns the
-// persisted message's per-session seq (0 when no Writer is configured
-// or the append failed).
-func (a *Agent) appendMessage(msg llm.Message) int {
-	a.histMu.Lock()
-	defer a.histMu.Unlock()
-	return a.appendMessageLocked(msg)
-}
-
-// appendMessageIdx is appendMessage returning the new message's History
-// index as well, captured atomically under the history lock so a
-// concurrent compaction can't shift the slot between the append and the
-// caller's stampUsage.
+// appendMessageIdx appends one message under the history lock,
+// returning the persisted message's per-session seq (0 when no Writer
+// is configured or the append failed) plus the new message's History
+// index, captured atomically under the history lock so a concurrent
+// compaction can't shift the slot between the append and the caller's
+// stampUsage.
 func (a *Agent) appendMessageIdx(msg llm.Message) (idx, seq int) {
 	a.histMu.Lock()
 	defer a.histMu.Unlock()
