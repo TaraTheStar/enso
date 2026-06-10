@@ -59,7 +59,7 @@ func (b *Backend) Start(ctx context.Context, _ backend.TaskSpec) (backend.Worker
 		return nil, fmt.Errorf("local: start worker: %w", err)
 	}
 
-	w := &localWorker{cmd: cmd}
+	w := &localWorker{cmd: cmd, reaped: make(chan struct{})}
 	w.ch = backend.NewStreamChannelRW(stdout, stdin, &pipePair{stdin: stdin, stdout: stdout})
 	return w, nil
 }
@@ -81,31 +81,51 @@ type localWorker struct {
 	cmd  *exec.Cmd
 	ch   backend.Channel
 	once sync.Once
+
+	// Single-reaper state: exec.Cmd.Wait must be called exactly once
+	// (concurrent calls race on the process state), but both Wait(ctx)
+	// and Teardown need the exit. reap() spawns the one cmd.Wait()
+	// goroutine on first use; reaped closes when it returns, with the
+	// result in waitErr (the channel close orders the write).
+	reapOnce sync.Once
+	reaped   chan struct{}
+	waitErr  error
 }
 
 func (w *localWorker) Channel() backend.Channel { return w.ch }
 
+// reap ensures the single cmd.Wait() reaper goroutine is running and
+// returns the channel that closes once the process has been reaped.
+func (w *localWorker) reap() <-chan struct{} {
+	w.reapOnce.Do(func() {
+		go func() {
+			w.waitErr = w.cmd.Wait()
+			close(w.reaped)
+		}()
+	})
+	return w.reaped
+}
+
 // Wait blocks until the worker process exits or ctx is cancelled. A
 // non-zero exit is returned as an error.
 func (w *localWorker) Wait(ctx context.Context) error {
-	done := make(chan error, 1)
-	go func() { done <- w.cmd.Wait() }()
 	select {
-	case err := <-done:
-		return err
+	case <-w.reap():
+		return w.waitErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
 // Teardown closes the Channel (EOF → worker winds down) then ensures
-// the process is gone. Idempotent; safe after Wait.
+// the process is gone. Idempotent; safe after (or concurrent with)
+// Wait — both consume the same single reaper.
 func (w *localWorker) Teardown(context.Context) error {
 	w.once.Do(func() {
 		_ = w.ch.Close()
 		if w.cmd.Process != nil {
 			_ = w.cmd.Process.Kill()
-			_ = w.cmd.Wait()
+			<-w.reap()
 		}
 	})
 	return nil

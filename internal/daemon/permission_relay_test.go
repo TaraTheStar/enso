@@ -27,7 +27,7 @@ func newPermServer(timeoutSecs int) (*Server, *sessionState) {
 	}
 	st := &sessionState{
 		id:           "s1",
-		pendingPerms: map[string]chan permissions.Decision{},
+		pendingPerms: map[string]*pendingPerm{},
 		server:       srv,
 	}
 	srv.sessions[st.id] = st
@@ -224,6 +224,42 @@ func TestDaemonProxyPermission_TimeoutAutoDeny(t *testing.T) {
 	wantDaemonDecision(t, respond, permissions.Deny)
 	if n := pendingPermCount(st); n != 0 {
 		t.Fatalf("pendingPerms not drained after timeout: %d entries", n)
+	}
+}
+
+// TestDaemonResolvePermission_StopsAutoDenyTimer: answering a prompt must
+// disarm its auto-deny timer. The old implementation parked a goroutine
+// in time.Sleep for the full budget after every answered prompt (and
+// abandoned them at shutdown); with AfterFunc the timer must already be
+// stopped by the time resolvePermission returns.
+func TestDaemonResolvePermission_StopsAutoDenyTimer(t *testing.T) {
+	srv, st := newPermServer(30)
+	events, _ := st.subscribe(0)
+	pr, respond := newPromptRequest()
+
+	st.proxyPermission(pr, false)
+	p := recvPermEvent(t, events)
+
+	// Grab the armed timer before resolving (the entry is deleted after).
+	st.permsMu.Lock()
+	pend := st.pendingPerms[p.RequestID]
+	st.permsMu.Unlock()
+	if pend == nil || pend.timer == nil {
+		t.Fatal("pending entry must carry the auto-deny timer")
+	}
+
+	if err := srv.onPermissionResponse(PermissionResponseReq{
+		SessionID: st.id, RequestID: p.RequestID, Decision: PermissionAllow,
+	}); err != nil {
+		t.Fatalf("onPermissionResponse: %v", err)
+	}
+	wantDaemonDecision(t, respond, permissions.Allow)
+
+	// Stop() == false means the timer was already stopped — it cannot
+	// have fired on its own with a 30s budget. Stop() == true would mean
+	// resolution left it armed, i.e. a late deny was still scheduled.
+	if pend.timer.Stop() {
+		t.Fatal("auto-deny timer still armed after resolution")
 	}
 }
 

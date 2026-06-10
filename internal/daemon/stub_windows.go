@@ -41,9 +41,6 @@ type Client struct{}
 func Dial() (*Client, error) { return nil, errUnsupported }
 
 func (c *Client) Close() error { return nil }
-func (c *Client) Send(kind MessageKind, body interface{}) (Message, error) {
-	return Message{}, errUnsupported
-}
 func (c *Client) CreateSession(req CreateSessionReq) (*SessionInfo, error) {
 	return nil, errUnsupported
 }

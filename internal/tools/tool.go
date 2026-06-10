@@ -5,7 +5,6 @@ package tools
 import (
 	"context"
 	"log/slog"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -118,11 +117,6 @@ type AgentContext struct {
 	MaxDepth     int
 	GlobalAgents *atomic.Int64
 	MaxAgents    int
-
-	// Transcripts, when non-nil, captures completed sub-agents' message
-	// histories so the agents-pane click-to-expand overlay can render
-	// them. Spawned tools and workflow roles call Store post-RunOneShot.
-	Transcripts *Transcripts
 
 	// Writer, when non-nil, lets sub-agents persist their own message
 	// rows attributed to their AgentID. The top-level agent's writer is
@@ -411,58 +405,4 @@ type SessionWriter interface {
 	AppendMessageUsage(seq int, usage llm.MessageUsage, agentID string) error
 	AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error
 	SessionID() string
-}
-
-// Transcripts is a goroutine-safe map from agent id to that agent's full
-// message history at completion. Populated by spawn_agent and workflow
-// roles; read by the TUI's agents pane to render an expand-into-chat
-// overlay.
-type Transcripts struct {
-	mu sync.Mutex
-	m  map[string][]llm.Message
-}
-
-// NewTranscripts constructs an empty registry.
-func NewTranscripts() *Transcripts {
-	return &Transcripts{m: map[string][]llm.Message{}}
-}
-
-// Store records a copy of `history` keyed by `agentID`. Calling with the
-// same id overwrites — the latest run wins.
-func (t *Transcripts) Store(agentID string, history []llm.Message) {
-	if t == nil || agentID == "" {
-		return
-	}
-	cp := make([]llm.Message, len(history))
-	copy(cp, history)
-	t.mu.Lock()
-	t.m[agentID] = cp
-	t.mu.Unlock()
-}
-
-// Get returns the captured transcript for `agentID`, or nil if none.
-// Returned slice is safe to iterate but should not be mutated.
-func (t *Transcripts) Get(agentID string) []llm.Message {
-	if t == nil {
-		return nil
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.m[agentID]
-}
-
-// IDs returns the agent IDs of every stored transcript. Order is
-// undefined (Go map iteration). Used by the /transcript slash
-// command to enumerate available transcripts.
-func (t *Transcripts) IDs() []string {
-	if t == nil {
-		return nil
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	out := make([]string, 0, len(t.m))
-	for k := range t.m {
-		out = append(out, k)
-	}
-	return out
 }

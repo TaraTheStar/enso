@@ -107,7 +107,11 @@ func TestBashTool_ScrubsSecretEnv(t *testing.T) {
 }
 
 func TestIsSecretEnvName(t *testing.T) {
-	secret := []string{"OPENAI_API_KEY", "ENSO_FOO", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "DB_PASSWORD", "x_apikey", "MY_PRIVATE_KEY"}
+	secret := []string{
+		"OPENAI_API_KEY", "ENSO_FOO", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "DB_PASSWORD", "x_apikey", "MY_PRIVATE_KEY",
+		// URL/connection-string style credentials.
+		"DATABASE_URL", "REDIS_URL", "AMQP_URL", "MONGO_URI", "SENTRY_DSN", "PG_CONNECTION_STRING", "NPM_CONFIG_AUTH",
+	}
 	for _, n := range secret {
 		if !isSecretEnvName(n) {
 			t.Errorf("%q should be treated as secret", n)

@@ -127,7 +127,6 @@ func TestSpawn_PerCallModelRoutesToCorrectProvider(t *testing.T) {
 		MaxDepth:     3,
 		MaxAgents:    16,
 		GlobalAgents: &atomic.Int64{},
-		Transcripts:  tools.NewTranscripts(),
 	}
 
 	res, err := SpawnTool{}.Run(context.Background(),
@@ -158,7 +157,6 @@ func TestSpawn_UnknownModelArgReportsToLLM(t *testing.T) {
 		MaxDepth:     3,
 		MaxAgents:    16,
 		GlobalAgents: &atomic.Int64{},
-		Transcripts:  tools.NewTranscripts(),
 	}
 	res, err := SpawnTool{}.Run(context.Background(),
 		map[string]interface{}{"prompt": "x", "model": "ghost"}, ac)

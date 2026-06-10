@@ -9,12 +9,6 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 )
 
-// MatchTool checks if a tool name matches a pattern (supports * and **).
-func MatchTool(pattern, tool string) bool {
-	m, _ := doublestar.Match(pattern, tool)
-	return m
-}
-
 // MatchPath returns true iff `path` (an absolute path passed by the
 // tool) matches the doublestar pattern. There is no basename fallback —
 // a bare `*.go` pattern intentionally does NOT match `/abs/foo.go`.

@@ -297,42 +297,6 @@ theme = "dark"
 	}
 }
 
-func TestLoadRules_MissingFileReturnsEmpty(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "absent.toml")
-	a, k, d, err := LoadRules(path)
-	if err != nil {
-		t.Fatalf("missing file: %v", err)
-	}
-	if len(a)+len(k)+len(d) != 0 {
-		t.Errorf("want empty for missing file, got %v %v %v", a, k, d)
-	}
-}
-
-func TestLoadRules_ReturnsAllThreeKinds(t *testing.T) {
-	tmp := t.TempDir()
-	path := filepath.Join(tmp, "cfg.toml")
-	mustWrite(t, path, `
-[permissions]
-allow = ["bash(git *)", "read(*)"]
-ask = ["bash(git push *)"]
-deny = ["bash(rm -rf *)"]
-`)
-	allow, ask, deny, err := LoadRules(path)
-	if err != nil {
-		t.Fatalf("load: %v", err)
-	}
-	if len(allow) != 2 || allow[0] != "bash(git *)" {
-		t.Errorf("allow: %v", allow)
-	}
-	if len(ask) != 1 || ask[0] != "bash(git push *)" {
-		t.Errorf("ask: %v", ask)
-	}
-	if len(deny) != 1 || deny[0] != "bash(rm -rf *)" {
-		t.Errorf("deny: %v", deny)
-	}
-}
-
 func TestRemoveRule_DeletesAndPreservesOthers(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "cfg.toml")

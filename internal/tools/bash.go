@@ -119,6 +119,10 @@ func optIntArg(v interface{}) int {
 var secretEnvSubstrings = []string{
 	"API_KEY", "APIKEY", "SECRET", "TOKEN",
 	"PASSWORD", "PASSWD", "CREDENTIAL", "PRIVATE_KEY", "ACCESS_KEY",
+	// Connection-string style credentials: DATABASE_URL, REDIS_URI,
+	// SENTRY_DSN, AMQP_URL, NPM_CONFIG_AUTH, *_CONNECTION_STRING — these
+	// commonly embed user:password@host and must not reach the child env.
+	"URL", "URI", "DSN", "CONNECTION", "AUTH",
 }
 
 // scrubbedBashEnv returns env (KEY=VALUE entries, e.g. from os.Environ)
@@ -128,7 +132,8 @@ var secretEnvSubstrings = []string{
 //     via the `api_key = "$ENSO_OPENAI_KEY"` indirection, so the model
 //     should never see them; and
 //   - any var whose name contains a secretEnvSubstrings fragment
-//     (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY, GITHUB_TOKEN, …).
+//     (OPENAI_API_KEY, AWS_SECRET_ACCESS_KEY, GITHUB_TOKEN,
+//     DATABASE_URL, SENTRY_DSN, …).
 //
 // This is a name-pattern denylist, not an allowlist, so the child shell
 // keeps PATH/HOME/LANG/toolchain vars a build legitimately needs.

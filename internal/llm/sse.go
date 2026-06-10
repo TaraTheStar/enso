@@ -4,8 +4,8 @@ package llm
 
 import (
 	"bufio"
+	"bytes"
 	"io"
-	"strings"
 )
 
 // maxSSELineBytes caps a single SSE line. Tool-call argument blobs and
@@ -33,24 +33,33 @@ func ParseSSE(reader io.Reader, done chan []byte, errOut *error) {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 256*1024), maxSSELineBytes)
 
+	dataPrefix := []byte("data: ")
+	doneMarker := []byte("[DONE]")
+
 	for scanner.Scan() {
-		line := scanner.Text()
-		if line == "" {
+		// Work on the scanner's buffer directly: scanner.Text() would
+		// copy every line into a string and the channel send would copy
+		// it again. One copy of the payload is unavoidable (the scanner
+		// reuses its buffer on the next Scan), but only one.
+		line := scanner.Bytes()
+		if len(line) == 0 {
 			continue
 		}
-		if strings.HasPrefix(line, ":") {
+		if line[0] == ':' {
 			continue
 		}
-		if !strings.HasPrefix(line, "data: ") {
+		if !bytes.HasPrefix(line, dataPrefix) {
 			continue
 		}
 
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
+		data := line[len(dataPrefix):]
+		if bytes.Equal(data, doneMarker) {
 			return
 		}
 
-		done <- []byte(data)
+		out := make([]byte, len(data))
+		copy(out, data)
+		done <- out
 	}
 
 	if err := scanner.Err(); err != nil && errOut != nil {
