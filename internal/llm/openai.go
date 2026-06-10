@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,13 +28,21 @@ import (
 var (
 	debugMu     sync.RWMutex
 	debugWriter io.Writer = io.Discard
+	// debugEnabled mirrors "debugWriter != io.Discard" as a lock-free
+	// flag so hot paths (per-SSE-chunk, per-request-body) can skip the
+	// fmt.Fprintf entirely — formatting a discarded line per token is
+	// pure waste at local-model token rates.
+	debugEnabled atomic.Bool
 )
 
 // SetDebug enables debug-log writing to `path`. Pass "" to disable.
-// Idempotent and concurrency-safe.
+// Idempotent and concurrency-safe; the previously opened log file (if
+// any) is closed when the writer is replaced.
 func SetDebug(path string) error {
 	if path == "" {
+		debugEnabled.Store(false)
 		debugMu.Lock()
+		closeDebugWriterLocked()
 		debugWriter = io.Discard
 		debugMu.Unlock()
 		return nil
@@ -50,9 +59,22 @@ func SetDebug(path string) error {
 		return fmt.Errorf("open %s: %w", path, err)
 	}
 	debugMu.Lock()
+	closeDebugWriterLocked()
 	debugWriter = f
 	debugMu.Unlock()
+	debugEnabled.Store(true)
 	return nil
+}
+
+// closeDebugWriterLocked closes the current debug writer if it is one
+// SetDebug opened itself. Only files SetDebug opens are ever closed —
+// io.Discard isn't an io.Closer, and os.Stderr is excluded defensively
+// in case a future change routes debug output there. Caller must hold
+// debugMu.
+func closeDebugWriterLocked() {
+	if c, ok := debugWriter.(io.Closer); ok && debugWriter != io.Writer(os.Stderr) {
+		_ = c.Close()
+	}
 }
 
 func debugLog() io.Writer {
@@ -286,7 +308,9 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
-	fmt.Fprintf(debugLog(), "POST %s/chat/completions\nbody: %s\n", c.Endpoint, string(data))
+	if debugEnabled.Load() {
+		fmt.Fprintf(debugLog(), "POST %s/chat/completions\nbody: %s\n", c.Endpoint, data)
+	}
 
 	resp, err := c.doChatRequest(ctx, data)
 	if err != nil {
@@ -403,7 +427,9 @@ func (c *OpenAIClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			}
 			started = true
 
-			fmt.Fprintf(debugLog(), "sse: %s\n", string(raw))
+			if debugEnabled.Load() {
+				fmt.Fprintf(debugLog(), "sse: %s\n", raw)
+			}
 			var chunk ChatCompletionChunk
 			if err := json.Unmarshal(raw, &chunk); err != nil {
 				drainSSE()

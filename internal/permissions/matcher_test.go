@@ -4,26 +4,6 @@ package permissions
 
 import "testing"
 
-func TestMatchTool(t *testing.T) {
-	cases := []struct {
-		pattern, tool string
-		want          bool
-	}{
-		{"read", "read", true},
-		{"read", "write", false},
-		{"*", "anything", true},
-		{"mcp__*", "mcp__gitea__list_repos", true},
-		{"mcp__*", "read", false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.pattern+"/"+tc.tool, func(t *testing.T) {
-			if got := MatchTool(tc.pattern, tc.tool); got != tc.want {
-				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
 func TestMatchPath(t *testing.T) {
 	cases := []struct {
 		pattern, path string

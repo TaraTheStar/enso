@@ -52,10 +52,6 @@ type slashCtx struct {
 	lspMgr *lsp.Manager
 	mcpMgr *mcp.Manager
 
-	// transcripts is the per-agent message log captured for sub-agent
-	// runs. /transcript reads it to surface a child agent's history.
-	transcripts *tools.Transcripts
-
 	// conv is read by /find for in-session match search. Set by
 	// run.go after the conversation state machine is constructed.
 	conv *conversation
@@ -67,7 +63,7 @@ type slashCtx struct {
 
 	// workflowDeps is the pre-built RunDeps that /workflow uses. Built
 	// in run.go after the agent is constructed so all the cross-cutting
-	// runtime references (transcripts, agent ctx counters, config
+	// runtime references (agent ctx counters, config
 	// flags) are wired in one place.
 	workflowDeps workflow.RunDeps
 

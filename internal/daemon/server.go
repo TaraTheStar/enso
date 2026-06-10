@@ -90,6 +90,11 @@ type Server struct {
 	mu           sync.Mutex
 	sessions     map[string]*sessionState
 	globalAgents *atomic.Int64
+
+	// sessionWG tracks every session's agent.Run goroutine so shutdown
+	// can wait for in-flight store writes to drain before the deferred
+	// store.Close() in Run fires.
+	sessionWG sync.WaitGroup
 }
 
 type sessionState struct {
@@ -110,11 +115,20 @@ type sessionState struct {
 	subs []chan Event
 
 	// pendingPerms maps an in-flight permission-request id to the
-	// agent's Respond chan. Filled when we forward a request to clients,
-	// drained when the client sends back a PermissionResponse (or by
-	// timeout / no-subscriber fallback).
+	// agent's Respond chan plus the auto-deny timer. Filled when we
+	// forward a request to clients, drained when the client sends back
+	// a PermissionResponse (or by timeout / no-subscriber fallback).
 	permsMu      sync.Mutex
-	pendingPerms map[string]chan permissions.Decision
+	pendingPerms map[string]*pendingPerm
+}
+
+// pendingPerm is one in-flight permission prompt awaiting a client
+// decision. `timer` is the hard-timeout auto-deny; resolvePermission
+// stops it so an answered prompt doesn't leave the timer armed for the
+// rest of the budget.
+type pendingPerm struct {
+	respond chan permissions.Decision
+	timer   *time.Timer
 }
 
 const ringCapacity = 256
@@ -247,6 +261,20 @@ func Run(ctx context.Context, explicitConfig string) error {
 		sess.cancel()
 	}
 	s.mu.Unlock()
+
+	// Wait (bounded) for session agent goroutines to observe the cancel
+	// and finish in-flight store writes — otherwise the deferred
+	// store.Close() above races AppendMessage/AppendToolCall.
+	done := make(chan struct{})
+	go func() {
+		s.sessionWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		slog.Warn("daemon shutdown: sessions still running after grace period; closing store anyway")
+	}
 	return nil
 }
 
@@ -466,7 +494,7 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 		cancel:       cancel,
 		createdAt:    time.Now(),
 		inputCh:      make(chan agent.UserInput, 16),
-		pendingPerms: make(map[string]chan permissions.Decision),
+		pendingPerms: make(map[string]*pendingPerm),
 		server:       s,
 	}
 
@@ -499,7 +527,9 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 		}
 	}()
 
+	s.sessionWG.Add(1)
 	go func() {
+		defer s.sessionWG.Done()
 		_ = agt.Run(sessCtx, state.inputCh)
 	}()
 
@@ -525,8 +555,17 @@ func (s *Server) onSubmit(req SubmitReq) error {
 	if state == nil {
 		return fmt.Errorf("unknown session %q", req.SessionID)
 	}
-	state.inputCh <- agent.UserInput{Text: req.Message}
-	return nil
+	// Non-blocking: the agent only drains inputCh between turns, so a
+	// blocking send here would wedge this connection's handleConn read
+	// loop — including its ability to deliver Cancel or
+	// PermissionResponse — until the agent catches up. Reject instead;
+	// the error flows back to the client as a KindError frame.
+	select {
+	case state.inputCh <- agent.UserInput{Text: req.Message}:
+		return nil
+	default:
+		return fmt.Errorf("session %q busy: input queue full", req.SessionID)
+	}
 }
 
 func (s *Server) onCancel(req CancelReq) error {
@@ -641,12 +680,20 @@ func (st *sessionState) proxyPermission(pr *permissions.PromptRequest, yolo bool
 		return
 	}
 
+	// Hard timeout so the agent goroutine never hangs on a disconnected
+	// or unresponsive client. AfterFunc (stored on the pending entry,
+	// stopped by resolvePermission) rather than a sleeping goroutine: a
+	// prompt answered in seconds must not leave a sleeper parked for the
+	// rest of the budget. Computed once here so the wire-deadline the
+	// client renders matches what we enforce.
 	id := uuid.NewString()
-	st.permsMu.Lock()
-	st.pendingPerms[id] = pr.Respond
-	st.permsMu.Unlock()
-
 	timeout := st.server.permissionTimeout()
+	st.permsMu.Lock()
+	st.pendingPerms[id] = &pendingPerm{
+		respond: pr.Respond,
+		timer:   time.AfterFunc(timeout, func() { st.resolvePermission(id, permissions.Deny) }),
+	}
+	st.permsMu.Unlock()
 	payload, err := json.Marshal(PermissionRequestPayload{
 		RequestID: id,
 		Tool:      pr.ToolName,
@@ -675,22 +722,15 @@ func (st *sessionState) proxyPermission(pr *permissions.PromptRequest, yolo bool
 		default:
 		}
 	}
-
-	// Hard timeout so the agent goroutine never hangs on a disconnected
-	// or unresponsive client. Computed once above so the wire-deadline
-	// the client renders matches what we enforce.
-	go func() {
-		time.Sleep(timeout)
-		st.resolvePermission(id, permissions.Deny)
-	}()
 }
 
 // resolvePermission delivers `d` on the chan registered for `id` (if any)
-// and removes the entry. Calls after the first are no-ops, so the
-// timeout-deny and a real client response can race safely.
+// and removes the entry, stopping its auto-deny timer. Calls after the
+// first are no-ops, so the timeout-deny and a real client response can
+// race safely.
 func (st *sessionState) resolvePermission(id string, d permissions.Decision) {
 	st.permsMu.Lock()
-	ch, ok := st.pendingPerms[id]
+	p, ok := st.pendingPerms[id]
 	if ok {
 		delete(st.pendingPerms, id)
 	}
@@ -698,8 +738,11 @@ func (st *sessionState) resolvePermission(id string, d permissions.Decision) {
 	if !ok {
 		return
 	}
+	if p.timer != nil {
+		p.timer.Stop()
+	}
 	select {
-	case ch <- d:
+	case p.respond <- d:
 	default:
 	}
 }

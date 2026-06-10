@@ -5,6 +5,7 @@ package session
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/TaraTheStar/enso/internal/llm"
@@ -44,7 +45,7 @@ func Load(s *Store, sessionID string) (*State, error) {
 		`SELECT id, created_at, updated_at, model, provider, cwd, interrupted, label
 		 FROM sessions WHERE id = ?`, sessionID,
 	).Scan(&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter, &info.Label)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("session %s not found", sessionID)
 	}
 	if err != nil {

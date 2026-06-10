@@ -5,6 +5,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -179,7 +180,7 @@ func (m *Manager) startServer(ctx context.Context, inst *serverInstance, absPath
 
 	conn := NewConn(stdin, stdout)
 	go func() {
-		if err := conn.Run(); err != nil && err != io.EOF {
+		if err := conn.Run(); err != nil && !errors.Is(err, io.EOF) {
 			slog.Warn("lsp run", "server", inst.name, "err", err)
 		}
 	}()

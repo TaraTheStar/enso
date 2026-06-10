@@ -4,6 +4,7 @@ package session
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"time"
 
@@ -49,7 +50,7 @@ func ForkAt(s *Store, srcID string, maxSeq int) (string, error) {
 	err = tx.QueryRow(
 		`SELECT model, provider, cwd FROM sessions WHERE id = ?`, srcID,
 	).Scan(&model, &provider, &cwd)
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("fork: session %s not found", srcID)
 	}
 	if err != nil {

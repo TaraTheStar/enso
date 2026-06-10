@@ -40,7 +40,6 @@ func runDeps(t *testing.T, provider *llm.Provider, busInst *bus.Bus) RunDeps {
 		GlobalAgents:    &atomic.Int64{},
 		MaxAgents:       16,
 		MaxDepth:        3,
-		Transcripts:     tools.NewTranscripts(),
 	}
 }
 
@@ -365,7 +364,6 @@ A: {{ .Args }}
 		GlobalAgents:    &atomic.Int64{},
 		MaxAgents:       16,
 		MaxDepth:        3,
-		Transcripts:     tools.NewTranscripts(),
 	}
 
 	res, err := Run(context.Background(), wf, "x", deps)

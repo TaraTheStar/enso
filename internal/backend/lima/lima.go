@@ -172,6 +172,21 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 	if exe, exeMount, err = exestage.Stage(exe); err != nil {
 		return nil, fmt.Errorf("lima: stage executable: %w", err)
 	}
+	// Pin the snapshot for this worker's lifetime (shared flock):
+	// Sweep's mtime heuristic alone cannot see a long-running task in
+	// the persistent VM (mtime is set at Stage time), so a concurrent
+	// `enso prune` could otherwise RemoveAll the binary out from under
+	// a guest still mmap-executing it. Released in Teardown.
+	releaseExe, err := exestage.Acquire(exe)
+	if err != nil {
+		return nil, fmt.Errorf("lima: pin staged executable: %w", err)
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			releaseExe() // every error return below must unpin
+		}
+	}()
 	if spec.Cwd == "" {
 		return nil, fmt.Errorf("lima: empty cwd")
 	}
@@ -266,8 +281,15 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 	_ = errW.Close()
 	go func() { _, _ = io.Copy(io.MultiWriter(os.Stderr, diag), errR) }()
 
-	w := &limaWorker{cmd: cmd, diag: diag, errR: errR}
+	w := &limaWorker{
+		cmd:        cmd,
+		diag:       diag,
+		errR:       errR,
+		releaseExe: releaseExe,
+		reaped:     make(chan struct{}),
+	}
 	w.ch = backend.NewStreamChannelRW(stdout, stdin, &pipePair{stdin, stdout})
+	handedOff = true // Teardown owns releaseExe now
 	return w, nil
 }
 
@@ -663,6 +685,31 @@ type limaWorker struct {
 	// in Teardown to end the copy goroutine: a persisted ssh mux keeps
 	// the write end, so it never EOFs by itself.
 	errR *os.File
+	// releaseExe unpins the exestage snapshot (drops the shared in-use
+	// flock taken in Start) so `enso prune` may sweep it. Idempotent;
+	// called in Teardown.
+	releaseExe func()
+
+	// Single-reaper state: exec.Cmd.Wait must be called exactly once
+	// (concurrent calls race on the process state), but both Wait(ctx)
+	// and Teardown need the exit. reap() spawns the one cmd.Wait()
+	// goroutine on first use; reaped closes when it returns, with the
+	// result in waitErr (the channel close orders the write).
+	reapOnce sync.Once
+	reaped   chan struct{}
+	waitErr  error
+}
+
+// reap ensures the single cmd.Wait() reaper goroutine is running and
+// returns the channel that closes once the process has been reaped.
+func (w *limaWorker) reap() <-chan struct{} {
+	w.reapOnce.Do(func() {
+		go func() {
+			w.waitErr = w.cmd.Wait()
+			close(w.reaped)
+		}()
+	})
+	return w.reaped
 }
 
 func (w *limaWorker) Channel() backend.Channel { return w.ch }
@@ -685,11 +732,9 @@ func (w *limaWorker) StartupDiagnostic() string {
 }
 
 func (w *limaWorker) Wait(ctx context.Context) error {
-	done := make(chan error, 1)
-	go func() { done <- w.cmd.Wait() }()
 	select {
-	case err := <-done:
-		return err
+	case <-w.reap():
+		return w.waitErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -716,21 +761,25 @@ func (w *limaWorker) Teardown(ctx context.Context) error {
 		if w.errR != nil {
 			_ = w.errR.Close()
 		}
-		p := w.cmd.Process
-		if p == nil {
-			return
+		if p := w.cmd.Process; p != nil {
+			// Setpgid at Start ⇒ pgid == leader pid; negative pid signals
+			// the whole group. ESRCH (already reaped) is benign. The exit
+			// is consumed via the shared reaper (reap), never a second
+			// concurrent cmd.Wait() racing the one in Wait(ctx).
+			pgid := p.Pid
+			_ = syscall.Kill(-pgid, syscall.SIGTERM)
+			select {
+			case <-w.reap():
+			case <-time.After(3 * time.Second):
+				_ = syscall.Kill(-pgid, syscall.SIGKILL)
+				<-w.reap()
+			}
 		}
-		// Setpgid at Start ⇒ pgid == leader pid; negative pid signals
-		// the whole group. ESRCH (already reaped) is benign.
-		pgid := p.Pid
-		_ = syscall.Kill(-pgid, syscall.SIGTERM)
-		done := make(chan struct{})
-		go func() { _ = w.cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(3 * time.Second):
-			_ = syscall.Kill(-pgid, syscall.SIGKILL)
-			<-done
+		// Unpin the exestage snapshot only after the shell is reaped (the
+		// guest exec has lost its session) so `enso prune` cannot sweep
+		// the binary while this worker could still be executing it.
+		if w.releaseExe != nil {
+			w.releaseExe()
 		}
 	})
 	return nil
