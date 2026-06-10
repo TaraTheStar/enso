@@ -1304,43 +1304,6 @@ func recordSelfTrust(path string) {
 	}
 }
 
-// LoadRules reads only the permissions allow/ask/deny lists from a
-// single TOML file. Used by the /permissions overlay, which scopes
-// itself to <cwd>/.enso/config.local.toml so deletions are obviously
-// project-local. A non-existent file returns three empty slices and
-// no error — fresh projects have nothing to list yet.
-func LoadRules(path string) (allow, ask, deny []string, err error) {
-	if path == "" {
-		return nil, nil, nil, fmt.Errorf("LoadRules: empty path")
-	}
-	data, readErr := os.ReadFile(path)
-	if errors.Is(readErr, os.ErrNotExist) {
-		return nil, nil, nil, nil
-	}
-	if readErr != nil {
-		return nil, nil, nil, fmt.Errorf("read %s: %w", path, readErr)
-	}
-	var root map[string]any
-	if err := toml.Unmarshal(data, &root); err != nil {
-		return nil, nil, nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	perms, _ := root["permissions"].(map[string]any)
-	if perms == nil {
-		return nil, nil, nil, nil
-	}
-	collect := func(key string) []string {
-		raw, _ := perms[key].([]any)
-		out := make([]string, 0, len(raw))
-		for _, e := range raw {
-			if s, _ := e.(string); s != "" {
-				out = append(out, s)
-			}
-		}
-		return out
-	}
-	return collect("allow"), collect("ask"), collect("deny"), nil
-}
-
 // RemoveRule loads the TOML file at `path`, drops the first occurrence
 // of `pattern` from `permissions.<kind>` (where kind is "allow", "ask",
 // or "deny"), and writes the file back. Other top-level sections are

@@ -18,7 +18,6 @@ import (
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/instructions"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/mcp"
 	"github.com/TaraTheStar/enso/internal/paths"
 	"github.com/TaraTheStar/enso/internal/permissions"
@@ -62,7 +61,6 @@ func registerBuiltins(reg *slash.Registry, sc *slashCtx) {
 	reg.Register(&mcpCmd{sc: sc})
 	reg.Register(&gitCmd{sc: sc})
 	reg.Register(&costCmd{sc: sc})
-	reg.Register(&transcriptCmd{sc: sc})
 	reg.Register(&contextCmd{sc: sc})
 	reg.Register(&promptCmd{sc: sc})
 	reg.Register(&pruneCmd{sc: sc})
@@ -1452,91 +1450,6 @@ func (c *costCmd) Run(ctx context.Context, args string) error {
 	c.sc.printf("")
 	c.sc.printf("(no pricing table configured; /stats has the same totals)")
 	return nil
-}
-
-// /transcript — print a captured subagent transcript into scrollback.
-//
-// Subagent ids are surfaced via the inline "▸ subagent abc12345
-// started" notices the conversation prints when EventAgentStart fires
-// with a non-empty parent_id. The user copies the short id and runs
-// /transcript abc12345 to see the child's full conversation. With no
-// args, /transcript lists every stored id.
-
-type transcriptCmd struct{ sc *slashCtx }
-
-func (c *transcriptCmd) Name() string { return "transcript" }
-func (c *transcriptCmd) Description() string {
-	return "show a captured subagent transcript: /transcript (lists ids) | /transcript <id-or-prefix>"
-}
-func (c *transcriptCmd) Run(ctx context.Context, args string) error {
-	if c.sc.transcripts == nil {
-		c.sc.printf("transcript: no transcripts captured")
-		return nil
-	}
-	ids := c.sc.transcripts.IDs()
-	if len(ids) == 0 {
-		c.sc.printf("transcript: no subagent transcripts captured yet")
-		return nil
-	}
-	args = strings.TrimSpace(args)
-	if args == "" {
-		sort.Strings(ids)
-		c.sc.printf("Captured subagent transcripts (%d):", len(ids))
-		for _, id := range ids {
-			short := id
-			if len(short) > 12 {
-				short = short[:12]
-			}
-			msgs := c.sc.transcripts.Get(id)
-			c.sc.printf("  %s  %d message%s", short, len(msgs), plural(len(msgs)))
-		}
-		c.sc.printf("")
-		c.sc.printf("Show one with: /transcript <id-or-prefix>")
-		return nil
-	}
-	// Resolve by exact id first, then prefix.
-	if msgs := c.sc.transcripts.Get(args); msgs != nil {
-		c.printMessages(args, msgs)
-		return nil
-	}
-	var hits []string
-	for _, id := range ids {
-		if strings.HasPrefix(id, args) {
-			hits = append(hits, id)
-		}
-	}
-	switch len(hits) {
-	case 0:
-		c.sc.printf("transcript: no transcript matching %q", args)
-	case 1:
-		c.printMessages(hits[0], c.sc.transcripts.Get(hits[0]))
-	default:
-		c.sc.printf("transcript: %q is ambiguous — %d matches:", args, len(hits))
-		for _, id := range hits {
-			c.sc.printf("  %s", id)
-		}
-	}
-	return nil
-}
-
-// printMessages dumps a transcript using the shared block renderer so
-// it looks identical to live conversation output. Tool calls and
-// reasoning are reconstructed from the captured history (historyBlocks)
-// — same as run.go's replayHistory: tool calls from the persisted
-// tool_calls + result rows, reasoning from each assistant message's
-// captured chain-of-thought.
-func (c *transcriptCmd) printMessages(id string, msgs []llm.Message) {
-	short := id
-	if len(short) > 12 {
-		short = short[:12]
-	}
-	c.sc.printf("Transcript %s — %d message%s:", short, len(msgs), plural(len(msgs)))
-	c.sc.printf("")
-	for _, b := range historyBlocks(msgs) {
-		if s := renderBlock(b, 0, true); s != "" {
-			c.sc.printf("%s", s)
-		}
-	}
 }
 
 // kindLabel renders permissions.Kind as the same lowercase token the

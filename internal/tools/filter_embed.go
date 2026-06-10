@@ -5,7 +5,6 @@ package tools
 import (
 	"embed"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -116,11 +115,4 @@ func loadUserFilters(fset *FilterSet, dir string, logger *slog.Logger) {
 			fset.Add(f)
 		}
 	}
-}
-
-// fsReadString is a tiny helper used by tests to read an embedded filter
-// file by name; kept here so the embed.FS stays unexported.
-func fsReadString(name string) (string, error) {
-	b, err := fs.ReadFile(embeddedFilters, filepath.Join("filters", name))
-	return string(b), err
 }

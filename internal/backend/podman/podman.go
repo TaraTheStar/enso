@@ -127,6 +127,21 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 	if exe, _, err = exestage.Stage(exe); err != nil {
 		return nil, fmt.Errorf("podman: stage executable: %w", err)
 	}
+	// Pin the snapshot for this worker's lifetime (shared flock): the
+	// snapshot dir's mtime is set at Stage time, so to Sweep's age
+	// heuristic a long-running container looks stale and a concurrent
+	// `enso prune` could RemoveAll the bind-mounted binary out from
+	// under it. Released in Teardown.
+	releaseExe, err := exestage.Acquire(exe)
+	if err != nil {
+		return nil, fmt.Errorf("podman: pin staged executable: %w", err)
+	}
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			releaseExe() // every error return below must unpin
+		}
+	}()
 	if b.Image == "" {
 		return nil, fmt.Errorf("podman: no image configured")
 	}
@@ -193,8 +208,17 @@ func (b *Backend) Start(ctx context.Context, spec backend.TaskSpec) (backend.Wor
 		return nil, fmt.Errorf("podman: start %s: %w", runtime, err)
 	}
 
-	w := &podmanWorker{cmd: cmd, runtime: runtime, name: name, diag: diag, gvisor: gvisor}
+	w := &podmanWorker{
+		cmd:        cmd,
+		runtime:    runtime,
+		name:       name,
+		diag:       diag,
+		gvisor:     gvisor,
+		releaseExe: releaseExe,
+		reaped:     make(chan struct{}),
+	}
 	w.ch = backend.NewStreamChannelRW(stdout, stdin, &pipePair{stdin, stdout})
+	handedOff = true // Teardown owns releaseExe now
 	return w, nil
 }
 
@@ -459,9 +483,34 @@ type podmanWorker struct {
 	once    sync.Once
 	diag    *ringBuffer
 	gvisor  bool
+	// releaseExe unpins the exestage snapshot (drops the shared in-use
+	// flock taken in Start) so `enso prune` may sweep it. Idempotent;
+	// called in Teardown.
+	releaseExe func()
+
+	// Single-reaper state: exec.Cmd.Wait must be called exactly once
+	// (concurrent calls race on the process state), but both Wait(ctx)
+	// and Teardown need the exit. reap() spawns the one cmd.Wait()
+	// goroutine on first use; reaped closes when it returns, with the
+	// result in waitErr (the channel close orders the write).
+	reapOnce sync.Once
+	reaped   chan struct{}
+	waitErr  error
 }
 
 func (w *podmanWorker) Channel() backend.Channel { return w.ch }
+
+// reap ensures the single cmd.Wait() reaper goroutine is running and
+// returns the channel that closes once the process has been reaped.
+func (w *podmanWorker) reap() <-chan struct{} {
+	w.reapOnce.Do(func() {
+		go func() {
+			w.waitErr = w.cmd.Wait()
+			close(w.reaped)
+		}()
+	})
+	return w.reaped
+}
 
 // StartupDiagnostic explains why the box never came up: the tail of
 // podman/runtime stderr, plus — when a gVisor runtime is in play —
@@ -501,11 +550,9 @@ func (w *podmanWorker) StartupDiagnostic() string {
 }
 
 func (w *podmanWorker) Wait(ctx context.Context) error {
-	done := make(chan error, 1)
-	go func() { done <- w.cmd.Wait() }()
 	select {
-	case err := <-done:
-		return err
+	case <-w.reap():
+		return w.waitErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -521,7 +568,9 @@ func (w *podmanWorker) Teardown(ctx context.Context) error {
 		_ = w.ch.Close()
 		if w.cmd.Process != nil {
 			_ = w.cmd.Process.Kill()
-			_ = w.cmd.Wait()
+			// Consume the exit via the shared reaper, never a second
+			// concurrent cmd.Wait() racing the one in Wait(ctx).
+			<-w.reap()
 		}
 		// Best-effort: --rm usually already removed it. -v also drops
 		// the worker's anonymous volumes (the workspace
@@ -529,6 +578,12 @@ func (w *podmanWorker) Teardown(ctx context.Context) error {
 		rmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = exec.CommandContext(rmCtx, w.runtime, "rm", "-f", "-v", w.name).Run()
+		// Unpin the exestage snapshot only after the container is gone so
+		// `enso prune` cannot sweep the bind-mounted binary while this
+		// worker could still be executing it.
+		if w.releaseExe != nil {
+			w.releaseExe()
+		}
 	})
 	return nil
 }

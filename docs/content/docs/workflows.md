@@ -220,9 +220,7 @@ enso run --workflow build-feature "add OAuth login flow"
 ```
 
 The workflow runs to completion, streaming each role's output to
-stdout. Each role gets its own AgentID; their transcripts are
-captured for inspection via `/transcript` (list) or
-`/transcript <id-or-prefix>` (show one). The session-inspector
+stdout. Each role gets its own AgentID. The session-inspector
 overlay (`Ctrl-Space`) shows in-flight agent state.
 
 ## Parallel siblings

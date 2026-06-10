@@ -9,18 +9,6 @@ import (
 	"testing"
 )
 
-// pipeRWC bundles an io.PipeReader/Writer pair into a ReadWriteCloser
-// for one direction of the seam.
-type pipeRWC struct {
-	io.ReadCloser
-	io.WriteCloser
-}
-
-func (p pipeRWC) Close() error {
-	_ = p.ReadCloser.Close()
-	return p.WriteCloser.Close()
-}
-
 func TestStreamChannelRoundTrip(t *testing.T) {
 	// host writes -> worker reads, over an os.Pipe-like in-memory pipe.
 	pr, pw := io.Pipe()

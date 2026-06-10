@@ -568,11 +568,6 @@ type Config struct {
 	// sees which subagent is asking.
 	AgentRole string
 
-	// Transcripts, if non-nil, is the registry that spawn_agent /
-	// workflow.runRole writes child histories into post-completion so the
-	// agents-pane overlay can replay them.
-	Transcripts *tools.Transcripts
-
 	// GitAttribution selects the trailer style the model should use when
 	// it writes git commit messages: "co-authored-by", "assisted-by", or
 	// "none"/"" (no instruction added). GitAttributionName is the name to
@@ -784,7 +779,6 @@ func New(cfg Config) (*Agent, error) {
 		MaxAgents:          maxAgents,
 		AgentID:            cfg.AgentID,
 		AgentRole:          cfg.AgentRole,
-		Transcripts:        cfg.Transcripts,
 		Writer:             cfg.Writer,
 		RestrictedRoots:    cfg.RestrictedRoots,
 		FileEditHook:       fileEditHookOf(cfg.Hooks),

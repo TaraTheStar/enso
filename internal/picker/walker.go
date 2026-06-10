@@ -35,13 +35,6 @@ var hardSkipDirs = map[string]struct{}{
 // than picker UX.
 const maxFiles = 5000
 
-// Walk returns file paths visible from `root`, alphabetised. Hidden and
-// well-known build/output directories are skipped. Paths are emitted as
-// rel-to-root for files inside `root`.
-func Walk(root string) ([]string, error) {
-	return WalkAll(root, nil, nil)
-}
-
 // WalkAll walks `root` plus each directory in `extras`. `ignore` is a
 // list of doublestar globs (typically loaded from `.ensoignore`); any
 // candidate file whose emitted path matches one is dropped. Files

@@ -105,3 +105,37 @@ func TestSweep(t *testing.T) {
 		t.Fatalf("snapshot survived Sweep(0): %v", err)
 	}
 }
+
+func TestSweep_KeepsAcquiredSnapshot(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	srcDir := t.TempDir()
+
+	p, _, err := Stage(writeExe(t, srcDir, "enso", "PINNED"))
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+
+	// Pin the snapshot the way a backend does for a live worker. Sweep(0)
+	// is the harshest case (mtime is irrelevant — remove all): the in-use
+	// lock alone must keep the binary a guest is still mmap-executing.
+	release, err := Acquire(p)
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if n, err := Sweep(0); err != nil || n != 0 {
+		t.Fatalf("Sweep(0) under lock removed %d (err %v), want 0", n, err)
+	}
+	if _, err := os.Stat(p); err != nil {
+		t.Fatalf("acquired snapshot was swept: %v", err)
+	}
+
+	// Released (worker torn down) → the same Sweep reclaims it.
+	release()
+	release() // idempotent — Teardown paths may overlap
+	if n, err := Sweep(0); err != nil || n != 1 {
+		t.Fatalf("Sweep(0) after release removed %d (err %v), want 1", n, err)
+	}
+	if _, err := os.Stat(p); !os.IsNotExist(err) {
+		t.Fatalf("released snapshot survived Sweep(0): %v", err)
+	}
+}
