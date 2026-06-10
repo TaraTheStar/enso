@@ -336,6 +336,8 @@ func eventTypeString(t EventType) string {
 		return "InputDiscarded"
 	case EventEgressRequest:
 		return "EgressRequest"
+	case EventNotice:
+		return "Notice"
 	default:
 		return "Unknown"
 	}

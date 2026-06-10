@@ -130,7 +130,7 @@ loop_guard = true
 # extended_thinking_budget = 0
 # # Optional: per-category Gemini safety thresholds. Empty leaves
 # # Gemini's defaults in effect. Categories: hate_speech, harassment,
-# # dangerous_content, sexually_explicit, civic_integrity. Values:
+# # dangerous_content, sexually_explicit. Values:
 # # BLOCK_NONE | BLOCK_LOW_AND_ABOVE | BLOCK_MEDIUM_AND_ABOVE |
 # # BLOCK_ONLY_HIGH | OFF. Unknown keys/values fail at first Chat.
 # [providers.vertex-gemini.vertex_safety]

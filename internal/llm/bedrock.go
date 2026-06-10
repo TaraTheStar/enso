@@ -174,7 +174,9 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 		return nil, fmt.Errorf("bedrock: %w", err)
 	}
 
-	fmt.Fprintf(debugLog(), "bedrock: ConverseStream model=%s region=%s\n", model, c.Region)
+	if debugEnabled.Load() {
+		fmt.Fprintf(debugLog(), "bedrock: ConverseStream model=%s region=%s\n", model, c.Region)
+	}
 
 	out, err := sdk.ConverseStream(ctx, input)
 	if err != nil {
@@ -258,9 +260,11 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 				// Event channel so the agent can use real numbers
 				// instead of the 4-char heuristic.
 				if u := e.Value.Usage; u != nil {
-					fmt.Fprintf(debugLog(), "bedrock usage: in=%d out=%d cache_read=%d cache_write=%d\n",
-						derefInt32(u.InputTokens), derefInt32(u.OutputTokens),
-						derefInt32(u.CacheReadInputTokens), derefInt32(u.CacheWriteInputTokens))
+					if debugEnabled.Load() {
+						fmt.Fprintf(debugLog(), "bedrock usage: in=%d out=%d cache_read=%d cache_write=%d\n",
+							derefInt32(u.InputTokens), derefInt32(u.OutputTokens),
+							derefInt32(u.CacheReadInputTokens), derefInt32(u.CacheWriteInputTokens))
+					}
 					eventCh <- Event{Type: EventUsage, Usage: bedrockUsageFrom(
 						derefInt32(u.InputTokens), derefInt32(u.OutputTokens),
 						derefInt32(u.CacheReadInputTokens), derefInt32(u.CacheWriteInputTokens),

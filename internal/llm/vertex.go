@@ -159,7 +159,9 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		return nil, fmt.Errorf("vertex: %w", err)
 	}
 
-	fmt.Fprintf(debugLog(), "vertex: GenerateContentStream model=%s project=%s location=%s\n", model, c.Project, c.Location)
+	if debugEnabled.Load() {
+		fmt.Fprintf(debugLog(), "vertex: GenerateContentStream model=%s project=%s location=%s\n", model, c.Project, c.Location)
+	}
 
 	eventCh := make(chan Event, 32)
 	c.conn.set(StateConnected)
@@ -191,9 +193,11 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 				// Gemini 2.5+ reports CachedContentTokenCount when
 				// implicit caching hits; log for the debug stream and
 				// stash for emission below.
-				fmt.Fprintf(debugLog(), "vertex usage: prompt=%d candidates=%d cached=%d total=%d\n",
-					u.PromptTokenCount, u.CandidatesTokenCount,
-					u.CachedContentTokenCount, u.TotalTokenCount)
+				if debugEnabled.Load() {
+					fmt.Fprintf(debugLog(), "vertex usage: prompt=%d candidates=%d cached=%d total=%d\n",
+						u.PromptTokenCount, u.CandidatesTokenCount,
+						u.CachedContentTokenCount, u.TotalTokenCount)
+				}
 				lastUsage = vertexUsageFrom(
 					u.PromptTokenCount, u.CandidatesTokenCount,
 					u.CachedContentTokenCount, u.TotalTokenCount,
@@ -584,14 +588,15 @@ func applyVertexThinking(cfg *genai.GenerateContentConfig, budget int64) {
 
 // vertexSafetyCategories is the user-facing → SDK enum mapping for
 // Gemini's safety knobs. Listed in the order Gemini docs use; only
-// these five categories are addressable per-request (image-modality
-// variants exist but are output-only and not user-configurable).
+// these four categories are addressable per-request (image-modality
+// variants exist but are output-only and not user-configurable;
+// civic_integrity was removed when Google dropped the election
+// filter — the SDK enum is deprecated and the API ignores it).
 var vertexSafetyCategories = map[string]genai.HarmCategory{
 	"hate_speech":       genai.HarmCategoryHateSpeech,
 	"harassment":        genai.HarmCategoryHarassment,
 	"dangerous_content": genai.HarmCategoryDangerousContent,
 	"sexually_explicit": genai.HarmCategorySexuallyExplicit,
-	"civic_integrity":   genai.HarmCategoryCivicIntegrity,
 }
 
 // vertexSafetyThresholds is the user-facing threshold value → SDK enum
