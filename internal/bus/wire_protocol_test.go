@@ -87,12 +87,9 @@ var wireProtocolTable = []struct {
 	// EgressRequest is HOST-LOCAL (live Respond channel) — named in
 	// eventTypeString for slow-consumer logs, never wire-safe.
 	{EventEgressRequest, "EventEgressRequest", "EgressRequest", false, false, ""},
-	// KNOWN GAP, pinned deliberately: EventNotice has no
-	// eventTypeString case, so a slow-consumer drop of a Notice logs
-	// as "Unknown". It is host-local by design (never crosses the
-	// wire), so this is a diagnostics blemish, not a protocol hole.
-	// If bus.go gains a "Notice" case, update this row.
-	{EventNotice, "EventNotice", "Unknown", false, false, ""},
+	// Notice is HOST-LOCAL (published and rendered host-side) — named
+	// in eventTypeString for slow-consumer logs, never wire-safe.
+	{EventNotice, "EventNotice", "Notice", false, false, ""},
 }
 
 // TestEventTypeStringFrozen pins eventTypeString for every constant
@@ -119,9 +116,9 @@ func TestEventTypeStringFrozen(t *testing.T) {
 // pinned set of constants may map to the "Unknown" default. A new
 // EventType added without an eventTypeString case lands here.
 func TestEventTypeStringNoUnknown(t *testing.T) {
-	// EventNotice is the one known gap (see table comment). Anything
-	// else mapping to Unknown is a regression.
-	knownUnknown := map[EventType]bool{EventNotice: true}
+	// No known gaps: every constant has an eventTypeString case.
+	// Anything mapping to Unknown is a regression.
+	knownUnknown := map[EventType]bool{}
 	for _, tc := range wireProtocolTable {
 		got := eventTypeString(tc.et)
 		if got == "Unknown" && !knownUnknown[tc.et] {

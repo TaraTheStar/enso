@@ -134,10 +134,10 @@ func (a *Agent) staleAfterFor(toolName string) int {
 	return 5
 }
 
-// appendToolMessage is the prune-aware variant of appendMessage that
-// the agent's tool-execution path uses. It:
+// appendToolMessage is the prune-aware append that the agent's
+// tool-execution path uses. It:
 //
-//  1. delegates to appendMessage to persist + grow History,
+//  1. delegates to appendMessageLocked to persist + grow History,
 //  2. records sidecar metadata (cacheKey, paths, age, pinned) for the
 //     new message so a later reclaim pass can stub it.
 //

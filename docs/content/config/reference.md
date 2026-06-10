@@ -158,7 +158,7 @@ Both blocks share the one adapter; `model` picks the vendor.
 | `gcp_location`              | `us-central1` | Vertex region (`us-central1`, `europe-west4`, …). `us-central1` hosts every Gemini variant. |
 | `extended_thinking`         | `false`       | Gemini 2.5+. Enables `IncludeThoughts` so the model returns Thought parts; ensō routes them to the same channel the TUI already renders for OpenAI reasoning models. Ephemeral — not persisted in assistant message history. Older Gemini variants silently ignore this. |
 | `extended_thinking_budget`  | `0` (dynamic) | Thinking-token cap. `0` leaves Gemini's dynamic-thinking mode in effect; positive values pin a budget. Unlike Anthropic on Bedrock, ensō does NOT clamp temperature or top_p — Gemini has no such constraints. |
-| `vertex_safety.*`           | Gemini default | Sub-table mapping per-category `HarmBlockThreshold` values. Categories: `hate_speech`, `harassment`, `dangerous_content`, `sexually_explicit`, `civic_integrity`. Values: `BLOCK_NONE` / `BLOCK_LOW_AND_ABOVE` / `BLOCK_MEDIUM_AND_ABOVE` / `BLOCK_ONLY_HIGH` / `OFF`. Both case-insensitive. Unknown category or threshold fails loud at translate-time. |
+| `vertex_safety.*`           | Gemini default | Sub-table mapping per-category `HarmBlockThreshold` values. Categories: `hate_speech`, `harassment`, `dangerous_content`, `sexually_explicit`. Values: `BLOCK_NONE` / `BLOCK_LOW_AND_ABOVE` / `BLOCK_MEDIUM_AND_ABOVE` / `BLOCK_ONLY_HIGH` / `OFF`. Both case-insensitive. Unknown category or threshold fails loud at translate-time. |
 
 Authentication follows Google Application Default Credentials:
 `GOOGLE_APPLICATION_CREDENTIALS` env var pointing at a service-account

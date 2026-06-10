@@ -145,8 +145,10 @@ func streamAnthropic(
 	startProbe func(),
 	label string,
 ) <-chan Event {
-	if data, mErr := json.Marshal(params); mErr == nil {
-		fmt.Fprintf(debugLog(), "%s POST messages\nbody: %s\n", label, string(data))
+	if debugEnabled.Load() {
+		if data, mErr := json.Marshal(params); mErr == nil {
+			fmt.Fprintf(debugLog(), "%s POST messages\nbody: %s\n", label, data)
+		}
 	}
 
 	stream := sdk.Messages.NewStreaming(ctx, params)
@@ -168,7 +170,9 @@ func streamAnthropic(
 
 		for stream.Next() {
 			ev := stream.Current()
-			fmt.Fprintf(debugLog(), "%s sse: %s\n", label, ev.RawJSON())
+			if debugEnabled.Load() {
+				fmt.Fprintf(debugLog(), "%s sse: %s\n", label, ev.RawJSON())
+			}
 
 			switch ev.Type {
 			case "content_block_start":
@@ -691,8 +695,10 @@ func logAnthropicUsage(label string, in, out, cacheRead, cacheCreate int64) {
 	if in == 0 && out == 0 && cacheRead == 0 && cacheCreate == 0 {
 		return
 	}
-	fmt.Fprintf(debugLog(), "%s usage: in=%d out=%d cache_read=%d cache_create=%d\n",
-		label, in, out, cacheRead, cacheCreate)
+	if debugEnabled.Load() {
+		fmt.Fprintf(debugLog(), "%s usage: in=%d out=%d cache_read=%d cache_create=%d\n",
+			label, in, out, cacheRead, cacheCreate)
+	}
 }
 
 // applyAnthropicPromptCaching inserts ephemeral cache_control markers
