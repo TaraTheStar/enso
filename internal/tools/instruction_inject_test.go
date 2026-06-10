@@ -61,7 +61,7 @@ func TestReadTool_AppendsInstructionReminder(t *testing.T) {
 		OutputCaps:          DefaultOutputCaps{Default: 2000},
 	}
 
-	res, err := (ReadTool{}).Run(context.Background(), map[string]interface{}{"path": target}, ac)
+	res, err := (ReadTool{}).Run(context.Background(), map[string]any{"path": target}, ac)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestReadTool_NoResolverNoReminder(t *testing.T) {
 		ReadSet:    map[string]bool{},
 		OutputCaps: DefaultOutputCaps{Default: 2000},
 	}
-	res, err := (ReadTool{}).Run(context.Background(), map[string]interface{}{"path": target}, ac)
+	res, err := (ReadTool{}).Run(context.Background(), map[string]any{"path": target}, ac)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +116,7 @@ func TestReadTool_ResolverDedupsAcrossReads(t *testing.T) {
 		OutputCaps:          DefaultOutputCaps{Default: 2000},
 	}
 
-	r1, err := (ReadTool{}).Run(context.Background(), map[string]interface{}{"path": target}, ac)
+	r1, err := (ReadTool{}).Run(context.Background(), map[string]any{"path": target}, ac)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestReadTool_ResolverDedupsAcrossReads(t *testing.T) {
 		t.Errorf("first read missing reminder:\n%s", r1.LLMOutput)
 	}
 
-	r2, err := (ReadTool{}).Run(context.Background(), map[string]interface{}{"path": target}, ac)
+	r2, err := (ReadTool{}).Run(context.Background(), map[string]any{"path": target}, ac)
 	if err != nil {
 		t.Fatal(err)
 	}

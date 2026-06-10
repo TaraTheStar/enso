@@ -27,7 +27,7 @@ func TestBashTool_PublishesProgress(t *testing.T) {
 
 	res, err := BashTool{}.Run(
 		context.Background(),
-		map[string]interface{}{"cmd": "echo hello"},
+		map[string]any{"cmd": "echo hello"},
 		ac,
 	)
 	if err != nil {
@@ -65,7 +65,7 @@ func TestBashTool_EmptyStdoutIsExplicit(t *testing.T) {
 	ac := &AgentContext{Cwd: t.TempDir(), Bus: bus.New()}
 	res, err := BashTool{}.Run(
 		context.Background(),
-		map[string]interface{}{"cmd": "true"}, // exits 0 with no stdout
+		map[string]any{"cmd": "true"}, // exits 0 with no stdout
 		ac,
 	)
 	if err != nil {

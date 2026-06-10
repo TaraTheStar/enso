@@ -24,20 +24,20 @@ func (t TodoTool) Name() string { return "todo" }
 func (t TodoTool) Description() string {
 	return "Manage in-session task list. Args: action (list|add|update|done), title, id, status"
 }
-func (t TodoTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t TodoTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"action": map[string]interface{}{"type": "string"},
-			"title":  map[string]interface{}{"type": "string"},
-			"id":     map[string]interface{}{"type": "integer"},
-			"status": map[string]interface{}{"type": "string"},
+		"properties": map[string]any{
+			"action": map[string]any{"type": "string"},
+			"title":  map[string]any{"type": "string"},
+			"id":     map[string]any{"type": "integer"},
+			"status": map[string]any{"type": "string"},
 		},
 		"required": []string{"action"},
 	}
 }
 
-func (t *TodoTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t *TodoTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	action, _ := args["action"].(string)
 
 	switch action {

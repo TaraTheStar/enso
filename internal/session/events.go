@@ -331,7 +331,7 @@ func (w *Writer) AppendEvent(eventType string, payload any) error {
 // AppendToolCall persists one tool execution into the tool_calls table.
 // Args is JSON-marshalled; status is one of "ok", "error", "denied".
 // Distinct seq from messages.seq.
-func (w *Writer) AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error {
+func (w *Writer) AppendToolCall(callID, name string, args map[string]any, llmOutput, fullOutput, status string) error {
 	w.mu.Lock()
 	w.toolSeq++
 	toolSeq := w.toolSeq

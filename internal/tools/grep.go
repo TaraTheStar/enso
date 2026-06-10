@@ -21,18 +21,18 @@ func (t GrepTool) Name() string { return "grep" }
 func (t GrepTool) Description() string {
 	return "Search file contents by regex. Args: pattern (string), path (string)"
 }
-func (t GrepTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t GrepTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"pattern": map[string]interface{}{"type": "string"},
-			"path":    map[string]interface{}{"type": "string"},
+		"properties": map[string]any{
+			"pattern": map[string]any{"type": "string"},
+			"path":    map[string]any{"type": "string"},
 		},
 		"required": []string{"pattern"},
 	}
 }
 
-func (t GrepTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t GrepTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	pattern, _ := args["pattern"].(string)
 	searchPath, _ := args["path"].(string)
 	if searchPath == "" {

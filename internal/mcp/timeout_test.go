@@ -51,7 +51,7 @@ func TestMCPTool_CallTimeout(t *testing.T) {
 	tool := newSlowServer(t, 200*time.Millisecond)
 
 	start := time.Now()
-	res, err := tool.Run(context.Background(), map[string]interface{}{}, nil)
+	res, err := tool.Run(context.Background(), map[string]any{}, nil)
 	if err != nil {
 		t.Fatalf("timeout should surface as a normal result, got error: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestMCPTool_UserCancelNotTimeout(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(200 * time.Millisecond); cancel() }()
 
-	res, err := tool.Run(ctx, map[string]interface{}{}, nil)
+	res, err := tool.Run(ctx, map[string]any{}, nil)
 	if err == nil {
 		t.Fatalf("user cancel should return an error, got result %q", res.LLMOutput)
 	}

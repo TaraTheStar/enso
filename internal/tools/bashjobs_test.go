@@ -20,7 +20,7 @@ func TestBashTool_ForegroundTimeout(t *testing.T) {
 	start := time.Now()
 	res, err := BashTool{}.Run(
 		context.Background(),
-		map[string]interface{}{"cmd": "echo before; sleep 30", "timeout": 1},
+		map[string]any{"cmd": "echo before; sleep 30", "timeout": 1},
 		ac,
 	)
 	if err != nil {
@@ -62,7 +62,7 @@ func TestBashJobs_Lifecycle(t *testing.T) {
 	// Launch a job that emits a line then sleeps so it stays running.
 	res, err := BashTool{}.Run(
 		context.Background(),
-		map[string]interface{}{"cmd": "echo started; sleep 30", "run_in_background": true},
+		map[string]any{"cmd": "echo started; sleep 30", "run_in_background": true},
 		ac,
 	)
 	if err != nil {
@@ -74,7 +74,7 @@ func TestBashJobs_Lifecycle(t *testing.T) {
 	var out Result
 	deadline := time.After(3 * time.Second)
 	for {
-		out, err = BashOutputTool{}.Run(context.Background(), map[string]interface{}{"id": id}, ac)
+		out, err = BashOutputTool{}.Run(context.Background(), map[string]any{"id": id}, ac)
 		if err != nil {
 			t.Fatalf("bash_output: %v", err)
 		}
@@ -92,13 +92,13 @@ func TestBashJobs_Lifecycle(t *testing.T) {
 	}
 
 	// A second read returns no NEW output (cursor advanced).
-	again, _ := BashOutputTool{}.Run(context.Background(), map[string]interface{}{"id": id}, ac)
+	again, _ := BashOutputTool{}.Run(context.Background(), map[string]any{"id": id}, ac)
 	if !strings.Contains(again.LLMOutput, "no new output") {
 		t.Errorf("second read should report no new output, got %q", again.LLMOutput)
 	}
 
 	// Kill it.
-	killed, err := BashKillTool{}.Run(context.Background(), map[string]interface{}{"id": id}, ac)
+	killed, err := BashKillTool{}.Run(context.Background(), map[string]any{"id": id}, ac)
 	if err != nil {
 		t.Fatalf("bash_kill: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBashJobs_Lifecycle(t *testing.T) {
 // non-error so the model can recover.
 func TestBashJobs_UnknownID(t *testing.T) {
 	ac := &AgentContext{Cwd: t.TempDir(), Bus: bus.New(), BashJobs: NewBashJobs()}
-	out, err := BashOutputTool{}.Run(context.Background(), map[string]interface{}{"id": "bg_999"}, ac)
+	out, err := BashOutputTool{}.Run(context.Background(), map[string]any{"id": "bg_999"}, ac)
 	if err != nil {
 		t.Fatalf("unknown id should not error: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestBashTool_BackgroundUnavailable(t *testing.T) {
 	ac := &AgentContext{Cwd: t.TempDir(), Bus: bus.New()} // BashJobs nil
 	res, err := BashTool{}.Run(
 		context.Background(),
-		map[string]interface{}{"cmd": "echo hi", "run_in_background": true},
+		map[string]any{"cmd": "echo hi", "run_in_background": true},
 		ac,
 	)
 	if err != nil {
