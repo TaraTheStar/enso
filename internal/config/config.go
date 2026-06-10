@@ -805,8 +805,8 @@ type ProviderConfig struct {
 
 	// VertexSafety pins per-category HarmBlockThreshold values for
 	// type = "vertex". Keys are short category names — "hate_speech",
-	// "harassment", "dangerous_content", "sexually_explicit",
-	// "civic_integrity". Values are the threshold enums:
+	// "harassment", "dangerous_content", "sexually_explicit".
+	// Values are the threshold enums:
 	// "BLOCK_NONE", "BLOCK_LOW_AND_ABOVE", "BLOCK_MEDIUM_AND_ABOVE",
 	// "BLOCK_ONLY_HIGH", "OFF". Unknown keys / values surface as a
 	// translate-time error on the first Chat call so typos don't get
