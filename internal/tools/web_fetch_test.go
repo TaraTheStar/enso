@@ -356,7 +356,7 @@ func TestWebFetch_RedirectToMetadataBlocked(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	tool := WebFetchTool{}
-	res, err := tool.Run(context.Background(), map[string]interface{}{"url": srv.URL}, &AgentContext{})
+	res, err := tool.Run(context.Background(), map[string]any{"url": srv.URL}, &AgentContext{})
 	// Redirect refusals come back as Go errors from client.Do (CheckRedirect
 	// returns an error). Either an error containing "refused" or a result
 	// LLMOutput containing it is acceptable; what matters is that the

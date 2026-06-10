@@ -158,10 +158,10 @@ func TestBuildConverseInput_ToolSchemaTranslation(t *testing.T) {
 			Function: ToolFunctionDef{
 				Name:        "lookup",
 				Description: "find a thing",
-				Parameters: map[string]interface{}{
+				Parameters: map[string]any{
 					"type": "object",
-					"properties": map[string]interface{}{
-						"q": map[string]interface{}{"type": "string"},
+					"properties": map[string]any{
+						"q": map[string]any{"type": "string"},
 					},
 					"required": []string{"q"},
 				},
@@ -653,7 +653,7 @@ func TestApplyBedrockCachePoints_InsertsMarkers(t *testing.T) {
 		Tools: []ToolDef{{
 			Type: "function",
 			Function: ToolFunctionDef{
-				Name: "read", Description: "read", Parameters: map[string]interface{}{"type": "object"},
+				Name: "read", Description: "read", Parameters: map[string]any{"type": "object"},
 			},
 		}},
 	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
@@ -710,7 +710,7 @@ func TestApplyBedrockCachePoints_CapsAtFour(t *testing.T) {
 		Tools: []ToolDef{{
 			Type: "function",
 			Function: ToolFunctionDef{
-				Name: "read", Description: "x", Parameters: map[string]interface{}{"type": "object"},
+				Name: "read", Description: "x", Parameters: map[string]any{"type": "object"},
 			},
 		}},
 	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)

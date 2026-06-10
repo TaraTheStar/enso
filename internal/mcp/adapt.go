@@ -91,7 +91,7 @@ type mcpTool struct {
 	fullName    string
 	remoteName  string
 	description string
-	parameters  map[string]interface{}
+	parameters  map[string]any
 	client      *mcpclient.Client
 	// callTimeout bounds a single CallTool invocation. <= 0 disables the
 	// bound (the call runs until the server replies or the turn is
@@ -100,11 +100,11 @@ type mcpTool struct {
 	onTransportError func(error)
 }
 
-func (t *mcpTool) Name() string                       { return t.fullName }
-func (t *mcpTool) Description() string                { return t.description }
-func (t *mcpTool) Parameters() map[string]interface{} { return t.parameters }
+func (t *mcpTool) Name() string               { return t.fullName }
+func (t *mcpTool) Description() string        { return t.description }
+func (t *mcpTool) Parameters() map[string]any { return t.parameters }
 
-func (t *mcpTool) Run(ctx context.Context, args map[string]interface{}, _ *tools.AgentContext) (tools.Result, error) {
+func (t *mcpTool) Run(ctx context.Context, args map[string]any, _ *tools.AgentContext) (tools.Result, error) {
 	var req mcpproto.CallToolRequest
 	req.Params.Name = t.remoteName
 	req.Params.Arguments = args
@@ -164,8 +164,8 @@ func joinTextContent(items []mcpproto.Content) string {
 
 // schemaToMap converts the MCP-protocol input schema into the JSON-Schema
 // object shape the LLM client expects on `tools[i].function.parameters`.
-func schemaToMap(s mcpproto.ToolInputSchema) map[string]interface{} {
-	out := map[string]interface{}{
+func schemaToMap(s mcpproto.ToolInputSchema) map[string]any {
+	out := map[string]any{
 		"type": "object",
 	}
 	if s.Type != "" {
@@ -175,7 +175,7 @@ func schemaToMap(s mcpproto.ToolInputSchema) map[string]interface{} {
 		out["properties"] = s.Properties
 	} else {
 		// OpenAI-compatible servers expect a properties object even when empty.
-		out["properties"] = map[string]interface{}{}
+		out["properties"] = map[string]any{}
 	}
 	if len(s.Required) > 0 {
 		out["required"] = s.Required

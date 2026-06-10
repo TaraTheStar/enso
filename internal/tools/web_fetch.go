@@ -33,11 +33,11 @@ func (t WebFetchTool) Name() string { return "web_fetch" }
 func (t WebFetchTool) Description() string {
 	return "Fetch a URL and return text content. Args: url (string). HTML tags are stripped; capped at 200KB. Refuses non-http(s) URLs and URLs that resolve to loopback / private / link-local addresses unless the host:port is in [web_fetch] allow_hosts."
 }
-func (t WebFetchTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t WebFetchTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"url": map[string]interface{}{"type": "string", "description": "URL to fetch"},
+		"properties": map[string]any{
+			"url": map[string]any{"type": "string", "description": "URL to fetch"},
 		},
 		"required": []string{"url"},
 	}
@@ -49,7 +49,7 @@ const (
 	webFetchMaxRedirs = 10
 )
 
-func (t WebFetchTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t WebFetchTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	raw, _ := args["url"].(string)
 	if raw == "" {
 		return Result{}, fmt.Errorf("web_fetch: url required")

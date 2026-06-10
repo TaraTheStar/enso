@@ -23,7 +23,7 @@ func TestCheckpointTool_CallsRequester(t *testing.T) {
 	ac := &AgentContext{Checkpoint: fc}
 
 	r, err := CheckpointTool{}.Run(context.Background(),
-		map[string]interface{}{"reason": "finished step 1"}, ac)
+		map[string]any{"reason": "finished step 1"}, ac)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestCheckpointTool_TrimsWhitespace(t *testing.T) {
 	ac := &AgentContext{Checkpoint: fc}
 
 	_, _ = CheckpointTool{}.Run(context.Background(),
-		map[string]interface{}{"reason": "  done  "}, ac)
+		map[string]any{"reason": "  done  "}, ac)
 	if fc.reason != "done" {
 		t.Errorf("reason=%q, want %q", fc.reason, "done")
 	}
@@ -55,7 +55,7 @@ func TestCheckpointTool_NoRequesterWired(t *testing.T) {
 	// always wires it.
 	ac := &AgentContext{}
 	r, err := CheckpointTool{}.Run(context.Background(),
-		map[string]interface{}{"reason": "x"}, ac)
+		map[string]any{"reason": "x"}, ac)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

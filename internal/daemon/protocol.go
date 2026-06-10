@@ -98,12 +98,12 @@ const (
 // or spawn_agent child) issued the call — the attached UI uses them to
 // label the prompt so the user can tell children apart.
 type PermissionRequestPayload struct {
-	RequestID string                 `json:"request_id"`
-	Tool      string                 `json:"tool"`
-	Args      map[string]interface{} `json:"args"`
-	Diff      string                 `json:"diff,omitempty"`
-	AgentID   string                 `json:"agent_id,omitempty"`
-	AgentRole string                 `json:"agent_role,omitempty"`
+	RequestID string         `json:"request_id"`
+	Tool      string         `json:"tool"`
+	Args      map[string]any `json:"args"`
+	Diff      string         `json:"diff,omitempty"`
+	AgentID   string         `json:"agent_id,omitempty"`
+	AgentRole string         `json:"agent_role,omitempty"`
 	// Deadline is the wall-clock time at which the daemon will
 	// auto-deny if no client decision arrives. Empty (zero-time) on
 	// older daemons; the TUI countdown treats that as "no countdown
@@ -151,7 +151,7 @@ type ErrorResp struct {
 }
 
 // WriteMessage encodes a Message as 4-byte length prefix + JSON.
-func WriteMessage(w io.Writer, kind MessageKind, body interface{}) error {
+func WriteMessage(w io.Writer, kind MessageKind, body any) error {
 	var raw json.RawMessage
 	if body != nil {
 		b, err := json.Marshal(body)

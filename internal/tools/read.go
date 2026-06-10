@@ -38,14 +38,14 @@ func (t ReadTool) Name() string { return "read" }
 func (t ReadTool) Description() string {
 	return "Read a file or a line range. Also reads images (png, jpeg, gif, webp) — pass an image path and a vision-capable model sees the image directly. Pass mode:\"outline\" to get just the structure of a large source file (package, imports, and top-level declaration signatures — function headers, types, consts) instead of every line; then read the specific range you need. Args: path (string), first_line (int), last_line (int), mode (string: \"outline\")"
 }
-func (t ReadTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t ReadTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"path":       map[string]interface{}{"type": "string"},
-			"first_line": map[string]interface{}{"type": "integer"},
-			"last_line":  map[string]interface{}{"type": "integer"},
-			"mode": map[string]interface{}{
+		"properties": map[string]any{
+			"path":       map[string]any{"type": "string"},
+			"first_line": map[string]any{"type": "integer"},
+			"last_line":  map[string]any{"type": "integer"},
+			"mode": map[string]any{
 				"type":        "string",
 				"description": "\"outline\" returns signature-only structure (function/type/const declarations, no bodies) for a quick map of a large source file. Omit for a normal read.",
 			},
@@ -54,7 +54,7 @@ func (t ReadTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t ReadTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	path, _ := args["path"].(string)
 	abs, err := resolveRestricted(path, ac)
 	if err != nil {
@@ -199,7 +199,7 @@ func (t ReadTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 // anyway — surfaced as a notice so the model doesn't get binary garbage)
 // and reports line numbers without an exact total (counting every line
 // would defeat the point of not reading the whole file).
-func (t ReadTool) runLarge(abs string, size int64, args map[string]interface{}, ac *AgentContext) (Result, error) {
+func (t ReadTool) runLarge(abs string, size int64, args map[string]any, ac *AgentContext) (Result, error) {
 	ac.ReadSet[abs] = true
 
 	// Refuse to inline a large image rather than streaming its bytes as

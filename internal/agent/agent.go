@@ -1509,14 +1509,14 @@ func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, t
 		return fmt.Sprintf("error: unknown tool %q", tc.Function.Name), nil, tools.ResultMeta{}
 	}
 
-	var args map[string]interface{}
+	var args map[string]any
 	if tc.Function.Arguments != "" {
 		if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 			return fmt.Sprintf("error: parse arguments: %v", err), nil, tools.ResultMeta{}
 		}
 	}
 	if args == nil {
-		args = map[string]interface{}{}
+		args = map[string]any{}
 	}
 
 	decision, err := a.Perms.Check(tc.Function.Name, args, a.Bus)
@@ -1597,7 +1597,7 @@ var permissionPromptTimeout = 5 * time.Minute
 // requestPrompt publishes a permission request and blocks for the user's
 // reply, the turn context being cancelled, or the timeout — a lost
 // request degrades to deny instead of hanging the agent.
-func (a *Agent) requestPrompt(ctx context.Context, toolName string, args map[string]interface{}) permissions.Decision {
+func (a *Agent) requestPrompt(ctx context.Context, toolName string, args map[string]any) permissions.Decision {
 	respCh := make(chan permissions.Decision, 1)
 	a.Bus.Publish(bus.Event{
 		Type: bus.EventPermissionRequest,

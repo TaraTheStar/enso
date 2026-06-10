@@ -30,28 +30,28 @@ func (SpawnTool) Description() string {
 		"The sub-agent has the same tools by default; pass `tools` to restrict it."
 }
 
-func (SpawnTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (SpawnTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"prompt": map[string]interface{}{
+		"properties": map[string]any{
+			"prompt": map[string]any{
 				"type":        "string",
 				"description": "What the sub-agent should do.",
 			},
-			"system": map[string]interface{}{
+			"system": map[string]any{
 				"type":        "string",
 				"description": "Optional system prompt override (replaces the default three-tier system prompt).",
 			},
-			"tools": map[string]interface{}{
+			"tools": map[string]any{
 				"type":        "array",
-				"items":       map[string]interface{}{"type": "string"},
+				"items":       map[string]any{"type": "string"},
 				"description": "Optional list of tool names the child is allowed to use. Defaults to the parent's full tool set.",
 			},
-			"model": map[string]interface{}{
+			"model": map[string]any{
 				"type":        "string",
 				"description": "Optional provider name from the configured set (e.g. 'qwen-fast', 'qwen-deep'). Defaults to the parent agent's current provider.",
 			},
-			"role": map[string]interface{}{
+			"role": map[string]any{
 				"type":        "string",
 				"description": "Optional human-readable label for this sub-agent (e.g. 'reviewer'). Surfaces in permission prompts and the agents pane so the user can tell the children apart.",
 			},
@@ -60,7 +60,7 @@ func (SpawnTool) Parameters() map[string]interface{} {
 	}
 }
 
-func (SpawnTool) Run(ctx context.Context, args map[string]interface{}, ac *tools.AgentContext) (tools.Result, error) {
+func (SpawnTool) Run(ctx context.Context, args map[string]any, ac *tools.AgentContext) (tools.Result, error) {
 	prompt, _ := args["prompt"].(string)
 	if prompt == "" {
 		return tools.Result{}, fmt.Errorf("spawn_agent: prompt is required")
@@ -84,7 +84,7 @@ func (SpawnTool) Run(ctx context.Context, args map[string]interface{}, ac *tools
 	}
 
 	childRegistry := ac.Registry
-	if list, ok := args["tools"].([]interface{}); ok && len(list) > 0 {
+	if list, ok := args["tools"].([]any); ok && len(list) > 0 {
 		childRegistry = ac.Registry.Filter(asStringSlice(list))
 	}
 
@@ -199,8 +199,8 @@ func sortedProviderNames(providers map[string]*llm.Provider) []string {
 
 // asStringSlice coerces an unmarshalled JSON array into []string, dropping
 // any non-string entries. Used to convert the model's `tools` argument
-// (typed as []interface{}) into something Registry.Filter accepts.
-func asStringSlice(in []interface{}) []string {
+// (typed as []any) into something Registry.Filter accepts.
+func asStringSlice(in []any) []string {
 	out := make([]string, 0, len(in))
 	for _, v := range in {
 		if s, ok := v.(string); ok {

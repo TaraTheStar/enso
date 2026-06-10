@@ -21,21 +21,21 @@ import (
 // invocation so the test can assert tool dispatch.
 type recordTool struct {
 	mu    sync.Mutex
-	calls []map[string]interface{}
+	calls []map[string]any
 }
 
 func (t *recordTool) Name() string        { return "echo" }
 func (t *recordTool) Description() string { return "echo the given text" }
-func (t *recordTool) Parameters() map[string]interface{} {
-	return map[string]interface{}{
+func (t *recordTool) Parameters() map[string]any {
+	return map[string]any{
 		"type": "object",
-		"properties": map[string]interface{}{
-			"text": map[string]interface{}{"type": "string"},
+		"properties": map[string]any{
+			"text": map[string]any{"type": "string"},
 		},
 		"required": []string{"text"},
 	}
 }
-func (t *recordTool) Run(ctx context.Context, args map[string]interface{}, ac *tools.AgentContext) (tools.Result, error) {
+func (t *recordTool) Run(ctx context.Context, args map[string]any, ac *tools.AgentContext) (tools.Result, error) {
 	t.mu.Lock()
 	t.calls = append(t.calls, args)
 	t.mu.Unlock()

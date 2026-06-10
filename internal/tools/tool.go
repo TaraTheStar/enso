@@ -17,8 +17,8 @@ import (
 type Tool interface {
 	Name() string
 	Description() string
-	Parameters() map[string]interface{}
-	Run(ctx context.Context, args map[string]interface{}, ac *AgentContext) (Result, error)
+	Parameters() map[string]any
+	Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error)
 }
 
 // Result separates the text fed back to the LLM from the full output stored in the session.
@@ -403,6 +403,6 @@ type LSPNotifier interface {
 type SessionWriter interface {
 	AppendMessage(msg llm.Message, agentID string) (int, error)
 	AppendMessageUsage(seq int, usage llm.MessageUsage, agentID string) error
-	AppendToolCall(callID, name string, args map[string]interface{}, llmOutput, fullOutput, status string) error
+	AppendToolCall(callID, name string, args map[string]any, llmOutput, fullOutput, status string) error
 	SessionID() string
 }
