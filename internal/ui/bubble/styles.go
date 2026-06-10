@@ -69,6 +69,9 @@ func loadAndApplyTheme() {
 func applyStyles(pal theme.Palette) {
 	currentPalette = pal
 	invalidateMarkdownRenderers()
+	// Pre-rendered block prefixes are palette-derived too — rebuild on
+	// the next use so a theme (re)load takes effect.
+	reasoningBarCached, toolBarCached = "", ""
 	hex := func(name string) color.Color {
 		if c, ok := pal[name]; ok {
 			return lipgloss.Color(c.Hex())

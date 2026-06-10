@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"sync"
 
@@ -61,12 +62,23 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 	// here). This mirrors cmd/enso/run.go's construction so behavior is
 	// identical; the host keeps only the real providers + rendering.
 	denies := append([]string{}, cfg.Permissions.Deny...)
-	if ignore, err := permissions.LoadIgnoreFile(filepath.Join(spec.Cwd, ".ensoignore")); err == nil {
-		denies = append(denies, permissions.IgnoreToDenyPatterns(ignore)...)
+	ignorePath := filepath.Join(spec.Cwd, ".ensoignore")
+	ignore, ierr := permissions.LoadIgnoreFile(ignorePath)
+	if ierr != nil {
+		// Fail loud, not open: LoadIgnoreFile returns (nil, nil) for a
+		// missing file, so any error here means the file exists but
+		// couldn't be read or scanned — its deny rules would otherwise
+		// be silently dropped. Keep whatever partial patterns we got.
+		slog.Warn("worker: .ensoignore unreadable — ignore-derived deny rules may be missing",
+			"path", ignorePath, "err", ierr)
 	}
+	denies = append(denies, permissions.IgnoreToDenyPatterns(ignore, spec.Cwd)...)
 	checker := permissions.NewChecker(
 		cfg.Permissions.Allow, cfg.Permissions.Ask, denies, cfg.Permissions.Mode,
 	)
+	// The gate must canonicalize path args against the SESSION cwd (the
+	// same base the file tools resolve against), not the process cwd.
+	checker.SetCwd(spec.Cwd)
 	if spec.Yolo {
 		checker.SetYolo(true)
 	}

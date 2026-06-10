@@ -199,6 +199,12 @@ func runBashHost(ctx context.Context, cmdStr string, timeout time.Duration, ac *
 	cmd.Cancel = func() error {
 		return killProcessGroup(cmd.Process)
 	}
+	// Stdout/Stderr below are in-process writers, so Run blocks until the
+	// pipe copy goroutines see EOF. A grandchild that escaped the process
+	// group (setsid, nohup &) keeps the write end open past the group kill,
+	// which would hang Run — and the agent's turn — forever. WaitDelay tells
+	// the stdlib to force-close the pipes after the grace window.
+	cmd.WaitDelay = 5 * time.Second
 
 	var stdoutBuf, stderrBuf bytes.Buffer
 	cmd.Stdout = newProgressWriter(&stdoutBuf, ac.Bus, ac.CurrentToolID, "stdout")

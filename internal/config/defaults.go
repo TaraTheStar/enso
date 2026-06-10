@@ -245,9 +245,6 @@ type = "local"
 theme = "dark"
 # Editor mode for the input field: "default" or "vim".
 editor_mode = "default"
-# Custom right-side status bar — text/template syntax. Empty = built-in default.
-# Variables: .Provider .Model .Session .Mode .Activity .Tokens .Window .TokensFmt
-status_line = ""
 
 [git]
 # How the agent should attribute itself in git commit messages it writes:

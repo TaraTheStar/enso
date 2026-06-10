@@ -5,8 +5,10 @@ package tools
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"sync"
+	"time"
 )
 
 // maxBackgroundBuf is the per-job retained output ceiling. A long-running
@@ -66,9 +68,19 @@ func (j *bashJob) Write(p []byte) (int, error) {
 func (r *BashJobs) Start(cmdStr string, ac *AgentContext) (Result, error) {
 	cmd := exec.Command("sh", "-c", cmdStr)
 	cmd.Dir = ac.Cwd
+	// Scrub secret-shaped vars from the child env (S9), exactly like the
+	// foreground path — otherwise run_in_background + bash_output would be
+	// a trivial bypass of the foreground scrub.
+	cmd.Env = scrubbedBashEnv(os.Environ())
 	// Own process group so Kill/KillAll reaps the whole pipeline, matching
 	// the foreground path's cancel semantics.
 	setProcessGroup(cmd)
+	// Stdout/Stderr are in-process writers, so Wait blocks until the pipe
+	// copy goroutines see EOF. A grandchild that escaped the process group
+	// (setsid, nohup &) keeps the write end open past the group kill;
+	// WaitDelay force-closes the pipes after the grace window so the reaper
+	// goroutine below can't leak.
+	cmd.WaitDelay = 5 * time.Second
 
 	r.mu.Lock()
 	r.nextID++

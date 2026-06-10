@@ -84,11 +84,9 @@ Two halves:
 - **Left**: `MODE · activity`. `MODE` is `PROMPT` (default), `AUTO`
   when yolo is on, with vim-mode appending `· NORMAL` / `· INSERT`
   when `[ui] editor_mode = "vim"`.
-- **Right**: by default `[provider] model · session-short · used/window`.
+- **Right**: `[provider] model · session-short · used/window`.
   Tokens are color-coded: yellow at ≥50% of the context window, red
-  at ≥80%. Customisable — set `[ui] status_line` to a Go
-  `text/template` string with the variables `.Provider .Model
-  .Session .Mode .Activity .Tokens .Window .TokensFmt`.
+  at ≥80%.
 
 ## Chat lanes
 

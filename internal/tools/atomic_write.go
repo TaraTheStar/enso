@@ -31,6 +31,13 @@ func atomicWriteFile(path string, data []byte, mode os.FileMode) error {
 	if err != nil {
 		return fmt.Errorf("atomic create %s: %w", tmp, err)
 	}
+	// The create mode above is masked by the umask; chmod explicitly so the
+	// caller-requested bits (e.g. a preserved exec bit) survive the rename.
+	if err := f.Chmod(mode); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		return fmt.Errorf("atomic chmod %s: %w", tmp, err)
+	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)

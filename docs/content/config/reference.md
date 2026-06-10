@@ -65,6 +65,8 @@ top_k            = 20
 top_p            = 0.95
 min_p            = 0.0
 presence_penalty = 1.5
+# frequency_penalty  = 0.5   # OpenAI-style anti-repetition; zero = server default
+# repetition_penalty = 1.1   # llama.cpp's repeat_penalty; zero = server default
 ```
 
 | Field            | Default                     | Description                                                                |
@@ -79,16 +81,17 @@ presence_penalty = 1.5
 | `api_key`        | `""`                        | Sent as `Authorization: Bearer <key>` if non-empty. Supports `$ENSO_FOO` / `${ENSO_FOO}` env-var indirection — see [Secrets]({{< relref "../docs/secrets.md" >}}). Not used by `type = "bedrock"` or `type = "vertex"`. |
 | `max_tokens`     | `0`                         | Caps response length. On the OpenAI/llama.cpp path a `0` (unset) value derives a runaway backstop of `min(16384, context_window/2)` so a model that stops emitting EOS can't run to the context ceiling; set a positive value to cap explicitly. Bedrock applies a default of 4096 when zero; Vertex applies 8192. |
 | `prompt_caching` | `false`                     | Opts into vendor-side prompt caching. On Anthropic + `anthropic-bedrock` + `anthropic-vertex`, inserts `cache_control:ephemeral` markers on the last system block and the last tool — system + tool definitions become a single cacheable prefix; subsequent turns that reuse the prefix hit the cache. On Bedrock Converse, equivalent via `CachePoint` blocks. OpenAI and Vertex Gemini cache implicitly — flag is a no-op for them but accepted so configs stay symmetric. Cache writes are billed 1.25× input on Anthropic; cache reads at 0.1×. Break-even after roughly two reuses of the same system/tool prefix. No-op on local providers. |
-| `sampler.*`      | various                     | Sampler knobs. Sent in every completion request.                           |
+| `sampler.*`      | various                     | Sampler knobs: `temperature`, `top_k`, `top_p`, `min_p`, `presence_penalty`, `frequency_penalty`, `repetition_penalty`. Sent in every completion request; a zero value is omitted on the wire so the server's own default applies. `frequency_penalty` (OpenAI) and `repetition_penalty` (llama.cpp's `repeat_penalty`) both discourage re-emitting recent tokens — the most direct lever against deliberation loops in local reasoning models, suppressing the spiral at sampling time before any guard has to abort. |
 | `generation.*`   | (see below)                 | Generation guards + auto-recovery for the OpenAI/llama.cpp path. See [Generation guards](#generation-guards). |
 
 #### Generation guards
 
 Three hardware-independent guards keep a local model from wedging a turn,
-plus turn-level auto-recovery. They apply only to the OpenAI-compatible
-path; the hosted adapters (`bedrock`/`vertex`/`anthropic*`) ignore the
-block. Pair them with `max_tokens` (above), which is the hard backstop
-against a model that never emits EOS.
+plus turn-level auto-recovery and an opt-in reasoning budget. They apply
+only to the OpenAI-compatible path; the hosted adapters
+(`bedrock`/`vertex`/`anthropic*`) ignore the block. Pair them with
+`max_tokens` (above), which is the hard backstop against a model that
+never emits EOS.
 
 ```toml
 [providers.local.generation]
@@ -96,6 +99,7 @@ stall_timeout        = "60s"   # abort a stream that emits no token for this lon
 loop_guard           = true    # detect mid-stream degeneration loops and abort early
 auto_recover         = true    # on length-truncation / tripped loop guard / stall, retry the turn with a nudge
 max_recover_attempts = 2       # cap auto-recovery retries per turn
+# reasoning_budget   = 8000    # opt-in: cap chain-of-thought before the model must act; 0 disables
 ```
 
 | Field                  | Default | Description |
@@ -104,6 +108,13 @@ max_recover_attempts = 2       # cap auto-recovery retries per turn
 | `loop_guard`           | `true`  | Detects mid-stream degeneration loops — a short unit repeated back to back ("the the the", a duplicated line, a JSON fragment) — and aborts before the stream reaches the `max_tokens` cap. Cheap, rate-independent, tuned to ignore legitimately repetitive code. |
 | `auto_recover`         | `true`  | On a length-truncation, a tripped loop guard, or a stall, retries the turn with a nudge instead of dropping it. |
 | `max_recover_attempts` | `2`     | Upper bound on auto-recovery retries within a single turn. |
+| `reasoning_budget`     | `0` (off) | Caps the chain-of-thought runes a model may stream before it must start acting (answer text or a tool call); exceeding it aborts and recovers with a nudge to commit. Targets reasoning models that deliberate for minutes without deciding. The `loop_guard` novelty check is the primary defense — this is an opt-in hard backstop. A sane value is well below `max_tokens`, e.g. `8000`. |
+
+The guards abort a deliberation spiral after it starts; the most direct
+lever against one is at sampling time, before any guard has to step in —
+set `sampler.frequency_penalty` (OpenAI-style) or
+`sampler.repetition_penalty` (llama.cpp's `repeat_penalty`) to discourage
+re-emitting recent tokens. See `sampler.*` above.
 
 #### Bedrock-only fields (`type = "bedrock"`)
 
@@ -420,6 +431,76 @@ no overlay is in use. Discarding a session leaves its on-disk snapshot
 trees behind; reclaim them with `enso prune` (which honours
 `--older-than`).
 
+## `[context_prune]`
+
+Context pruning stubs old tool-result payloads in conversation history
+once they're stale, dedupes repeated reads/commands, and caps how much
+of any single tool result reaches the model. The defaults are
+conservative for typical agentic-coding sessions; tighten
+`tool_retention` if you run on a hybrid-attention model (Qwen3.6, etc.)
+that pays full prefix cost every turn. Set `enabled = false` to revert
+to pre-pruning behaviour (verbatim tool results retained until
+compaction fires, compaction at 60% only).
+
+```toml
+[context_prune]
+enabled        = true            # set false to revert to verbatim retention
+stale_after    = 5               # default user-turn threshold for stubbing
+pinned_paths   = ["PLAN.md"]     # suffix-matched against absolute paths;
+                                 # reads of these survive stubbing + compaction
+smart_truncate = false           # relevance-based truncation when output exceeds cap
+compress       = true            # command-aware + structural output compression
+
+[context_prune.tool_retention]   # per-tool overrides of stale_after
+read  = 8
+bash  = 3
+grep  = 2
+glob  = 2
+edit  = 1
+write = 1
+
+[context_prune.output_caps]
+default         = 2000           # global per-result line cap
+bash            = 500            # per-tool line-cap overrides; read / grep /
+read            = 1000           # glob / web_fetch work the same way
+max_bytes       = 51200          # byte ceiling for any single result (50 KB)
+max_line_length = 2000           # per-line character ceiling
+```
+
+| Field            | Default  | Description |
+| ---------------- | -------- | ----------- |
+| `enabled`        | `true`   | Gates the entire prune subsystem. `false` reverts to pre-pruning behaviour — verbatim tool results retained until compaction fires. |
+| `stale_after`    | `5`      | Global default user-turn threshold beyond which a tool result is replaced by a short stub. Per-tool `tool_retention` entries take precedence. |
+| `tool_retention` | per-tool | Per-tool overrides of `stale_after`. Tools not listed get sensible in-code defaults: `read` 8, `bash` 3, `grep`/`glob` 2, `edit`/`write` 1; anything else falls through to `stale_after`. |
+| `pinned_paths`   | `[]`     | Suffix-matched against absolute paths in `read` results — `"PLAN.md"` matches `/abs/…/PLAN.md` and `/work/PLAN.md` (sandbox path). Reads of pinned paths are not stubbed and survive compaction verbatim. |
+| `smart_truncate` | `false`  | Relevance-based truncation: outputs exceeding the cap try to keep lines matching the most recent user message, falling back to head/tail otherwise. |
+| `compress`       | `true`   | Command-aware + structural output compression: declarative per-command filters strip passing-test / progress / lockfile-diff noise before the output caps run. Defaults ship in-binary; add or override with `*.toml` files under `$XDG_CONFIG_HOME/enso/filters/`. The raw output is always spilled to disk regardless, so nothing compression drops is unrecoverable. Set `false` to revert to plain head/tail truncation. The `/discover` command ranks recorded bash commands by output size and flags which ones still lack a filter. |
+
+`[context_prune.output_caps]` caps three independent dimensions of a
+single tool result — line count, byte size, and per-line length. Each
+cap is independent; zero leaves the in-tree default in effect.
+
+| Field             | Default | Description |
+| ----------------- | ------- | ----------- |
+| `default`         | `2000`  | Global line cap for head/tail truncation. |
+| `bash` / `read` / `grep` / `glob` / `web_fetch` | unset | Per-tool line-cap overrides; a tool without one uses `default`. |
+| `max_bytes`       | 50 KB   | Byte ceiling for any single tool result. Catches pathological one-line outputs (a minified-JS dump, a binary glob) that the line cap can't see. |
+| `max_line_length` | `2000`  | Per-line character ceiling; each longer line gets its middle elided so a near-edge result can't sneak a 10 MB minified line past the byte cap. |
+
+## `[compaction]`
+
+Configures the summarisation pass that runs when context fills past the
+compaction threshold (or on a `/compact` / checkpoint trigger).
+
+```toml
+[compaction]
+provider = "haiku"   # one of the [providers.X] names; empty = session provider
+```
+
+| Field      | Default | Description |
+| ---------- | ------- | ----------- |
+| `provider` | `""`    | Names a `[providers.X]` key to use for the summarisation call. Empty reuses the session's current provider — the common case for users who don't care to split workload. When set but the named provider is missing or unreachable, the agent logs a warning and falls back to the session provider — a misconfigured override never blocks compaction. |
+
 ## `[search]` and `[search.searxng]`
 
 ```toml
@@ -509,6 +590,7 @@ runtime       = "auto"                      # "auto" | "podman" | "docker"
 extra_mounts  = []                          # ["src:dst[:opts]", ...]
 env           = []                          # ["KEY=value", ...]
 name          = ""                          # override auto-generated name
+workdir_mount = "/work"                     # in-container mount point of the project cwd
 uid           = ""                          # --user value (rarely needed)
 hardening     = ""                          # "gvisor" / "runsc"
 
@@ -557,23 +639,6 @@ matching trailer (`Co-Authored-By: <name> <noreply@enso.local>` or
 [ui]
 theme       = "dark"
 editor_mode = "default"      # "default" | "vim"
-status_line = ""             # text/template; empty = built-in default
-```
-
-`status_line` template variables: `.Provider .Model .Session .Mode
-.Activity .Tokens .Window .TokensFmt .TokensPerSec`. The default
-template is
-
-```text
-[{{.Provider}}] {{.Model}} · {{.Session}} · {{.TokensFmt}}{{if .TokensPerSec}} · {{.TokensPerSec}} t/s{{end}}
-```
-
-`{{.TokensPerSec}}` is non-zero only while a turn is actively
-streaming, so `{{if .TokensPerSec}}…{{end}}` keeps the segment from
-appearing when idle. Example custom template:
-
-```toml
-status_line = "{{.Mode}} | {{.Model}} | {{.TokensFmt}}"
 ```
 
 See [TUI]({{< relref "../docs/tui.md" >}}) and themes (drop a
@@ -619,6 +684,21 @@ visualisers). See the **External observers** section of the README
 for the end-to-end shape, including the daemon-socket subscription
 alternative for high-volume / stateful consumers.
 
+## `[daemon]`
+
+Settings that only apply when running ensō under the long-lived daemon
+(`enso daemon` + `enso attach`). Standalone runs ignore this section
+entirely.
+
+```toml
+[daemon]
+permission_timeout = 60   # seconds before an unanswered permission request is auto-denied
+```
+
+| Field                | Default | Description |
+| -------------------- | ------- | ----------- |
+| `permission_timeout` | `60`    | Caps how long the daemon waits for a client decision on a permission request before auto-denying, in seconds. Setting this above ~5 minutes is reasonable if you walk away from terminals; very small values will surprise you by auto-denying mid-thought. |
+
 ## `[mcp.<name>]`
 
 ```toml
@@ -650,6 +730,22 @@ init_options = {}                   # opaque; passed verbatim
 env          = []
 language_id  = ""                   # defaults to <name>
 ```
+
+Builtin defaults auto-activate when their binary is on PATH — go
+(`gopls`), typescript (`typescript-language-server --stdio`), python
+(`pyright-langserver --stdio`), rust (`rust-analyzer`) — you do **not**
+need to declare these to use them. Declaring a `[lsp.<name>]` block with
+the same name overrides the builtin entirely (your config wins).
+Disable a single builtin by setting `command = ""` in its block;
+disable them all with the top-level scalar:
+
+```toml
+lsp_builtins_disabled = false   # set true to suppress auto-activation
+```
+
+As with `default_provider`, the top-level scalar must appear **before
+any section header** — TOML scopes it into the preceding section
+otherwise.
 
 See [LSP]({{< relref "../docs/lsp.md" >}}) for examples per language.
 

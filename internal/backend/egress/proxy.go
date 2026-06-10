@@ -56,17 +56,29 @@ const tunnelIdleTimeout = 5 * time.Minute
 //
 // AuthorizeEgress runs on the request goroutine; ctx is the request
 // context so a client that gives up unblocks the wait. An allowed
-// target is also added to the allowlist (one decision per target, not
-// per connection) before the proxy proceeds.
+// target is also added to the RUNTIME allowlist (one decision per
+// target, not per connection) before the proxy proceeds — runtime, so
+// the approval opens the gate but never waives the SSRF denylist (the
+// operator approved a name, not a private address).
 type Decider interface {
 	AuthorizeEgress(ctx context.Context, hostport string) bool
 }
 
 type Proxy struct {
-	mu       sync.RWMutex
-	allowed  map[string]bool // "host:port", lowercased
-	allowAll bool            // --yolo: every target permitted (no allowlist gate)
-	decider  Decider         // optional interactive fallback on a denied target
+	mu sync.RWMutex
+	// allowed holds RUNTIME grants ("host:port", lowercased): broker
+	// grants and interactive approvals. They open the gate but do NOT
+	// exempt the SSRF denylist — the names are worker-chosen, so a
+	// grant for foo.example:443 must not become a relay to loopback or
+	// cloud metadata via attacker-controlled DNS.
+	allowed map[string]bool
+	// configAllowed holds OPERATOR-CONFIGURED entries ([backend.egress]
+	// allow in the config file). Only these carry the SSRF-denylist
+	// opt-out (the "reach my host-loopback model server" case): the
+	// operator typed the name, the worker can't mint one.
+	configAllowed map[string]bool
+	allowAll      bool    // --yolo: every target permitted (no allowlist gate)
+	decider       Decider // optional interactive fallback on a denied target
 
 	ln  net.Listener
 	srv *http.Server
@@ -80,23 +92,44 @@ type Proxy struct {
 var denyIP = netsec.IsDeniedIP
 
 // New creates an unstarted proxy with an empty (deny-all) allowlist.
-func New() *Proxy { return &Proxy{allowed: map[string]bool{}} }
+func New() *Proxy {
+	return &Proxy{allowed: map[string]bool{}, configAllowed: map[string]bool{}}
+}
 
-// Allow adds a host:port to the allowlist. Idempotent. A bare host (no
-// ":port") allows that host on the conventional TLS/HTTP ports.
-func (p *Proxy) Allow(hostport string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
+// addEntry normalizes hostport into m. A bare host (no ":port") allows
+// that host on the conventional TLS/HTTP ports. Caller holds p.mu.
+func addEntry(m map[string]bool, hostport string) {
 	hostport = strings.ToLower(strings.TrimSpace(hostport))
 	if hostport == "" {
 		return
 	}
 	if !strings.Contains(hostport, ":") {
-		p.allowed[hostport+":443"] = true
-		p.allowed[hostport+":80"] = true
+		m[hostport+":443"] = true
+		m[hostport+":80"] = true
 		return
 	}
-	p.allowed[hostport] = true
+	m[hostport] = true
+}
+
+// Allow adds a host:port to the RUNTIME allowlist (broker grants,
+// interactive approvals). Idempotent. The target passes the gate but
+// still runs the SSRF denylist on dial — runtime names are
+// worker-chosen, so they never confer the denylist opt-out.
+func (p *Proxy) Allow(hostport string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	addEntry(p.allowed, hostport)
+}
+
+// AllowConfigured adds an OPERATOR-CONFIGURED host:port (a config-file
+// [backend.egress] allow entry). Idempotent. Unlike Allow, these
+// entries are also exempt from the SSRF denylist on dial — the
+// documented opt-out for a deliberately-named loopback/LAN service
+// (e.g. a local model server), mirroring web_fetch's allow_hosts.
+func (p *Proxy) AllowConfigured(hostport string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	addEntry(p.configAllowed, hostport)
 }
 
 // AllowAll switches the proxy to allow-all: every CONNECT/HTTP target is
@@ -121,27 +154,31 @@ func (p *Proxy) SetDecider(d Decider) {
 func (p *Proxy) isAllowed(hostport string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.allowAll || p.allowed[strings.ToLower(hostport)]
+	hp := strings.ToLower(hostport)
+	return p.allowAll || p.allowed[hp] || p.configAllowed[hp]
 }
 
-// explicitlyAllowed reports whether hostport is on the static allowlist —
-// WITHOUT the AllowAll short-circuit. This is the SSRF denylist's opt-out:
-// a target the operator/broker named explicitly may resolve to an
-// otherwise-denied address (the local-model-on-loopback case), exactly as
-// web_fetch's allow_hosts exempts the same denylist. AllowAll (--yolo)
-// does NOT exempt — its map is empty, so yolo traffic stays filtered and
-// can't be relayed to loopback/metadata.
-func (p *Proxy) explicitlyAllowed(hostport string) bool {
+// denylistExempt reports whether hostport is an operator-CONFIGURED
+// entry — the only class that opts out of the SSRF denylist on dial. A
+// config entry may deliberately resolve to an otherwise-denied address
+// (the local-model-on-loopback case), exactly as web_fetch's
+// allow_hosts exempts the same denylist. Runtime grants (broker /
+// interactive Allow) do NOT exempt — those names are worker-chosen, so
+// a granted host that resolves to loopback/metadata stays refused. And
+// AllowAll (--yolo) does NOT exempt either, so yolo traffic stays
+// filtered and can't be relayed to loopback/metadata.
+func (p *Proxy) denylistExempt(hostport string) bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.allowed[strings.ToLower(hostport)]
+	return p.configAllowed[strings.ToLower(hostport)]
 }
 
-// gate decides whether target may be reached: the static allowlist
-// (or allow-all) first, then — only if a Decider is installed — an
+// gate decides whether target may be reached: the allowlists (or
+// allow-all) first, then — only if a Decider is installed — an
 // interactive prompt. A granted interactive decision is promoted to
-// the allowlist so the rest of this connection and any retries to the
-// same target don't re-prompt. No decider ⇒ pure default-deny.
+// the RUNTIME allowlist so the rest of this connection and any retries
+// to the same target don't re-prompt (the SSRF denylist still runs on
+// every dial to it). No decider ⇒ pure default-deny.
 func (p *Proxy) gate(ctx context.Context, target string) bool {
 	if p.isAllowed(target) {
 		return true
@@ -196,13 +233,15 @@ func (p *Proxy) Start() error {
 // as an open relay into host-loopback or cloud-metadata services under
 // --yolo (AllowAll), where the allowlist gate is off.
 //
-// The denylist runs on every dial EXCEPT for a target the operator/broker
-// put on the explicit allowlist — that is the opt-out for the legitimate
-// "reach my host-loopback model server" case, mirroring web_fetch's
-// allow_hosts exemption. AllowAll does NOT exempt (its map is empty), so
-// yolo traffic is still filtered. The "refuse if ANY IP is denied" stance
-// (rather than "dial the first allowed IP") stops a name that resolves to
-// a mix of public and loopback addresses from being used at all.
+// The denylist runs on every dial EXCEPT for a target the OPERATOR put on
+// the configured allowlist (AllowConfigured) — that is the opt-out for the
+// legitimate "reach my host-loopback model server" case, mirroring
+// web_fetch's allow_hosts exemption. Runtime grants (broker/interactive
+// Allow) do NOT exempt: those names are worker-chosen, so they stay
+// filtered. AllowAll does NOT exempt either, so yolo traffic is still
+// filtered. The "refuse if ANY IP is denied" stance (rather than "dial the
+// first allowed IP") stops a name that resolves to a mix of public and
+// loopback addresses from being used at all.
 func (p *Proxy) safeDial(ctx context.Context, network, addr string) (net.Conn, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -215,7 +254,7 @@ func (p *Proxy) safeDial(ctx context.Context, network, addr string) (net.Conn, e
 	if len(ips) == 0 {
 		return nil, fmt.Errorf("egress: resolve %s: no addresses", host)
 	}
-	if !p.explicitlyAllowed(addr) {
+	if !p.denylistExempt(addr) {
 		for _, ip := range ips {
 			if denyIP(ip) {
 				return nil, fmt.Errorf("egress: refusing %s: resolves to denied address %s", host, ip)

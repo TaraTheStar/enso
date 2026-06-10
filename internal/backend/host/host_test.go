@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,89 @@ func (w *fakeWorker) Wait(ctx context.Context) error {
 	}
 }
 func (w *fakeWorker) Teardown(context.Context) error { return nil }
+
+// crashBackend hands the host a worker that completes the handshake
+// (consume MsgTaskSpec, send MsgWorkerReady) and then severs the channel
+// with NO terminal message once crash is closed — the wire shape of a
+// worker OOM-killed, a dying VM, or a worker panic/SIGKILL mid-task.
+// Teardown also severs the channel, so the same fake exercises the
+// requested-shutdown EOF (which must stay a clean nil).
+type crashBackend struct {
+	crash chan struct{}
+}
+
+func (f *crashBackend) Name() string { return "crash" }
+
+func (f *crashBackend) Start(context.Context, backend.TaskSpec) (backend.Worker, error) {
+	h2wR, h2wW := io.Pipe()
+	w2hR, w2hW := io.Pipe()
+	workerCh := backend.NewStreamChannelRW(h2wR, w2hW, noopCloser{})
+	hostCh := backend.NewStreamChannelRW(w2hR, h2wW, noopCloser{})
+	go func() {
+		if _, err := workerCh.Recv(); err != nil { // MsgTaskSpec
+			return
+		}
+		_ = workerCh.Send(backend.Envelope{Kind: backend.MsgWorkerReady})
+		<-f.crash
+		_ = w2hW.Close() // host Recv EOFs; no MsgWorkerDone/MsgWorkerError ever sent
+	}()
+	return &crashWorker{ch: hostCh, w2hW: w2hW}, nil
+}
+
+type crashWorker struct {
+	ch   backend.Channel
+	w2hW *io.PipeWriter
+}
+
+func (w *crashWorker) Channel() backend.Channel       { return w.ch }
+func (w *crashWorker) Wait(context.Context) error     { return nil }
+func (w *crashWorker) Teardown(context.Context) error { return w.w2hW.Close() }
+
+// startCrashSession brings up a Session against crashBackend far enough
+// that the worker is READY — the regime where a channel drop used to be
+// misreported as clean success.
+func startCrashSession(t *testing.T) (*host.Session, *crashBackend) {
+	t.Helper()
+	fb := &crashBackend{crash: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	sess, err := host.Start(ctx, fb, backend.TaskSpec{TaskID: "t1", Cwd: t.TempDir(), Prompt: "ping"},
+		nil, bus.New())
+	if err != nil {
+		t.Fatalf("host.Start: %v", err)
+	}
+	return sess, fb
+}
+
+// TestSessionAbnormalChannelDrop is the H8 regression: a worker that
+// crashes AFTER the handshake (channel EOF, no terminal message, no
+// shutdown requested) must surface an error from Wait() — not resolve
+// nil and let the caller exit 0 on a half-done task.
+func TestSessionAbnormalChannelDrop(t *testing.T) {
+	sess, fb := startCrashSession(t)
+	close(fb.crash) // sever the channel mid-task
+
+	err := sess.Wait()
+	if err == nil {
+		t.Fatal("abnormal channel drop after ready must surface an error from Wait(), got nil")
+	}
+	if !strings.Contains(err.Error(), "worker channel closed unexpectedly") {
+		t.Fatalf("Wait() error = %v, want the unexpected-close diagnosis", err)
+	}
+}
+
+// TestSessionRequestedShutdownDrop is the H8 counterpart: the SAME
+// channel EOF stays a clean nil when the host itself requested the
+// teardown (Close), so an ordinary wind-down does not start failing.
+func TestSessionRequestedShutdownDrop(t *testing.T) {
+	sess, fb := startCrashSession(t)
+	defer close(fb.crash) // unblock the fake's goroutine
+
+	_ = sess.Close() // requested teardown severs the channel
+	if err := sess.Wait(); err != nil {
+		t.Fatalf("requested shutdown must yield nil from Wait(), got %v", err)
+	}
+}
 
 func TestSessionEndToEnd(t *testing.T) {
 	mock := llmtest.New()

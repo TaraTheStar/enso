@@ -81,9 +81,9 @@ func TestProxyAllowlist(t *testing.T) {
 // real TLS round-trip flows through the proxy's tunnel relay, and the
 // tunnel's two relay goroutines are released after the connection closes
 // (rather than leaking fds — the failure that makes the proxy eventually
-// 502 everything). httptest's TLS server binds loopback, so the target is
-// added to the explicit allowlist, which is also the SSRF-denylist opt-out
-// that permits dialing 127.0.0.1.
+// 502 everything). httptest's TLS server binds loopback, which the
+// package-wide TestMain denyIP override permits (see allowLoopback in
+// ssrf_test.go), so a plain runtime Allow opens the gate.
 func TestProxyConnectTunnel(t *testing.T) {
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = io.WriteString(w, "tunnel-ok")
@@ -97,7 +97,7 @@ func TestProxyConnectTunnel(t *testing.T) {
 	defer p.Close()
 
 	u, _ := url.Parse(upstream.URL)
-	p.Allow(u.Host) // explicit allow == loopback SSRF opt-out
+	p.Allow(u.Host) // gate open; loopback passes via the TestMain denyIP override
 
 	proxyURL, _ := url.Parse(p.ProxyURL())
 	// Reuse the TLS server's client (trusts its self-signed cert), but

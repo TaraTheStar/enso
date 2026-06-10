@@ -53,6 +53,12 @@ func (t EditTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	if err != nil {
 		return Result{}, fmt.Errorf("edit %s: read: %w", abs, err)
 	}
+	// Preserve the file's permission bits across the rewrite — a hardcoded
+	// mode would silently strip the exec bit from an edited script.
+	fi, err := os.Stat(abs)
+	if err != nil {
+		return Result{}, fmt.Errorf("edit %s: stat: %w", abs, err)
+	}
 
 	content := string(data)
 	ac.ReadSet[abs] = true
@@ -81,7 +87,7 @@ func (t EditTool) Run(ctx context.Context, args map[string]interface{}, ac *Agen
 	}
 	unified, _ := difflib.GetUnifiedDiffString(diff)
 
-	if err := atomicWriteFile(abs, []byte(updated), 0o644); err != nil {
+	if err := atomicWriteFile(abs, []byte(updated), fi.Mode().Perm()); err != nil {
 		return Result{}, fmt.Errorf("edit %s: write: %w", abs, err)
 	}
 
