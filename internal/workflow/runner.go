@@ -20,7 +20,6 @@ import (
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -43,12 +42,21 @@ type RunDeps struct {
 	MaxAgents          int
 	MaxDepth           int
 	Depth              int
-	Writer             *session.Writer // optional; persists per-role messages with role's agent id
+	Writer             tools.SessionWriter // optional; persists per-role messages with role's agent id
 	GitAttribution     string
 	GitAttributionName string
 	WebFetchAllowHosts []string
 	ToolTimeouts       tools.ToolTimeouts // bash execution budget, forwarded to each role agent
 	RestrictedRoots    []string
+
+	// Capabilities is the tier-3 broker handle. Non-nil only when the
+	// engine runs inside a network-sealed worker, so role agents broker
+	// web egress exactly like the interactive agent (nil keeps today's
+	// direct-dial behavior on the local backend).
+	Capabilities tools.CapabilityRequester
+	// IsolationNote is the honest # Environment sentence describing the
+	// box the roles run in, forwarded verbatim to each role agent.
+	IsolationNote string
 }
 
 // Result is the outcome of a workflow run.
@@ -315,6 +323,8 @@ func runRole(
 		WebFetchAllowHosts: deps.WebFetchAllowHosts,
 		ToolTimeouts:       deps.ToolTimeouts,
 		RestrictedRoots:    deps.RestrictedRoots,
+		Capabilities:       deps.Capabilities,
+		IsolationNote:      deps.IsolationNote,
 	})
 	if err != nil {
 		return fmt.Errorf("role %q: build: %w", name, err)

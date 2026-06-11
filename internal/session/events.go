@@ -33,6 +33,10 @@ type SessionInfo struct {
 	// "fix-the-flaky-auth-test"). Empty until the first top-level
 	// user message lands or /rename is invoked.
 	Label string
+	// Backend is the Backend the session's worker last ran behind
+	// ("local", "podman", "lima", …) — execution provenance, recorded
+	// host-side at worker attach. Empty for pre-provenance rows.
+	Backend string
 }
 
 // Writer persists session state synchronously. Each call commits before
@@ -224,6 +228,19 @@ func (w *Writer) AppendMessageUsage(seq int, usage llm.MessageUsage, agentID str
 	return nil
 }
 
+// SetBackend records execution provenance on the session row: the
+// Backend its worker runs behind ("local", "podman", "lima", …).
+// Called host-side at worker attach — on creation and again on resume,
+// so the column always names the LATEST backend; the per-attach
+// WorkerAttached event rows keep the full history.
+func (w *Writer) SetBackend(backend string) error {
+	_, err := w.db.Exec(`UPDATE sessions SET backend = ? WHERE id = ?`, backend, w.sessionID)
+	if err != nil {
+		return fmt.Errorf("set backend: %w", err)
+	}
+	return nil
+}
+
 // SetLabel overrides the session's display label. Input is normalised
 // through the same slugifier as the auto-label so /rename and
 // auto-derivation produce labels in the same shape. Empty input clears
@@ -402,7 +419,7 @@ func ListRecentWithStats(s *Store, cwd string, limit int) ([]SessionInfoWithStat
 	}
 	args = append(args, limit)
 	rows, err := s.DB.Query(
-		`SELECT s.id, s.created_at, s.updated_at, s.model, s.provider, s.cwd, s.interrupted, s.label,
+		`SELECT s.id, s.created_at, s.updated_at, s.model, s.provider, s.cwd, s.interrupted, s.label, s.backend,
 		        COUNT(m.seq) AS msg_count,
 		        COALESCE(SUM(LENGTH(m.content)), 0) AS char_total,
 		        COALESCE((SELECT content FROM messages
@@ -427,7 +444,7 @@ func ListRecentWithStats(s *Store, cwd string, limit int) ([]SessionInfoWithStat
 		var inter int
 		var charTotal int64
 		if err := rows.Scan(
-			&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter, &info.Label,
+			&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter, &info.Label, &info.Backend,
 			&info.MessageCount, &charTotal, &info.LastUserMessage,
 		); err != nil {
 			return nil, fmt.Errorf("scan session stats: %w", err)
@@ -454,7 +471,7 @@ func ListRecent(s *Store, cwd string, limit int) ([]SessionInfo, error) {
 	}
 	args = append(args, limit)
 	rows, err := s.DB.Query(
-		`SELECT id, created_at, updated_at, model, provider, cwd, interrupted, label
+		`SELECT id, created_at, updated_at, model, provider, cwd, interrupted, label, backend
 		 FROM sessions`+cwdFilter+` ORDER BY updated_at DESC LIMIT ?`, args...,
 	)
 	if err != nil {
@@ -467,7 +484,7 @@ func ListRecent(s *Store, cwd string, limit int) ([]SessionInfo, error) {
 		var info SessionInfo
 		var ca, ua int64
 		var inter int
-		if err := rows.Scan(&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter, &info.Label); err != nil {
+		if err := rows.Scan(&info.ID, &ca, &ua, &info.Model, &info.Provider, &info.Cwd, &inter, &info.Label, &info.Backend); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		info.CreatedAt = time.Unix(ca, 0)

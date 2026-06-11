@@ -11,7 +11,6 @@ import (
 
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/lsp"
 	"github.com/TaraTheStar/enso/internal/mcp"
@@ -19,7 +18,6 @@ import (
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/slash"
 	"github.com/TaraTheStar/enso/internal/tools"
-	"github.com/TaraTheStar/enso/internal/workflow"
 )
 
 // slashCtx is the state slash command handlers see. Handlers print
@@ -60,19 +58,6 @@ type slashCtx struct {
 	// channel without echoing it through the typed-input path. Used by
 	// /init (and /loop's per-tick submission).
 	submit func(text string)
-
-	// workflowDeps is the pre-built RunDeps that /workflow uses. Built
-	// in run.go after the agent is constructed so all the cross-cutting
-	// runtime references (agent ctx counters, config
-	// flags) are wired in one place.
-	workflowDeps workflow.RunDeps
-
-	// backendKind is the resolved [backend] type the session runs
-	// behind ("local", "podman", "lima"; set by run.go). /workflow
-	// refuses to execute when it isn't local: workflow.Run drives a
-	// live tools.Registry in the HOST process, not behind the Backend
-	// seam the agent is sealed in (see internal/backend/backend.go).
-	backendKind config.BackendKind
 
 	out  strings.Builder
 	quit bool

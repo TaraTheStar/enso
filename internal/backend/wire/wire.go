@@ -184,6 +184,7 @@ const (
 	CtrlSetYolo          = "set_yolo"            // Args: ControlBool;       Result: none
 	CtrlAddAllow         = "add_allow"           // Args: ControlName(pattern); Result: none (Error on bad pattern)
 	CtrlAddTurnAllow     = "add_turn_allow"      // Args: ControlName(pattern); Result: none (Error on bad pattern)
+	CtrlRunWorkflow      = "run_workflow"        // Args: WorkflowRun;       Result: WorkflowResult
 )
 
 // ControlBool is the args payload for single-bool methods.
@@ -204,6 +205,36 @@ type ControlRequest struct {
 type ControlResponse struct {
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  string          `json:"error,omitempty"`
+}
+
+// WorkflowRun is the args payload for CtrlRunWorkflow: one declarative
+// workflow to execute worker-side, behind the same seam the interactive
+// agent uses. Definition is the RAW markdown source — the worker
+// re-parses it with the identical binary (exestage guarantees both
+// sides run the same enso) rather than reading any file itself: an
+// isolated worker (podman/lima/cloud) may share no filesystem with the
+// host, so the definition must travel over the Channel.
+type WorkflowRun struct {
+	// Name is the display/lookup name (no ".md"), used for error
+	// messages and bus events.
+	Name string `json:"name"`
+	// Definition is the raw workflow markdown (frontmatter + role
+	// sections), exactly as read host-side.
+	Definition []byte `json:"definition"`
+	// Args is the free-text argument string rendered as {{.Args}}.
+	Args string `json:"args,omitempty"`
+}
+
+// WorkflowResult mirrors workflow.Result (plain scalars/maps; the
+// worker adapter converts so wire stays workflow-free). RoleOrder is
+// carried so the host can render outputs in topological order without
+// re-parsing the definition.
+type WorkflowResult struct {
+	Outputs   map[string]string            `json:"outputs"`
+	Fields    map[string]map[string]string `json:"fields,omitempty"`
+	Skipped   map[string]bool              `json:"skipped,omitempty"`
+	Last      string                       `json:"last,omitempty"`
+	RoleOrder []string                     `json:"role_order,omitempty"`
 }
 
 // ControlName is the args payload for single-string methods.

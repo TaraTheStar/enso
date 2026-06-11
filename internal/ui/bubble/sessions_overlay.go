@@ -104,8 +104,13 @@ func renderSessionsOverlay(d *sessionsOverlayData, width, height int) string {
 		}
 		rel := relTime(info.UpdatedAt)
 		flag := ""
+		// Execution provenance: tag sessions whose worker ran in an
+		// isolated box. Local (and pre-provenance "") rows stay untagged.
+		if info.Backend != "" && info.Backend != "local" {
+			flag += statusStyle.Render(" [" + info.Backend + "]")
+		}
 		if info.Interrupted {
-			flag = errorStyle.Render(" [interrupted]")
+			flag += errorStyle.Render(" [interrupted]")
 		}
 		line := fmt.Sprintf("%s  %s  %s  %s%s",
 			statusStyle.Render(short),
