@@ -50,6 +50,7 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		inflight:  map[string]*inflightStream{},
 		pending:   map[string]chan permissions.Decision{},
 		capWait:   map[string]chan wire.CapabilityGrant{},
+		wfCancels: map[uint64]context.CancelFunc{},
 		cancelAll: cancel,
 	}
 
@@ -309,6 +310,29 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 	}
 	s.agt = agt
 
+	// Workflow engine environment (CtrlRunWorkflow): the same live
+	// stack the interactive agent runs on, so workflow roles execute
+	// their tools in this box, prompt permissions over the seam, and
+	// persist through the same writer. Set before the demux starts —
+	// read-only afterwards.
+	s.wfEnv = &workflowEnv{
+		providers:          providers,
+		defaultProvider:    spec.DefaultProvider,
+		bus:                busInst,
+		registry:           registry,
+		perms:              checker,
+		cwd:                spec.Cwd,
+		maxTurns:           spec.MaxTurns,
+		writer:             sw,
+		gitAttribution:     cfg.Git.Attribution,
+		gitAttributionName: cfg.Git.AttributionName,
+		webFetchAllowHosts: cfg.WebFetch.AllowHosts,
+		toolTimeouts:       acfg.ToolTimeouts,
+		restrictedRoots:    restrictedRoots,
+		capabilities:       acfg.Capabilities,
+		isolationNote:      acfg.IsolationNote,
+	}
+
 	// Seed the host with provider/model (and zeroed token counts)
 	// before the first turn, so the status line is populated the
 	// instant the worker is ready rather than only after activity.
@@ -368,6 +392,13 @@ type seam struct {
 	pending  map[string]chan permissions.Decision // permission corr -> respond
 	capWait  map[string]chan wire.CapabilityGrant // capability corr -> grant
 	corrSeq  uint64
+
+	// In-flight workflow runs (CtrlRunWorkflow), cancellable via
+	// MsgCancel alongside the interactive turn. wfEnv is written once in
+	// RunAgent before the demux starts, read-only afterwards.
+	wfEnv     *workflowEnv
+	wfCancels map[uint64]context.CancelFunc
+	wfSeq     uint64
 
 	// telemetry coalescing. emitTelemetry is called from the single
 	// forwardBus goroutine (plus once from RunAgent before that
@@ -524,6 +555,7 @@ func (s *seam) demux(ctx context.Context, inputCh chan agent.UserInput, interact
 			if s.agt != nil {
 				s.agt.Cancel()
 			}
+			s.cancelWorkflows()
 		case backend.MsgShutdown:
 			if interactive {
 				s.inputOnce.Do(func() { close(inputCh) })
@@ -635,6 +667,12 @@ func (s *seam) serveControl(ctx context.Context, env backend.Envelope) {
 				resp.Error = err.Error()
 			}
 		}
+
+	case wire.CtrlRunWorkflow:
+		// Long-running by design (minutes); fine here because every
+		// control request already runs on its own goroutine and its
+		// inference round-trips through the demux like any turn.
+		resp = s.serveRunWorkflow(ctx, req.Args)
 
 	default:
 		resp.Error = "unknown control method: " + req.Method

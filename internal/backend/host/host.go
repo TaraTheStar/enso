@@ -423,6 +423,37 @@ func ProviderCatalog(providers map[string]*llm.Provider) []backend.ProviderInfo 
 	return out
 }
 
+// RecordWorkerAttach stamps execution provenance for one worker attach
+// onto the session: the sessions.backend column (latest backend — the
+// cheap "where did this run" answer for pickers/inspection) plus one
+// WorkerAttached event row (the per-epoch audit record, so a session
+// resumed under a different backend keeps an honest history of where
+// each span of rows executed). Call it right after host.Start succeeds,
+// from every attach site (run, run --workflow, TUI). Best-effort: a nil
+// writer (ephemeral / local fallback) is a no-op, and a write failure
+// must not kill the run — it logs like the other persist failures.
+func RecordWorkerAttach(w *session.Writer, b backend.Backend, isol backend.IsolationSpec, taskID string) {
+	if w == nil || b == nil {
+		return
+	}
+	if err := w.SetBackend(b.Name()); err != nil {
+		slog.Warn("host: record session backend failed", "backend", b.Name(), "err", err)
+	}
+	payload := map[string]any{
+		"backend": b.Name(),
+		"task_id": taskID,
+	}
+	if isol.Kind != "" {
+		payload["kind"] = isol.Kind
+	}
+	if isol.Image != "" {
+		payload["image"] = isol.Image
+	}
+	if err := w.AppendEvent("WorkerAttached", payload); err != nil {
+		slog.Warn("host: record worker attach failed", "backend", b.Name(), "err", err)
+	}
+}
+
 // Start launches the worker, performs the handshake (send MsgTaskSpec,
 // await MsgWorkerReady), and begins serving the seam. It returns once
 // the worker's agent core is constructed and ready — mirroring
@@ -895,6 +926,27 @@ func (s *Session) AddAllow(ctx context.Context, pattern string) error {
 func (s *Session) AddTurnAllow(ctx context.Context, pattern string) error {
 	_, err := s.control(ctx, wire.CtrlAddTurnAllow, wire.ControlName{Name: pattern})
 	return err
+}
+
+// RunWorkflow executes a declarative workflow inside the worker — the
+// engine, its role agents and their tool calls all run behind the same
+// Backend seam as the interactive agent; only inference, permission
+// prompts and persistence round-trip to the host, exactly like an
+// interactive turn. definition is the RAW workflow markdown (resolved
+// and pre-validated host-side; the worker re-parses it, so no shared
+// filesystem is assumed). Blocks until the workflow completes — pass a
+// long-lived ctx, not a control-RPC timeout. Role progress streams over
+// the bus (EventAgentStart/End) while this waits.
+func (s *Session) RunWorkflow(ctx context.Context, name string, definition []byte, args string) (wire.WorkflowResult, error) {
+	raw, err := s.control(ctx, wire.CtrlRunWorkflow, wire.WorkflowRun{
+		Name: name, Definition: definition, Args: args,
+	})
+	if err != nil {
+		return wire.WorkflowResult{}, err
+	}
+	var res wire.WorkflowResult
+	err = json.Unmarshal(raw, &res)
+	return res, err
 }
 
 func (s *Session) routeControl(env backend.Envelope) {
