@@ -10,26 +10,22 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
-
-	"sync/atomic"
 
 	"github.com/google/uuid"
 
 	"github.com/TaraTheStar/enso/internal/daemon"
 
-	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/llm"
-	"github.com/TaraTheStar/enso/internal/mcp"
 	"github.com/TaraTheStar/enso/internal/permissions"
 	"github.com/TaraTheStar/enso/internal/session"
-	"github.com/TaraTheStar/enso/internal/tools"
 	"github.com/TaraTheStar/enso/internal/workflow"
 )
 
@@ -161,6 +157,7 @@ func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.O
 	// worker via spec.ResumeHistory (an isolated worker's own guest DB
 	// is empty so it can't session.Load; the local worker ignores it).
 	// The store is kept open for the whole run (defer is fn-scoped).
+	var writer *session.Writer
 	if !flagEphemeral {
 		store, serr := session.Open()
 		if serr != nil {
@@ -188,7 +185,8 @@ func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.O
 		} else if _, nerr := session.NewSessionWithID(store, sessionID, providers[defaultName].Model, defaultName, cwd); nerr != nil {
 			return fmt.Errorf("create session: %w", nerr)
 		}
-		writer, aerr := session.AttachWriter(store, sessionID)
+		var aerr error
+		writer, aerr = session.AttachWriter(store, sessionID)
 		if aerr != nil {
 			return fmt.Errorf("attach writer: %w", aerr)
 		}
@@ -246,6 +244,7 @@ func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.O
 		return err
 	}
 	defer sess.Close()
+	host.RecordWorkerAttach(writer, b, isol, spec.TaskID)
 
 	// session_start mirrors the old emit (after the agent is
 	// constructed, before the first turn). host.Start has returned, so
@@ -462,8 +461,13 @@ func runDetached(argParts []string) error {
 	return nil
 }
 
-// runWorkflow loads a named workflow and runs it non-interactively, streaming
-// each role's output to stdout.
+// runWorkflow loads a named workflow and runs it non-interactively,
+// streaming each role's output to stdout. The engine runs INSIDE the
+// worker behind the configured Backend (local, podman, lima, …) — the
+// definition is resolved + validated host-side and shipped over the
+// Channel as raw bytes, the run is triggered over the control leg, and
+// role tool calls execute in the box with the same permission/persist/
+// inference proxying as an interactive turn.
 func runWorkflow(name string, argParts []string) error {
 	args := strings.Join(argParts, " ")
 
@@ -478,51 +482,85 @@ func runWorkflow(name string, argParts []string) error {
 		}
 		return fmt.Errorf("load config: %w", err)
 	}
-	// Seam invariant guard (see internal/backend/backend.go): the agent
-	// core always runs as a Worker behind a Backend, but workflow.Run
-	// drives a live tools.Registry in THIS host process — it is not
-	// routed through the seam at all. Until workflows are taught to run
-	// behind a Worker, refuse to execute them when an isolated backend
-	// is configured: silently running bash/edit/web tools unsandboxed on
-	// the host the user asked to seal would be a quiet isolation bypass.
-	if be := cfg.ResolveBackend(); be != config.BackendLocal {
-		return fmt.Errorf("workflows currently run on the host and are not routed through the configured %q backend; run with [backend] type=\"local\" or in a trusted project", be)
-	}
-	wfProviders, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
+	providers, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
 	}
-	for _, p := range wfProviders {
+	for _, p := range providers {
 		p.IncludeProviders = cfg.Instructions.ProvidersIncluded()
 	}
-	wfDefault, err := pickDefaultProviderName(wfProviders, cfg.DefaultProvider)
+	defaultName, err := pickDefaultProviderName(providers, cfg.DefaultProvider)
 	if err != nil {
 		return err
 	}
 
-	wf, err := workflow.LoadByName(cwd, name)
+	// Resolve + validate host-side so a typo'd name or malformed
+	// definition fails before any box is provisioned; the worker
+	// re-parses the same bytes (identical binary, identical parse).
+	defBytes, defPath, err := workflow.FindSource(cwd, name)
+	if err != nil {
+		return err
+	}
+	wf, err := workflow.Parse(filepath.Base(defPath), defBytes)
 	if err != nil {
 		return err
 	}
 
-	checker := permissions.NewChecker(cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny, cfg.Permissions.Mode)
-	if flagYolo {
-		checker.SetYolo(true)
-	}
-	var wfRestrictedRoots []string
-	if !cfg.Permissions.DisableFileConfinement {
-		wfRestrictedRoots = append([]string{cwd}, cfg.Permissions.AdditionalDirectories...)
-	}
-	registry := tools.BuildDefault()
-	agent.RegisterSpawn(registry)
-	tools.RegisterSearch(registry, cfg.Search)
+	b, isol, bopts := host.SelectBackend(cfg, flagYolo, false /* headless: deny egress with reason, never prompt */)
 
-	mcpMgr := mcp.NewManager()
-	if len(cfg.MCP) > 0 {
-		mcpMgr.Start(context.Background(), cfg.MCP)
-		mcpMgr.RegisterAll(registry)
+	ov, err := host.SetupWorkspaceOverlay(context.Background(), b, cfg, cwd, os.Stderr)
+	if err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	} else if ov != nil {
+		defer func() { _ = workspace.Resolve(context.Background(), ov, false, nil, os.Stderr) }()
 	}
-	defer mcpMgr.Close()
+
+	sessionID := ""
+	if !flagEphemeral {
+		sessionID = uuid.NewString()
+	}
+	spec := backend.TaskSpec{
+		TaskID: uuid.NewString(),
+		Cwd:    cwd,
+		// Interactive with an empty prompt: the top-level agent idles
+		// while the workflow runs over the control leg; CloseInput winds
+		// the worker down afterwards.
+		Interactive:     true,
+		Ephemeral:       flagEphemeral,
+		SessionID:       sessionID,
+		MaxTurns:        flagMaxTurns,
+		Yolo:            flagYolo,
+		Providers:       host.ProviderCatalog(providers),
+		DefaultProvider: defaultName,
+		Isolation:       isol,
+	}
+	sc := cfg.ScrubbedForWorker()
+	sc.ResolveSearchSecrets(os.Stderr)
+	rc, err := json.Marshal(sc)
+	if err != nil {
+		return fmt.Errorf("serialize config: %w", err)
+	}
+	spec.ResolvedConfig = rc
+
+	// Host owns session persistence, same as runViaBackend: local
+	// workers write the shared DB directly; isolated workers ship
+	// appends over the seam into this writer.
+	var writer *session.Writer
+	if !flagEphemeral {
+		store, serr := session.Open()
+		if serr != nil {
+			return fmt.Errorf("open session store: %w", serr)
+		}
+		defer store.Close()
+		if _, nerr := session.NewSessionWithID(store, sessionID, providers[defaultName].Model, defaultName, cwd); nerr != nil {
+			return fmt.Errorf("create session: %w", nerr)
+		}
+		writer, err = session.AttachWriter(store, sessionID)
+		if err != nil {
+			return fmt.Errorf("attach writer: %w", err)
+		}
+		bopts = append(bopts, host.WithWriter(writer))
+	}
 
 	busInst := bus.New()
 	// Stream assistant deltas + agent transitions to stderr/stdout.
@@ -548,6 +586,8 @@ func runWorkflow(name string, argParts []string) error {
 						fmt.Fprintf(os.Stderr, "✓ %v\n", m["role"])
 					}
 				}
+			case bus.EventError:
+				fmt.Fprintf(os.Stderr, "error: %v\n", evt.Payload)
 			}
 		}
 	}()
@@ -566,42 +606,45 @@ func runWorkflow(name string, argParts []string) error {
 		}
 	}()
 
-	deps := workflow.RunDeps{
-		Providers:          wfProviders,
-		DefaultProvider:    wfDefault,
-		Bus:                busInst,
-		Registry:           registry,
-		Perms:              checker,
-		Cwd:                cwd,
-		MaxTurns:           flagMaxTurns,
-		GlobalAgents:       &atomic.Int64{},
-		GitAttribution:     cfg.Git.Attribution,
-		GitAttributionName: cfg.Git.AttributionName,
-		WebFetchAllowHosts: cfg.WebFetch.AllowHosts,
-		ToolTimeouts: tools.ToolTimeouts{
-			BashDefault: cfg.Bash.ResolveTimeout(),
-			BashMax:     cfg.Bash.ResolveTimeoutMax(),
-		},
-		RestrictedRoots: wfRestrictedRoots,
-	}
-
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	res, err := workflow.Run(ctx, wf, args, deps)
+	sess, err := host.Start(ctx, b, spec, providers, busInst, bopts...)
 	if err != nil {
 		return err
 	}
-	// Final summary on stdout (deltas already flushed inline).
-	if res.Last != "" && len(wf.RoleOrder) > 0 {
-		// Re-emit the last role's output as a single block so callers can
-		// pipe it cleanly even if intermediate roles printed to stderr.
-		_ = res.Last
+	defer sess.Close()
+	host.RecordWorkerAttach(writer, b, isol, spec.TaskID)
+
+	// Same signal discipline as runViaBackend: SIGINT/SIGTERM cancels
+	// the in-flight work (MsgCancel aborts the workflow run too);
+	// SIGHUP tears the worker down so a lima VM session isn't orphaned.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		if s := <-sigCh; s == syscall.SIGHUP {
+			_ = sess.Close()
+			os.Exit(129) // 128 + SIGHUP
+		}
+		sess.Cancel()
+	}()
+
+	res, runErr := sess.RunWorkflow(ctx, wf.Name, defBytes, args)
+	sess.CloseInput()
+	werr := sess.Wait()
+	cancel()
+	busInst.Close() // ends the render goroutines' range, bounded
+
+	if runErr != nil {
+		return runErr
 	}
-	// Note any roles a conditional edge skipped — their output never streamed,
-	// so without this they'd silently vanish from the run.
+	if werr != nil && !errors.Is(werr, context.Canceled) {
+		return werr
+	}
+	// Note any roles a conditional edge skipped — their output never
+	// streamed, so without this they'd silently vanish from the run.
 	var skipped []string
-	for _, role := range wf.RoleOrder {
+	for _, role := range res.RoleOrder {
 		if res.Skipped[role] {
 			skipped = append(skipped, role)
 		}
