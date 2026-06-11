@@ -70,19 +70,36 @@ func LoadFile(path string) (*Workflow, error) {
 //  1. ./.enso/workflows/<name>.md (project)
 //  2. $XDG_CONFIG_HOME/enso/workflows/<name>.md (user)
 func LoadByName(cwd, name string) (*Workflow, error) {
+	data, path, err := FindSource(cwd, name)
+	if err != nil {
+		return nil, err
+	}
+	return Parse(filepath.Base(path), data)
+}
+
+// FindSource resolves a workflow by name (same search order as
+// LoadByName) and returns its RAW markdown source plus the path it was
+// found at. The raw bytes are what crosses the Backend seam: an
+// isolated worker may share no filesystem with the host, so it re-parses
+// the shipped source instead of reading any file itself.
+func FindSource(cwd, name string) (data []byte, path string, err error) {
 	candidates := []string{}
 	if cwd != "" {
 		candidates = append(candidates, filepath.Join(cwd, ".enso", "workflows", name+".md"))
 	}
-	if dir, err := paths.ConfigDir(); err == nil {
+	if dir, derr := paths.ConfigDir(); derr == nil {
 		candidates = append(candidates, filepath.Join(dir, "workflows", name+".md"))
 	}
 	for _, p := range candidates {
-		if _, err := os.Stat(p); err == nil {
-			return LoadFile(p)
+		if _, serr := os.Stat(p); serr == nil {
+			data, err = os.ReadFile(p)
+			if err != nil {
+				return nil, "", fmt.Errorf("read workflow: %w", err)
+			}
+			return data, p, nil
 		}
 	}
-	return nil, fmt.Errorf("workflow %q not found in %v", name, candidates)
+	return nil, "", fmt.Errorf("workflow %q not found in %v", name, candidates)
 }
 
 // Parse parses an in-memory workflow definition.

@@ -1259,16 +1259,9 @@ func (c *workflowCmd) Run(ctx context.Context, args string) error {
 		return nil
 	}
 
-	// Seam invariant guard (see internal/backend/backend.go): the
-	// session's agent runs as a Worker behind the configured Backend,
-	// but workflow.Run executes its tool calls through a live registry
-	// in THIS host process — including the display-only dispRegistry/
-	// dispChecker wired into workflowDeps, which do not enforce
-	// anything. Running a workflow beside a sealed worker would
-	// silently bypass the isolation the user configured, so refuse.
-	// (/workflow validate above stays available — it only parses.)
-	if c.sc.backendKind != "" && c.sc.backendKind != config.BackendLocal {
-		return fmt.Errorf("workflows currently run on the host and are not routed through the configured %q backend; run with [backend] type=\"local\" or in a trusted project", c.sc.backendKind)
+	if c.sc.sess == nil {
+		c.sc.printf("workflow: no worker session")
+		return nil
 	}
 
 	name := parts[0]
@@ -1276,33 +1269,52 @@ func (c *workflowCmd) Run(ctx context.Context, args string) error {
 	if len(parts) == 2 {
 		rest = parts[1]
 	}
-	wf, err := workflow.LoadByName(c.sc.cwd, name)
+	// Resolve + validate host-side so typos fail instantly; the worker
+	// re-parses the same bytes (identical binary, identical parse). The
+	// engine itself runs INSIDE the worker, behind the same Backend
+	// seam as the session's agent — tool calls execute in the box,
+	// permission prompts ride the existing seam proxy into the TUI
+	// modal, persistence lands in this session's host DB rows.
+	defBytes, defPath, err := workflow.FindSource(c.sc.cwd, name)
+	if err != nil {
+		c.sc.printf("workflow: %v", err)
+		return nil
+	}
+	wf, err := workflow.Parse(filepath.Base(defPath), defBytes)
 	if err != nil {
 		c.sc.printf("workflow: %v", err)
 		return nil
 	}
 	c.sc.printf("workflow %q starting (roles: %v)", wf.Name, wf.RoleOrder)
 
-	// Run synchronously for now. Workflows can take minutes; in a
-	// future polish we'd run in a goroutine and surface progress via
-	// the bus. For now the user sees the result block when it
-	// completes; the dispatcher's wrapper waits.
-	res, err := workflow.Run(ctx, wf, rest, c.sc.workflowDeps)
-	if err != nil {
-		c.sc.printf("workflow %q: %v", wf.Name, err)
-		return nil
-	}
-	for _, role := range wf.RoleOrder {
-		if res.Skipped[role] {
-			c.sc.printf("%s: (skipped)", role)
-			c.sc.printf("")
-			continue
+	// Workflows take minutes: run the seam RPC on its own goroutine
+	// (same pattern as /compact's ForceCompact) so the TUI stays live.
+	// Role progress streams over the bus (agents tree); the result
+	// block lands in scrollback as a notice when the run completes.
+	// Esc/Ctrl-C cancellation reaches the run via MsgCancel.
+	sess := c.sc.sess
+	pub := c.sc.bus
+	go func() {
+		res, err := sess.RunWorkflow(context.Background(), wf.Name, defBytes, rest)
+		if err != nil {
+			if pub != nil {
+				pub.Publish(bus.Event{Type: bus.EventError, Payload: fmt.Errorf("workflow %q: %w", wf.Name, err)})
+			}
+			return
 		}
-		out := res.Outputs[role]
-		c.sc.printf("%s:", role)
-		c.sc.printf("%s", out)
-		c.sc.printf("")
-	}
+		var b strings.Builder
+		fmt.Fprintf(&b, "workflow %q complete\n", wf.Name)
+		for _, role := range res.RoleOrder {
+			if res.Skipped[role] {
+				fmt.Fprintf(&b, "\n%s: (skipped)\n", role)
+				continue
+			}
+			fmt.Fprintf(&b, "\n%s:\n%s\n", role, res.Outputs[role])
+		}
+		if pub != nil {
+			pub.Publish(bus.Event{Type: bus.EventNotice, Payload: strings.TrimRight(b.String(), "\n")})
+		}
+	}()
 	return nil
 }
 

@@ -32,8 +32,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"sync/atomic"
-
 	"github.com/google/uuid"
 
 	"github.com/TaraTheStar/enso/internal/agent"
@@ -47,7 +45,6 @@ import (
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/slash"
 	"github.com/TaraTheStar/enso/internal/tools"
-	"github.com/TaraTheStar/enso/internal/workflow"
 )
 
 // Options mirrors internal/ui.Options.
@@ -212,11 +209,6 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 	agent.RegisterSpawn(dispRegistry)
 	tools.RegisterSearch(dispRegistry, cfg.Search)
 
-	var restrictedRoots []string
-	if !cfg.Permissions.DisableFileConfinement {
-		restrictedRoots = append([]string{cwd}, cfg.Permissions.AdditionalDirectories...)
-	}
-
 	// Host-side handle to the SAME session store (shared fs under
 	// LocalBackend) for label/fork/sessions/replay/audit. The worker
 	// owns the message-append writer; this host writer only touches
@@ -295,6 +287,7 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		return fmt.Errorf("bubble: start worker: %w", err)
 	}
 	defer sess.Close()
+	host.RecordWorkerAttach(writer, b, isol, spec.TaskID)
 
 	// SIGHUP (terminal/tab closed, parent shell exited) is NOT handled
 	// by bubbletea and its default action kills enso instantly, so the
@@ -397,9 +390,6 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 		writer:    writer,
 		providers: providers,
 		cwd:       cwd,
-		// /workflow gating: workflows execute host-side, outside the
-		// Backend seam — the handler refuses unless this is "local".
-		backendKind: cfg.ResolveBackend(),
 		// lspMgr/mcpMgr live worker-side; nil here → the
 		// handlers' existing nil guards render a host-side view.
 	}
@@ -410,26 +400,6 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 			case <-ctx.Done():
 			}
 		}()
-	}
-	slashContext.workflowDeps = workflow.RunDeps{
-		Providers:          providers,
-		DefaultProvider:    defaultName,
-		Bus:                busInst,
-		Registry:           dispRegistry,
-		Perms:              dispChecker,
-		Cwd:                cwd,
-		MaxTurns:           opts.MaxTurns,
-		GlobalAgents:       &atomic.Int64{}, // host-side workflow budget (agent.New resolves Max* defaults)
-		Depth:              0,
-		Writer:             writer,
-		GitAttribution:     cfg.Git.Attribution,
-		GitAttributionName: cfg.Git.AttributionName,
-		WebFetchAllowHosts: cfg.WebFetch.AllowHosts,
-		ToolTimeouts: tools.ToolTimeouts{
-			BashDefault: cfg.Bash.ResolveTimeout(),
-			BashMax:     cfg.Bash.ResolveTimeoutMax(),
-		},
-		RestrictedRoots: restrictedRoots,
 	}
 	registerBuiltins(slashReg, slashContext)
 

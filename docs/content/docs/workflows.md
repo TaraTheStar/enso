@@ -223,6 +223,13 @@ The workflow runs to completion, streaming each role's output to
 stdout. Each role gets its own AgentID. The session-inspector
 overlay (`Ctrl-Space`) shows in-flight agent state.
 
+Workflows execute **inside the configured backend**: with
+`[backend] type = "podman"` or `"lima"` the engine and every role's
+tool calls run in the sealed box, with inference, permission prompts
+and session persistence proxied to the host over the worker Channel —
+exactly like an interactive session. Role messages and tool calls are
+persisted into the session like interactive turns.
+
 ## Parallel siblings
 
 Roles with no edge between them run concurrently:
