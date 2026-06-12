@@ -384,3 +384,19 @@ func tokenField(v any) int {
 	}
 	return 0
 }
+
+// compactingPct parses an EventCompacting payload's "pct" field. Like
+// compactionTokens it tolerates the float64 the daemon/worker JSON path
+// produces. ok=false means the payload was malformed and the caller
+// should leave the existing bar state untouched.
+func compactingPct(payload any) (int, bool) {
+	d, ok := payload.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	v, present := d["pct"]
+	if !present {
+		return 0, false
+	}
+	return tokenField(v), true
+}

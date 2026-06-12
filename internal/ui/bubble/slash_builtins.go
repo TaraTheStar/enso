@@ -561,12 +561,21 @@ func fmtCost(d float64) string {
 	}
 }
 
-// percentOf returns "N%" or "" when the window is unconfigured.
+// percentOf returns "N%" or "?" when the window is unconfigured. The
+// percentage is clamped to 100: `window` is the model's REAL window, so
+// it is the true ceiling — anything beyond it is a genuine overflow the
+// model rejects (handled by the 400-recovery path), never a steady
+// state to display. Showing >100% would imply a capacity that doesn't
+// exist; the heuristic-tail estimate can also momentarily overshoot.
 func percentOf(used, window int) string {
 	if window <= 0 {
 		return "?"
 	}
-	return fmt.Sprintf("%d%%", used*100/window)
+	pct := used * 100 / window
+	if pct > 100 {
+		pct = 100
+	}
+	return fmt.Sprintf("%d%%", pct)
 }
 
 // /sessions

@@ -238,7 +238,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagResume, "resume", "", "alias for --session: resume the session with this id")
 	rootCmd.PersistentFlags().BoolVar(&flagContinue, "continue", false, "resume the most recently updated session")
 	rootCmd.PersistentFlags().BoolVar(&flagEphemeral, "ephemeral", false, "do not persist this session to $XDG_DATA_HOME/enso/enso.db")
-	rootCmd.PersistentFlags().IntVar(&flagMaxTurns, "max-turns", 0, "stop after this many tool/chat turns per user message (0 = default 50)")
+	rootCmd.PersistentFlags().IntVar(&flagMaxTurns, "max-turns", 0, "stop after this many tool/chat turns per user message (0 = default 50, -1 = unlimited)")
 	rootCmd.PersistentFlags().StringVarP(&flagConfig, "config", "c", "", "additional config file to layer on top of /etc, user, and project defaults")
 	rootCmd.PersistentFlags().BoolVar(&flagDebug, "debug", false, "log raw SSE chunks and request bodies to $XDG_STATE_HOME/enso/debug.log; bumps slog level to DEBUG")
 	rootCmd.PersistentFlags().StringVar(&flagAgent, "agent", "", "select a declarative agent profile by name (built-in: \"plan\"; user/project: $XDG_CONFIG_HOME/enso/agents/<name>.md or ./.enso/agents/<name>.md)")
