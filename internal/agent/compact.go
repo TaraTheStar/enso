@@ -27,23 +27,15 @@ import (
 // the 25% "headroom" was entirely consumed by the reply, so a prompt at
 // the threshold plus max_tokens overflowed the real ceiling.
 func (a *Agent) inputBudget(p *llm.Provider, window int) int {
-	reserve := 0
+	maxTokens, compactionBudget := 0, 0
 	if p != nil {
-		reserve = p.MaxTokens
+		maxTokens = p.MaxTokens
+		compactionBudget = p.CompactionBudget
 	}
-	margin := window / 16
-	if margin < 2048 {
-		margin = 2048
-	}
-	budget := window - reserve - margin
-	// Guard against an over-large max_tokens (relative to the window)
-	// collapsing the budget to near-zero and compacting every turn. Keep
-	// at least a quarter of the window for input; the 400-overflow
-	// auto-recovery backstops the pathological case.
-	if floor := window / 4; budget < floor {
-		budget = floor
-	}
-	return budget
+	// window is the EFFECTIVE window (learned-from-rejection override when
+	// present); ComputeInputBudget applies the same legacy formula or the
+	// decoupled compaction_budget knob, shared with host telemetry.
+	return llm.ComputeInputBudget(window, maxTokens, compactionBudget)
 }
 
 // tailTurnsForBudget returns how many recent user-bounded turns can be
@@ -290,6 +282,43 @@ type CompactPreviewResult struct {
 // after commit will be exact, and the EventCompacted event already
 // surfaces it in the chat.
 const estSummaryTokens = 500
+
+// compactProgressTarget is the assumed final summary size (in 4-char
+// heuristic tokens) that the EventCompacting progress bar divides by.
+// The summariser prompt asks for "under 800 words"; real summaries land
+// well under that, so this is a deliberately soft, slightly-large
+// denominator: the bar climbs steadily and usually still has headroom
+// when the real summary finishes (at which point EventCompacted snaps
+// it away). The percentage is explicitly approximate — see
+// compactionProgressPct, which caps it below 100 so the bar never
+// claims completion before the rewrite actually commits.
+const compactProgressTarget = 700
+
+// compactionProgressPct maps bytes of summary streamed so far to a
+// 0–99 progress percentage using the same 4-char-per-token heuristic
+// the rest of the agent uses for size estimates.
+func compactionProgressPct(contentBytes int) int {
+	pct := (contentBytes / 4) * 100 / compactProgressTarget
+	if pct > 99 {
+		pct = 99
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	return pct
+}
+
+// publishCompacting emits an EventCompacting progress tick. No-op when
+// the agent has no bus (e.g. some tests).
+func (a *Agent) publishCompacting(pct int) {
+	if a.Bus == nil {
+		return
+	}
+	a.Bus.Publish(bus.Event{
+		Type:    bus.EventCompacting,
+		Payload: map[string]any{"pct": pct},
+	})
+}
 
 // CompactPreview returns a dry-run snapshot of what ForceCompact
 // would do — enough info for the user to confirm before committing.
@@ -552,6 +581,11 @@ func (a *Agent) summariseHistory(ctx context.Context, older []llm.Message, seed 
 		RepetitionPenalty: p.Sampler.RepetitionPenalty,
 	}
 
+	// Announce the bar at 0% before the (often slow on local models)
+	// prompt-processing wait, so the user sees compaction is underway
+	// rather than a generic "waiting…" during the silent ramp-up.
+	a.publishCompacting(0)
+
 	events, err := p.Client.Chat(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("chat: %w", err)
@@ -559,10 +593,18 @@ func (a *Agent) summariseHistory(ctx context.Context, older []llm.Message, seed 
 
 	var out strings.Builder
 	var finishReason string
+	lastPct := 0
 	for evt := range events {
 		switch evt.Type {
 		case llm.EventTextDelta:
 			out.WriteString(evt.Text)
+			// Throttle: only re-publish on a ≥2-point move so a long
+			// summary emits ~50 events, not one per token, keeping the
+			// worker Channel quiet on isolated backends.
+			if pct := compactionProgressPct(out.Len()); pct >= lastPct+2 {
+				lastPct = pct
+				a.publishCompacting(pct)
+			}
 		case llm.EventError:
 			return "", evt.Error
 		case llm.EventDone:

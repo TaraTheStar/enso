@@ -90,6 +90,10 @@ var wireProtocolTable = []struct {
 	// Notice is HOST-LOCAL (published and rendered host-side) — named
 	// in eventTypeString for slow-consumer logs, never wire-safe.
 	{EventNotice, "EventNotice", "Notice", false, false, ""},
+	// Compacting crosses the wire (worker Channel → host) so isolated
+	// backends animate the progress bar, but it is a transient TUI-only
+	// status tick — absent from json-events.md and --format json.
+	{EventCompacting, "EventCompacting", "Compacting", true, true, ""},
 }
 
 // TestEventTypeStringFrozen pins eventTypeString for every constant

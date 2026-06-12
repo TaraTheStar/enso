@@ -82,7 +82,12 @@ type Provider struct {
 	// compaction can reserve it: input + output must share the context
 	// window, so the input budget is ContextWindow − MaxTokens − margin.
 	MaxTokens int
-	Sampler   config.SamplerConfig
+	// CompactionBudget is the configured input-token target at which
+	// proactive compaction fires, decoupled from ContextWindow (the real
+	// window / display denominator). Zero means "derive from the window"
+	// — see ComputeInputBudget.
+	CompactionBudget int
+	Sampler          config.SamplerConfig
 	// Pool bounds concurrency across every provider sharing it. The
 	// same *Pool pointer is handed to every co-pooled provider (see
 	// BuildProviders) so a /model swap between co-pooled members still
@@ -121,6 +126,46 @@ type Provider struct {
 	// finish reasons that trigger recovery; for others these are inert.
 	AutoRecover        bool
 	MaxRecoverAttempts int
+}
+
+// ComputeInputBudget returns the input-token budget at which compaction
+// should fire. It is the single source of truth shared by the agent's
+// pre-send check and the host's telemetry (so the gauge marker and the
+// real trigger never drift).
+//
+//   - compactionBudget > 0: use it directly (the decoupled knob). Clamped
+//     below the window so a fat-fingered budget ≥ window can't disable
+//     compaction entirely.
+//   - compactionBudget == 0: legacy derivation — window − maxTokens −
+//     margin, floored at window/4 so an over-large maxTokens can't
+//     collapse the budget and compact every turn.
+func ComputeInputBudget(window, maxTokens, compactionBudget int) int {
+	if compactionBudget > 0 {
+		if window > 0 && compactionBudget >= window {
+			return window * 3 / 4
+		}
+		return compactionBudget
+	}
+	if window <= 0 {
+		return 0
+	}
+	margin := window / 16
+	if margin < 2048 {
+		margin = 2048
+	}
+	budget := window - maxTokens - margin
+	if floor := window / 4; budget < floor {
+		budget = floor
+	}
+	return budget
+}
+
+// InputBudget is ComputeInputBudget bound to this provider's configured
+// window/output-cap/budget. Used host-side for the telemetry snapshot;
+// the agent uses ComputeInputBudget directly so it can pass the
+// learned-from-rejection window when one exists.
+func (p *Provider) InputBudget() int {
+	return ComputeInputBudget(p.ContextWindow, p.MaxTokens, p.CompactionBudget)
 }
 
 // BuildProviders constructs every Provider in cfg, keyed by its
@@ -180,6 +225,7 @@ func NewProvider(name string, cfg config.ProviderConfig, pool *Pool, poolName st
 		Model:              cfg.Model,
 		ContextWindow:      cfg.ContextWindow,
 		MaxTokens:          resolveMaxTokens(cfg),
+		CompactionBudget:   cfg.CompactionBudget,
 		Sampler:            cfg.Sampler,
 		Pool:               pool,
 		PoolName:           poolName,

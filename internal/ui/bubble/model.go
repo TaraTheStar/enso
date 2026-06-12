@@ -207,6 +207,15 @@ type model struct {
 	busy      bool
 	busySince time.Time
 
+	// compacting / compactPct drive the animated compaction progress bar
+	// shown in place of the "waiting…" spinner while a tier-2 summary
+	// streams (bus.EventCompacting). Set on each progress tick, cleared
+	// when EventCompacted commits or the turn ends. compactPct is the
+	// agent's soft 0–99 estimate; the bar's animation is wall-clock based
+	// (like spinFrame) so it stays alive between sparse ticks.
+	compacting bool
+	compactPct int
+
 	// lastEscAt is the time of the previous Esc keystroke; used to
 	// detect a double-Esc within escDoubleWindow that clears the input
 	// line. Reset to zero at the top of every handleKey call so any
@@ -289,11 +298,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case spinTickMsg:
-		// Reschedule while anything is live OR while we're waiting for
-		// the agent to respond, so the spinner glyph and elapsed
-		// counter keep advancing; otherwise let the tick chain die so
-		// we're not waking up while idle.
-		if m.conv.Live() != nil || m.busy {
+		// Reschedule while anything is live, while we're waiting for the
+		// agent to respond, OR while a compaction bar is animating (which
+		// for a manual /compact runs off-turn, with busy=false) — so the
+		// spinner/bar keeps advancing on wall-clock time even when bus
+		// events are sparse. Otherwise let the tick chain die so we're
+		// not waking up while idle.
+		if m.conv.Live() != nil || m.busy || m.compacting {
 			return m, spinTick()
 		}
 		m.spinning = false
@@ -859,6 +870,29 @@ func (m *model) handlePaletteKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // blocks returned by HandleEvent are rendered and emitted to scrollback
 // in order via a single tea.Println so they preserve sequence.
 func (m *model) handleBusEvent(ev bus.Event) (tea.Model, tea.Cmd) {
+	// Compaction progress is status-only chrome (no chat block): set the
+	// bar state and return without touching the conversation. The spin
+	// tick is already running mid-turn (busy is true), but ensure it in
+	// case a progress tick is somehow the first signal we see.
+	if ev.Type == bus.EventCompacting {
+		if pct, ok := compactingPct(ev.Payload); ok {
+			m.compacting = true
+			m.compactPct = pct
+		}
+		var startSpin tea.Cmd
+		if !m.spinning {
+			m.spinning = true
+			startSpin = spinTick()
+		}
+		return m, startSpin
+	}
+	// The committed compaction (and any turn-terminal event below) ends
+	// the bar; the EventCompacted block render then proceeds normally.
+	if ev.Type == bus.EventCompacted {
+		m.compacting = false
+		m.compactPct = 0
+	}
+
 	switch ev.Type {
 	case bus.EventToolCallStart:
 		if d, ok := ev.Payload.(map[string]any); ok {
@@ -881,6 +915,8 @@ func (m *model) handleBusEvent(ev bus.Event) (tea.Model, tea.Cmd) {
 	case bus.EventAgentIdle, bus.EventCancelled, bus.EventError:
 		m.busy = false
 		m.busySince = time.Time{}
+		m.compacting = false
+		m.compactPct = 0
 		// Also clear any in-flight permission/egress prompts: the
 		// agent goroutine that would have read req.Respond is gone, so
 		// the View()'s pinned "▸ awaiting…" hint and handleKey's
@@ -1095,11 +1131,20 @@ func (m *model) contextIndicator() string {
 		return ""
 	}
 	used := m.slashCtx.agt.EstimateTokens()
-	style := statusStyle
-	if used*100/window >= 80 {
-		style = noticeStyle
+	budget := m.slashCtx.agt.CompactionBudget()
+	// Denominator is the REAL window, so the percentage is bounded by
+	// reality (percentOf clamps at 100). Past the compaction budget the
+	// label goes amber — that's the "over your operating budget, decode
+	// slowing" zone, distinct from the bar simply being near full.
+	label := statusStyle
+	switch {
+	case budget > 0 && used >= budget:
+		label = noticeStyle
+	case budget <= 0 && used*100/window >= 80:
+		// Legacy fallback when no compaction_budget is configured.
+		label = noticeStyle
 	}
-	return style.Render("ctx " + percentOf(used, window))
+	return contextGauge(used, budget, window) + " " + label.Render("ctx "+percentOf(used, window))
 }
 
 // costIndicator returns a compact live session-usage badge for the
@@ -1199,9 +1244,17 @@ func (m *model) View() tea.View {
 	// comet spinner is rendered cell-by-cell in its own colours), so
 	// from this point on we don't re-wrap status in statusStyle —
 	// fallback paths apply statusStyle inline instead.
-	status := liveIndicator(m.conv.Live(), m.liveStarted)
-	if status == "" && m.busy {
-		status = waitingIndicator(m.busySince)
+	// A streaming compaction owns the indicator line outright — it runs
+	// between turns (nothing live) while busy, so it supersedes both the
+	// live label and the generic "waiting…" spinner.
+	var status string
+	if m.compacting {
+		status = compactingIndicator(m.compactPct)
+	} else {
+		status = liveIndicator(m.conv.Live(), m.liveStarted)
+		if status == "" && m.busy {
+			status = waitingIndicator(m.busySince)
+		}
 	}
 	if status == "" && m.statusLine != "" {
 		status = statusStyle.Render(m.statusLine)

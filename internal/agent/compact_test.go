@@ -270,3 +270,21 @@ func TestBuildSummariseRequest_PromptCarriesDeInstructLanguage(t *testing.T) {
 		}
 	}
 }
+
+func TestCompactionProgressPct(t *testing.T) {
+	cases := []struct {
+		bytes int
+		want  int
+	}{
+		{0, 0},
+		{4, 0},                              // 1 token / 700
+		{4 * 350, 50},                       // 350 tokens ≈ 50%
+		{4 * compactProgressTarget, 99},     // hits target → capped at 99
+		{4 * compactProgressTarget * 3, 99}, // way over → still 99
+	}
+	for _, c := range cases {
+		if got := compactionProgressPct(c.bytes); got != c.want {
+			t.Errorf("compactionProgressPct(%d) = %d, want %d", c.bytes, got, c.want)
+		}
+	}
+}

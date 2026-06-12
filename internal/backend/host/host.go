@@ -369,7 +369,12 @@ type Telemetry struct {
 	CumIn         int64
 	CumOut        int64
 	ContextWindow int
-	ConnState     llm.ConnState
+	// CompactionBudget is the input-token target at which proactive
+	// compaction fires (the ctx gauge's amber/marker threshold). Derived
+	// host-side from the real provider, same formula the worker's agent
+	// uses, so the gauge marker matches the actual trigger.
+	CompactionBudget int
+	ConnState        llm.ConnState
 }
 
 // Telemetry returns the current merged snapshot. Safe to call from any
@@ -390,6 +395,7 @@ func (s *Session) Telemetry() Telemetry {
 	// configured context window and its live transport conn-state.
 	if p := s.providers[t.Provider]; p != nil {
 		out.ContextWindow = p.ContextWindow
+		out.CompactionBudget = p.InputBudget()
 		if out.Model == "" {
 			out.Model = p.Model
 		}

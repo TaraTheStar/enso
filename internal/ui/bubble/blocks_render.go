@@ -453,6 +453,184 @@ func liveIndicator(b blocks.Block, started time.Time) string {
 	return spinFrame() + " " + statusStyle.Render(label+" ("+fmtDuration(elapsed)+")")
 }
 
+// compactBarCells is the width (in glyphs) of the compaction progress
+// bar. Wider than the comet spinner because it carries a real fill ratio
+// — enough cells to make the gradient and the moving shimmer legible
+// without dominating the status line.
+const compactBarCells = 14
+
+// compactShimmerMs is how long the shimmer head dwells on each cell. A
+// touch under the spin tick (spinFrameMs=150) so the highlight reliably
+// advances at least one cell between redraws.
+const compactShimmerMs = 130
+
+// compactFillGlyphs maps a cell's 0–4 quarter-fill level to a bottom-up
+// braille glyph, so the leading (partially filled) cell grows row by row
+// rather than snapping full. Index 0 is unused (empty cells render a
+// faint track instead); 1–4 are ⣀ ⣤ ⣶ ⣿.
+var compactFillGlyphs = [5]string{"⣀", "⣀", "⣤", "⣶", "⣿"}
+
+// compactingIndicator renders the animated braille progress bar shown on
+// the status line while a tier-2 compaction summary streams. Three
+// things make it feel alive:
+//   - the fill tracks pct (bottom-up, quarter-cell granularity on the
+//     leading glyph);
+//   - a bright shimmer cell sweeps left→right across the bar on
+//     wall-clock time (so it animates even when token deltas are sparse,
+//     and — like spinFrame — every concurrent render agrees on the
+//     frame, the spin tick merely forcing the redraw cadence);
+//   - the fill runs a teal→lavender→mauve gradient pulled from the live
+//     palette, tying it to enso's chrome rather than a generic widget.
+//
+// The pct is the agent's soft estimate (see compactProgressTarget); the
+// caller guarantees it's only shown between turns, so this owns the line.
+func compactingIndicator(pct int) string {
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 100 {
+		pct = 100
+	}
+	// Fill expressed in quarter-cell sub-units for the partial leading glyph.
+	totalQuarters := pct * compactBarCells * 4 / 100
+	// Shimmer head drifts from just before the bar to just past it, so
+	// each sweep reads as a discrete pass with a gap rather than an
+	// unbroken ribbon.
+	shimmer := int(time.Now().UnixMilli()/compactShimmerMs)%(compactBarCells+4) - 2
+
+	var b strings.Builder
+	for i := 0; i < compactBarCells; i++ {
+		q := totalQuarters - i*4
+		if q <= 0 {
+			// Unfilled track: a faint floor of dots so the bar's full
+			// width is always visible and the fill reads as rising into it.
+			b.WriteString(spinDimStyle.Render(compactFillGlyphs[0]))
+			continue
+		}
+		level := 4
+		if q < 4 {
+			level = q
+		}
+		col := compactCellColor(i, shimmer)
+		b.WriteString(lipgloss.NewStyle().Foreground(col).Render(compactFillGlyphs[level]))
+	}
+	return b.String() + " " + statusStyle.Render(fmt.Sprintf("compacting… %d%%", pct))
+}
+
+// compactCellColor resolves a filled cell's colour: the base
+// teal→lavender→mauve gradient at this cell's position, brightened
+// toward white when the shimmer head is on (or just past) it.
+func compactCellColor(i, shimmer int) color.Color {
+	t := 0.0
+	if compactBarCells > 1 {
+		t = float64(i) / float64(compactBarCells-1)
+	}
+	r, g, bl := compactGradient(t)
+	if d := i - shimmer; d >= 0 && d <= 1 {
+		boost := 0.55
+		if d == 1 {
+			boost = 0.25 // soft trailing edge behind the head
+		}
+		r = lerpComponent(r, 255, boost)
+		g = lerpComponent(g, 255, boost)
+		bl = lerpComponent(bl, 255, boost)
+	}
+	return lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", clampComponent(r), clampComponent(g), clampComponent(bl)))
+}
+
+// compactGradient interpolates teal→lavender→mauve for t in [0,1],
+// reading the live palette so user themes flow through.
+func compactGradient(t float64) (r, g, b float64) {
+	teal := compactPaletteRGB("teal")
+	lav := compactPaletteRGB("lavender")
+	mauve := compactPaletteRGB("mauve")
+	if t < 0.5 {
+		u := t / 0.5
+		return lerpComponent(teal[0], lav[0], u), lerpComponent(teal[1], lav[1], u), lerpComponent(teal[2], lav[2], u)
+	}
+	u := (t - 0.5) / 0.5
+	return lerpComponent(lav[0], mauve[0], u), lerpComponent(lav[1], mauve[1], u), lerpComponent(lav[2], mauve[2], u)
+}
+
+func compactPaletteRGB(name string) [3]float64 {
+	if c, ok := currentPalette[name]; ok {
+		return [3]float64{float64(c.R & 0xff), float64(c.G & 0xff), float64(c.B & 0xff)}
+	}
+	return [3]float64{200, 200, 200}
+}
+
+func lerpComponent(a, b, t float64) float64 { return a + (b-a)*t }
+
+func clampComponent(v float64) int {
+	switch {
+	case v < 0:
+		return 0
+	case v > 255:
+		return 255
+	default:
+		return int(v)
+	}
+}
+
+// ctxGaugeCells is the width of the inline context-window gauge in the
+// status line. Compact on purpose — it shares the line with the model
+// name, Σ cost, and the interrupt hint.
+const ctxGaugeCells = 10
+
+// contextGauge renders the bounded context-window gauge: a fraction of
+// the REAL window (clamped to full — it can't exceed the model's true
+// ceiling), with the compaction budget drawn as a marker. Cells filled
+// past the budget are amber (the over-budget / slow-decode zone); cells
+// within budget are teal. When no decoupled compaction_budget is
+// configured (budget <= 0) the marker falls at the legacy 80% line so
+// existing setups still get a warning band.
+func contextGauge(used, budget, window int) string {
+	if window <= 0 {
+		return ""
+	}
+	frac := float64(used) / float64(window)
+	if frac > 1 {
+		frac = 1
+	}
+	if frac < 0 {
+		frac = 0
+	}
+	fill := int(frac*ctxGaugeCells + 0.5)
+
+	markerCell := -1
+	switch {
+	case budget > 0 && budget < window:
+		markerCell = int(float64(budget)/float64(window)*ctxGaugeCells + 0.5)
+	case budget <= 0:
+		markerCell = ctxGaugeCells * 8 / 10 // legacy 80% warn line
+	}
+	if markerCell >= ctxGaugeCells {
+		markerCell = ctxGaugeCells - 1
+	}
+
+	fillStyle := lipgloss.NewStyle().Foreground(paletteHex("teal"))
+	markerStyle := lipgloss.NewStyle().Foreground(paletteHex("comment"))
+
+	var b strings.Builder
+	b.WriteString(statusStyle.Render("▕"))
+	for i := 0; i < ctxGaugeCells; i++ {
+		filled := i < fill
+		past := markerCell >= 0 && i >= markerCell
+		switch {
+		case filled && past:
+			b.WriteString(noticeStyle.Render("█")) // over budget → amber
+		case filled:
+			b.WriteString(fillStyle.Render("█"))
+		case i == markerCell:
+			b.WriteString(markerStyle.Render("┊")) // budget marker on the empty track
+		default:
+			b.WriteString(statusStyle.Render("·"))
+		}
+	}
+	b.WriteString(statusStyle.Render("▏"))
+	return b.String()
+}
+
 // toolBar returns the teal arrow prefix that opens a tool call.
 // Cached like reasoningBar.
 func toolBar() string {
