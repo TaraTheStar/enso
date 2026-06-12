@@ -708,7 +708,16 @@ type ProviderConfig struct {
 	// section so the model can route across endpoints. Optional.
 	Description   string `toml:"description"`
 	ContextWindow int    `toml:"context_window"`
-	Concurrency   int    `toml:"concurrency"`
+	// CompactionBudget decouples the compaction trigger from
+	// ContextWindow. ContextWindow is the model's REAL window — the
+	// honest denominator for the ctx gauge and the true overflow
+	// ceiling — so it must NOT be lowered to force earlier compaction.
+	// Set CompactionBudget to the input-token target at which proactive
+	// compaction fires (e.g. a hardware fast-zone like a Strix Halo
+	// decode budget). When 0, the budget is derived the legacy way:
+	// ContextWindow − MaxTokens − margin (floored at ContextWindow/4).
+	CompactionBudget int `toml:"compaction_budget"`
+	Concurrency      int `toml:"concurrency"`
 	// Pool overrides which [pools.X] this provider belongs to. Empty =
 	// auto-grouped with every other provider sharing its Endpoint
 	// (one llama-swap = one pool, zero config). See ResolvePools.

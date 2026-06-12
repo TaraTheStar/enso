@@ -276,6 +276,7 @@ func TestCtrlD_NonEmptyClearsLine(t *testing.T) {
 type fakeAgentControl struct {
 	est    int
 	window int
+	budget int
 	cumIn  int64
 	cumOut int64
 	prov   *llm.Provider
@@ -288,6 +289,7 @@ func (f *fakeAgentControl) EstimateTokens() int                        { return 
 func (f *fakeAgentControl) CumulativeInputTokens() int64               { return f.cumIn }
 func (f *fakeAgentControl) CumulativeOutputTokens() int64              { return f.cumOut }
 func (f *fakeAgentControl) ContextWindow() int                         { return f.window }
+func (f *fakeAgentControl) CompactionBudget() int                      { return f.budget }
 func (f *fakeAgentControl) PrefixBreakdown() agent.PrefixBreakdown     { return agent.PrefixBreakdown{} }
 func (f *fakeAgentControl) CompactPreview() agent.CompactPreviewResult {
 	return agent.CompactPreviewResult{}

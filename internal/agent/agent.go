@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -689,7 +690,10 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	maxTurns := cfg.MaxTurns
-	if maxTurns <= 0 {
+	switch {
+	case maxTurns < 0:
+		maxTurns = math.MaxInt // negative = unlimited
+	case maxTurns == 0:
 		maxTurns = defaultMaxTurns
 	}
 	maxDepth := cfg.MaxDepth

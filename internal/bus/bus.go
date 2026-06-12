@@ -61,6 +61,16 @@ const (
 	// Channel (deliberately absent from WireForm/FromWire, like
 	// EventEgressRequest).
 	EventNotice
+
+	// EventCompacting fires repeatedly while a tier-2 (LLM) compaction
+	// summary streams, carrying the agent's progress so the TUI can show
+	// a live bar instead of the generic "waiting…" spinner during what is
+	// otherwise an opaque mid-turn pause. Payload is a map with a single
+	// "pct" key (0–99, a soft estimate against an assumed summary size —
+	// see compactProgressTarget). The terminal EventCompacted lands when
+	// the rewrite actually commits. Crosses the worker Channel so isolated
+	// backends animate identically (present in WireForm/FromWire).
+	EventCompacting
 )
 
 // Event is a typed message sent through the bus.
@@ -111,6 +121,8 @@ func (e Event) WireForm() (typ string, payload json.RawMessage, ok bool) {
 		typ = "AgentEnd"
 	case EventCompacted:
 		typ = "Compacted"
+	case EventCompacting:
+		typ = "Compacting"
 	case EventAgentIdle:
 		typ = "AgentIdle"
 	case EventInputDiscarded:
@@ -204,6 +216,8 @@ func FromWire(typ string, payload json.RawMessage) (Event, bool) {
 		return Event{Type: EventAgentEnd, Payload: generic()}, true
 	case "Compacted":
 		return Event{Type: EventCompacted, Payload: generic()}, true
+	case "Compacting":
+		return Event{Type: EventCompacting, Payload: generic()}, true
 	case "AgentIdle":
 		return Event{Type: EventAgentIdle}, true
 	case "InputDiscarded":
@@ -330,6 +344,8 @@ func eventTypeString(t EventType) string {
 		return "AgentEnd"
 	case EventCompacted:
 		return "Compacted"
+	case EventCompacting:
+		return "Compacting"
 	case EventAgentIdle:
 		return "AgentIdle"
 	case EventInputDiscarded:
