@@ -26,6 +26,7 @@ type agentControl interface {
 	CumulativeInputTokens() int64
 	CumulativeOutputTokens() int64
 	ContextWindow() int
+	CompactionBudget() int
 	PrefixBreakdown() agent.PrefixBreakdown
 	CompactPreview() agent.CompactPreviewResult
 	ForceCompact(ctx context.Context) (bool, error)
@@ -96,6 +97,10 @@ func (s *sessionAgentControl) CumulativeOutputTokens() int64 {
 
 func (s *sessionAgentControl) ContextWindow() int {
 	return s.sess.Telemetry().ContextWindow
+}
+
+func (s *sessionAgentControl) CompactionBudget() int {
+	return s.sess.Telemetry().CompactionBudget
 }
 
 func (s *sessionAgentControl) PrefixBreakdown() agent.PrefixBreakdown {
