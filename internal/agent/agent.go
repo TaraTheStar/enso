@@ -798,6 +798,7 @@ func New(cfg Config) (*Agent, error) {
 		},
 		ToolTimeouts: cfg.ToolTimeouts,
 		BashJobs:     tools.NewBashJobs(),
+		Todos:        tools.NewTodoStore(),
 		Spill:        makeSpillWriter(cfg.SessionID),
 		Filters:      filterSet,
 		Compression:  compression,

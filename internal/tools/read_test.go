@@ -64,12 +64,13 @@ func TestReadTool_LineRange(t *testing.T) {
 
 func TestReadTool_DisplayOutput_FullFile(t *testing.T) {
 	tmp := t.TempDir()
-	// Trailing newline → strings.Split yields 4 elements ("a","b","c","").
+	// Three lines with a trailing newline → three lines (the trailing
+	// newline's empty Split element is dropped, no phantom blank line).
 	mustWriteFile(t, filepath.Join(tmp, "f.txt"), "a\nb\nc\n")
 	ac := newToolAC(tmp)
 	res, _ := ReadTool{}.Run(context.Background(), map[string]any{"path": "f.txt"}, ac)
-	if res.DisplayOutput != "4 lines" {
-		t.Errorf("display = %q, want `4 lines`", res.DisplayOutput)
+	if res.DisplayOutput != "3 lines" {
+		t.Errorf("display = %q, want `3 lines`", res.DisplayOutput)
 	}
 }
 
@@ -93,13 +94,13 @@ func TestReadTool_DisplayOutput_LineRange(t *testing.T) {
 		"first_line": float64(3),
 		"last_line":  float64(7),
 	}, ac)
-	// File has 11 lines (10 + trailing-newline empty); range form shows
-	// "lines A-B (of TOTAL)".
+	// File has 10 lines (the trailing-newline empty element is dropped);
+	// range form shows "lines A-B (of TOTAL)".
 	if !strings.Contains(res.DisplayOutput, "lines 3-7") {
 		t.Errorf("display = %q, want `lines 3-7 …`", res.DisplayOutput)
 	}
-	if !strings.Contains(res.DisplayOutput, "(of 11)") {
-		t.Errorf("display = %q, want `(of 11)`", res.DisplayOutput)
+	if !strings.Contains(res.DisplayOutput, "(of 10)") {
+		t.Errorf("display = %q, want `(of 10)`", res.DisplayOutput)
 	}
 }
 
@@ -205,7 +206,7 @@ func TestReadFileWindow(t *testing.T) {
 // helpers shared by all tools_*_test.go files
 
 func newToolAC(cwd string) *AgentContext {
-	return &AgentContext{Cwd: cwd, ReadSet: map[string]bool{}}
+	return &AgentContext{Cwd: cwd, ReadSet: map[string]bool{}, Todos: NewTodoStore()}
 }
 
 func mustWriteFile(t *testing.T, path, body string) {

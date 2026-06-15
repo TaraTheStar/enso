@@ -210,11 +210,7 @@ func previewLine(s string) string {
 	if p == "" {
 		return "(no message text)"
 	}
-	const max = 60
-	if len(p) > max {
-		p = p[:max-1] + "…"
-	}
-	return p
+	return clipRunes(p, 60)
 }
 
 // performRewind applies a chosen rewind after the program has quit and

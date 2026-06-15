@@ -408,16 +408,15 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Permission prompt handling: while pending, agent is blocked on
 	// req.Respond and we intercept all keys for the y/n/a/t resolver.
 	if m.perm != nil {
-		decision, decided, cmd := resolvePerm(m.perm, msg.String())
+		decided, cmd := resolvePerm(m.perm, msg.String())
 		if !decided {
 			// Unrecognised key — leave the prompt active.
 			return m, nil
 		}
-		req := m.perm.req
 		m.perm = nil
-		// Send the decision in a goroutine so a slow agent reader
-		// doesn't pin the tea event loop.
-		go func() { req.Respond <- decision }()
+		// cmd both sends the decision on req.Respond and prints any
+		// notice; it runs off the event loop, so a slow agent reader or
+		// the up-to-5s remember/turn RPC can't pin the tea loop.
 		return m, cmd
 	}
 

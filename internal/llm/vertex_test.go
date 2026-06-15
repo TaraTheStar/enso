@@ -629,3 +629,49 @@ func TestSynthVertexToolCallID(t *testing.T) {
 		t.Errorf("synthesised ids: got %q, %q; want call_bash_0, call_bash_1", a, b)
 	}
 }
+
+// TestVertexBlockMessage covers the block-detection that turns a silent
+// empty turn into a surfaced error.
+func TestVertexBlockMessage(t *testing.T) {
+	cases := []struct {
+		name      string
+		fr        genai.FinishReason
+		br        genai.BlockedReason
+		wantBlock bool
+		contains  string
+	}{
+		{"normal stop", genai.FinishReasonStop, "", false, ""},
+		{"max tokens not a block", genai.FinishReasonMaxTokens, "", false, ""},
+		{"safety finish", genai.FinishReasonSafety, "", true, "safety"},
+		{"recitation finish", genai.FinishReasonRecitation, "", true, "recitation"},
+		{"prohibited finish", genai.FinishReasonProhibitedContent, "", true, "prohibited"},
+		{"prompt block wins", genai.FinishReasonStop, genai.BlockedReasonSafety, true, "prompt blocked"},
+		{"unspecified block ignored", genai.FinishReasonStop, genai.BlockedReasonUnspecified, false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := vertexBlockMessage(tc.fr, tc.br)
+			if tc.wantBlock {
+				if got == "" {
+					t.Fatalf("expected a block message, got none")
+				}
+				if !strings.Contains(got, tc.contains) {
+					t.Errorf("message %q does not contain %q", got, tc.contains)
+				}
+			} else if got != "" {
+				t.Errorf("expected no block, got %q", got)
+			}
+		})
+	}
+}
+
+// TestMapVertexFinishReason confirms MAX_TOKENS maps to FinishLength so
+// the agent's truncation auto-recovery engages on the Vertex path too.
+func TestMapVertexFinishReason(t *testing.T) {
+	if got := mapVertexFinishReason(genai.FinishReasonMaxTokens); got != FinishLength {
+		t.Errorf("MAX_TOKENS mapped to %q, want %q", got, FinishLength)
+	}
+	if got := mapVertexFinishReason(genai.FinishReasonStop); got != "" {
+		t.Errorf("STOP mapped to %q, want empty", got)
+	}
+}

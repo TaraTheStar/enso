@@ -98,10 +98,7 @@ func renderSessionsOverlay(d *sessionsOverlayData, width, height int) string {
 		if preview == "" {
 			preview = "(no user message yet)"
 		}
-		const previewMax = 60
-		if len(preview) > previewMax {
-			preview = preview[:previewMax-1] + "…"
-		}
+		preview = clipRunes(preview, 60)
 		rel := relTime(info.UpdatedAt)
 		flag := ""
 		// Execution provenance: tag sessions whose worker ran in an

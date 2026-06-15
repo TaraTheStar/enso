@@ -100,6 +100,10 @@ func (n *Notifier) NotifyWrite(ctx context.Context, absPath string) string {
 	if readErr != nil {
 		return ""
 	}
+	// Snapshot the diagnostics generation BEFORE the refresh triggers
+	// reanalysis, so a server that publishes faster than we register the
+	// waiter is still observed (see Client.WaitForDiagnostics).
+	gen := client.DiagGen(uri)
 	if err := refreshBuffer(client, uri, languageID, string(text)); err != nil {
 		return ""
 	}
@@ -107,7 +111,7 @@ func (n *Notifier) NotifyWrite(ctx context.Context, absPath string) string {
 	// Bounded wait for the next publication.
 	waitCtx, cancel := context.WithTimeout(ctx, n.Opts.wait())
 	defer cancel()
-	diags := client.WaitForDiagnostics(waitCtx, uri, n.Opts.dedup())
+	diags := client.WaitForDiagnostics(waitCtx, uri, gen, n.Opts.dedup())
 
 	// Filter + render.
 	filtered := filterBySeverity(diags, n.Opts.minSeverity())

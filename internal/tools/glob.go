@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,8 +43,24 @@ func (t GlobTool) Run(ctx context.Context, args map[string]any, ac *AgentContext
 		root = abs
 	}
 
-	matches, err := doublestar.Glob(os.DirFS(root), pattern)
+	// Bound the walk (no user-set timeout, unlike bash) and make it
+	// cancellable: GlobWalk lets the callback abort on ctx expiry, which
+	// plain doublestar.Glob can't.
+	ctx, cancel := context.WithTimeout(ctx, searchToolTimeout)
+	defer cancel()
+
+	var matches []string
+	err := doublestar.GlobWalk(os.DirFS(root), pattern, func(p string, _ fs.DirEntry) error {
+		if cerr := ctx.Err(); cerr != nil {
+			return cerr
+		}
+		matches = append(matches, p)
+		return nil
+	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return Result{}, fmt.Errorf("glob: %w", ctx.Err())
+		}
 		return Result{}, fmt.Errorf("glob: %w", err)
 	}
 

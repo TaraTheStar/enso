@@ -68,7 +68,7 @@ func BuildDefault() *Registry {
 	r.Register(GrepTool{})
 	r.Register(GlobTool{})
 	r.Register(WebFetchTool{})
-	r.Register(&TodoTool{})
+	r.Register(TodoTool{})
 	r.Register(MemoryTool{})
 	r.Register(CheckpointTool{})
 	return r
