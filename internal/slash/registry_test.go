@@ -48,6 +48,28 @@ func TestRegistry_RegisterReplaces(t *testing.T) {
 	}
 }
 
+func TestRegistry_RegisterIfAbsentKeepsBuiltin(t *testing.T) {
+	r := NewRegistry()
+	// Built-in registered first (blind Register).
+	r.Register(stubCmd{name: "quit", desc: "builtin"})
+
+	// A skill with the same name must be rejected and NOT shadow it.
+	if ok := r.RegisterIfAbsent(stubCmd{name: "quit", desc: "skill"}); ok {
+		t.Errorf("RegisterIfAbsent returned true on collision, want false")
+	}
+	if got := r.Get("quit"); got == nil || got.Description() != "builtin" {
+		t.Errorf("collision overwrote the built-in: %q", got.Description())
+	}
+
+	// A non-colliding skill is accepted.
+	if ok := r.RegisterIfAbsent(stubCmd{name: "deploy", desc: "skill"}); !ok {
+		t.Errorf("RegisterIfAbsent returned false for a fresh name, want true")
+	}
+	if got := r.Get("deploy"); got == nil || got.Description() != "skill" {
+		t.Errorf("fresh skill not registered: %v", got)
+	}
+}
+
 func TestParse(t *testing.T) {
 	cases := []struct {
 		in   string

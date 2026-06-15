@@ -22,7 +22,7 @@ import (
 // newPermSeam returns a seam wired to workerCh with just the permission
 // plumbing initialized (the only state these paths touch).
 func newPermSeam(ch backend.Channel) *seam {
-	return &seam{ch: ch, pending: map[string]chan permissions.Decision{}}
+	return withWriter(&seam{ch: ch, pending: map[string]chan permissions.Decision{}})
 }
 
 // recvEnv receives one envelope from ch with a timeout, failing the test

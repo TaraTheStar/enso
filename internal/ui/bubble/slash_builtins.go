@@ -328,13 +328,7 @@ func (c *discoverCmd) Run(ctx context.Context, args string) error {
 
 // truncateStr clips s to n runes with an ellipsis, for table columns.
 func truncateStr(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	if n <= 1 {
-		return s[:n]
-	}
-	return s[:n-1] + "…"
+	return clipRunes(s, n)
 }
 
 // /help
@@ -1218,10 +1212,7 @@ func (c *loopCmd) tick(ctx context.Context, interval time.Duration, prompt strin
 }
 
 func truncatePrompt(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-1] + "…"
+	return clipRunes(s, max)
 }
 
 // /workflow — load and run a declarative workflow, or validate one

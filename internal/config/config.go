@@ -1610,12 +1610,18 @@ func unionStringArrays(dstVal, srcVal any) ([]any, bool) {
 	seen := make(map[string]bool, len(dl)+len(sl))
 	add := func(list []any) {
 		for _, e := range list {
-			if s, ok := e.(string); ok {
-				if seen[s] {
-					continue
-				}
-				seen[s] = true
+			// Key every entry, not just strings: these are
+			// security-sensitive arrays (permissions.allow/ask/deny) and a
+			// malformed non-string entry would otherwise dodge dedup and
+			// grow unbounded across config reloads.
+			key, ok := e.(string)
+			if !ok {
+				key = fmt.Sprintf("%v", e)
 			}
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
 			out = append(out, e)
 		}
 	}

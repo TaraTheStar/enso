@@ -23,6 +23,13 @@ type Client struct {
 
 	diagMu     sync.RWMutex
 	diagsByURI map[string][]Diagnostic
+	// diagGen counts publishDiagnostics notifications per URI. A caller
+	// snapshots the generation BEFORE triggering a reanalysis (didChange/
+	// didSave) and waits for it to advance; this closes the race where a
+	// fast server publishes between the trigger and the wait registering
+	// its channel — the closed-channel wake would be missed, but the
+	// generation bump is durable and observed on the next check.
+	diagGen map[string]uint64
 	// diagWaiters holds one channel per URI that has at least one
 	// pending WaitForDiagnostics call. The publishDiagnostics
 	// notification handler closes-and-replaces the channel on each
@@ -38,6 +45,7 @@ func NewClient(conn *Conn) *Client {
 		opened:      map[string]bool{},
 		docVersions: map[string]int{},
 		diagsByURI:  map[string][]Diagnostic{},
+		diagGen:     map[string]uint64{},
 		diagWaiters: map[string]chan struct{}{},
 	}
 	conn.SetNotificationHandler(cl.handleNotification)
@@ -53,6 +61,7 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 		}
 		c.diagMu.Lock()
 		c.diagsByURI[p.URI] = p.Diagnostics
+		c.diagGen[p.URI]++
 		// Wake any WaitForDiagnostics call camped on this URI. Closing
 		// the channel broadcasts to all waiters; the map slot is
 		// cleared so the next wait registers a fresh channel rather
@@ -65,53 +74,85 @@ func (c *Client) handleNotification(method string, params json.RawMessage) {
 	}
 }
 
+// DiagGen returns the current publishDiagnostics generation for uri.
+// Snapshot this BEFORE triggering a reanalysis, then pass it to
+// WaitForDiagnostics so a publication that lands before the wait
+// registers its waiter channel is still observed (the wake may be
+// missed; the generation bump is not).
+func (c *Client) DiagGen(uri string) uint64 {
+	c.diagMu.RLock()
+	defer c.diagMu.RUnlock()
+	return c.diagGen[uri]
+}
+
 // WaitForDiagnostics blocks until the server publishes diagnostics for
-// uri AFTER this call begins (cached results from prior publications
-// are ignored), or ctx fires, or the optional dedup window elapses
-// after the first publication so a double-publishing server's "final"
-// answer wins. Returns the diagnostics from Client's cache at the
-// moment the wait resolves.
+// uri AFTER sinceGen (the generation snapshotted before the triggering
+// edit), or ctx fires, or the optional dedup window elapses after the
+// first new publication so a double-publishing server's "final" answer
+// wins. Returns the diagnostics from Client's cache at the moment the
+// wait resolves.
 //
 // `dedup` is the post-first-publication wait window — set to 0 to
 // return as soon as the first publication arrives. 100ms is a sane
 // default for servers that emit an empty "analysing..." publication
 // before the real one.
 //
+// On ctx timeout it returns the cached diagnostics if a publication did
+// arrive (generation advanced) but the wake was missed; otherwise nil.
+// This means a publication racing ahead of the waiter registration is
+// never silently discarded.
+//
 // Safe for concurrent callers on the same URI: they all observe the
 // same publication and read independent copies of the cache.
-func (c *Client) WaitForDiagnostics(ctx context.Context, uri string, dedup time.Duration) []Diagnostic {
-	c.diagMu.Lock()
-	ch, ok := c.diagWaiters[uri]
-	if !ok {
-		ch = make(chan struct{})
-		c.diagWaiters[uri] = ch
-	}
-	c.diagMu.Unlock()
-
-	select {
-	case <-ch:
-		// First publication received. If dedup > 0, give the server a
-		// short window to emit a follow-up (e.g. final results after
-		// an interim "analysing..." with no diagnostics).
-		if dedup > 0 {
-			timer := time.NewTimer(dedup)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-			}
-		}
-		return c.Diagnostics(uri)
-	case <-ctx.Done():
-		// Ctx fired before any publication. Clean up our waiter slot
-		// only if it's still the channel WE registered — a concurrent
-		// publication may have already closed-and-deleted it.
+func (c *Client) WaitForDiagnostics(ctx context.Context, uri string, sinceGen uint64, dedup time.Duration) []Diagnostic {
+	for {
 		c.diagMu.Lock()
-		if cur, ok := c.diagWaiters[uri]; ok && cur == ch {
-			delete(c.diagWaiters, uri)
+		if c.diagGen[uri] > sinceGen {
+			c.diagMu.Unlock()
+			// A new publication landed (possibly before we ever
+			// registered a waiter — the generation counter catches that
+			// race). If dedup > 0, give the server a short window to
+			// emit a follow-up (e.g. final results after an interim
+			// "analysing..." with no diagnostics).
+			if dedup > 0 {
+				timer := time.NewTimer(dedup)
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+				}
+				timer.Stop()
+			}
+			return c.Diagnostics(uri)
+		}
+		ch, ok := c.diagWaiters[uri]
+		if !ok {
+			ch = make(chan struct{})
+			c.diagWaiters[uri] = ch
 		}
 		c.diagMu.Unlock()
-		return nil
+
+		select {
+		case <-ch:
+			// A publication fired; loop to re-read the generation and
+			// enter the dedup window.
+			continue
+		case <-ctx.Done():
+			// Clean up our waiter slot only if it's still the channel WE
+			// registered — a concurrent publication may have already
+			// closed-and-deleted it. If the generation advanced past our
+			// snapshot, a publication did arrive (missed wake): return it
+			// rather than discarding it.
+			c.diagMu.Lock()
+			advanced := c.diagGen[uri] > sinceGen
+			if cur, ok := c.diagWaiters[uri]; ok && cur == ch {
+				delete(c.diagWaiters, uri)
+			}
+			c.diagMu.Unlock()
+			if advanced {
+				return c.Diagnostics(uri)
+			}
+			return nil
+		}
 	}
 }
 

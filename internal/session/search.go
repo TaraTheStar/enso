@@ -211,6 +211,15 @@ func makeSnippet(content, pattern string, pad int) string {
 	if end > len(content) {
 		end = len(content)
 	}
+	// pad is a byte offset; nudge both edges to rune boundaries so the
+	// snippet never begins or ends in the middle of a multi-byte char
+	// (which would render as a replacement glyph).
+	for start > 0 && !utf8.RuneStart(content[start]) {
+		start--
+	}
+	for end < len(content) && !utf8.RuneStart(content[end]) {
+		end++
+	}
 	prefix := ""
 	if start > 0 {
 		prefix = "…"
@@ -226,9 +235,15 @@ func collapseWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// truncateRunes clips s to at most max runes (not bytes), so it never
+// splits a multi-byte character at the cut point.
 func truncateRunes(s string, max int) string {
-	if len(s) <= max {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
 		return s
 	}
-	return s[:max]
+	return string(r[:max])
 }

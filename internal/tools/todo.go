@@ -6,19 +6,33 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 )
 
-// TodoTool manages an in-session task list.
-type TodoTool struct {
+// TodoStore holds one agent's in-session task list. It is per-AgentContext
+// (constructed via NewTodoStore alongside the agent), so sibling and child
+// agents — and unrelated daemon sessions that share the tool Registry —
+// each keep their own list instead of bleeding into a single shared one.
+// The mutex guards against concurrent tool calls within an agent.
+type TodoStore struct {
+	mu     sync.Mutex
 	todos  []todoItem
 	nextID int
 }
+
+// NewTodoStore returns an empty per-agent todo store.
+func NewTodoStore() *TodoStore { return &TodoStore{} }
 
 type todoItem struct {
 	ID     int    `json:"id"`
 	Title  string `json:"title"`
 	Status string `json:"status"`
 }
+
+// TodoTool manages an in-session task list. It is stateless — the list
+// lives on the per-agent TodoStore (AgentContext.Todos) — so the single
+// registered instance is safe to share across agents.
+type TodoTool struct{}
 
 func (t TodoTool) Name() string { return "todo" }
 func (t TodoTool) Description() string {
@@ -37,58 +51,70 @@ func (t TodoTool) Parameters() map[string]any {
 	}
 }
 
-func (t *TodoTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
+func (t TodoTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
+	// Fall back to a transient store if the context didn't supply one
+	// (e.g. minimal test harnesses). Normal agents always have ac.Todos.
+	var store *TodoStore
+	if ac != nil && ac.Todos != nil {
+		store = ac.Todos
+	} else {
+		store = NewTodoStore()
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+
 	action, _ := args["action"].(string)
 
 	switch action {
 	case "list":
-		return t.list()
+		return store.list()
 	case "add":
 		title, _ := args["title"].(string)
 		if title == "" {
 			return Result{LLMOutput: "todo: title required for add"}, nil
 		}
-		t.nextID++
-		t.todos = append(t.todos, todoItem{ID: t.nextID, Title: title, Status: "pending"})
-		return t.list()
+		store.nextID++
+		store.todos = append(store.todos, todoItem{ID: store.nextID, Title: title, Status: "pending"})
+		return store.list()
 	case "update":
 		id, _ := args["id"].(float64)
 		status, _ := args["status"].(string)
 		title, _ := args["title"].(string)
-		for i, item := range t.todos {
+		for i, item := range store.todos {
 			if item.ID == int(id) {
 				if status != "" {
-					t.todos[i].Status = status
+					store.todos[i].Status = status
 				}
 				if title != "" {
-					t.todos[i].Title = title
+					store.todos[i].Title = title
 				}
 				break
 			}
 		}
-		return t.list()
+		return store.list()
 	case "done":
 		id, _ := args["id"].(float64)
-		for i, item := range t.todos {
+		for i, item := range store.todos {
 			if item.ID == int(id) {
-				t.todos[i].Status = "completed"
+				store.todos[i].Status = "completed"
 				break
 			}
 		}
-		return t.list()
+		return store.list()
 	default:
 		return Result{LLMOutput: fmt.Sprintf("todo: unknown action %q", action)}, nil
 	}
 }
 
-func (t *TodoTool) list() (Result, error) {
-	if len(t.todos) == 0 {
+// list renders the current tasks. Callers must hold s.mu.
+func (s *TodoStore) list() (Result, error) {
+	if len(s.todos) == 0 {
 		return Result{LLMOutput: "no tasks", FullOutput: "no tasks"}, nil
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("%d task(s):\n", len(t.todos)))
-	for _, item := range t.todos {
+	sb.WriteString(fmt.Sprintf("%d task(s):\n", len(s.todos)))
+	for _, item := range s.todos {
 		icon := "[ ]"
 		switch item.Status {
 		case "in_progress":

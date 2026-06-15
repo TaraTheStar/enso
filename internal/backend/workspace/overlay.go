@@ -32,6 +32,7 @@ package workspace
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -40,7 +41,10 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // Overlay is one task's throwaway working copy of a project.
@@ -333,36 +337,178 @@ func (o *Overlay) threeWay() (agent, drift, conflicts []string, err error) {
 // (create/modify) when it exists in merged, delete when the agent
 // removed it. Per-file — never a blanket rsync --delete — so files NOT
 // in the set (incl. unrelated host work) are untouched.
+//
+// Each mutation is fd-anchored under the project root with O_NOFOLLOW on
+// every path component (safeCopyInto / safeDelete), so a symlink swapped
+// into the parent chain after the lexical containment check can't
+// redirect the write/delete outside the project (closes the
+// check→operate TOCTOU the old `cp`/`RemoveAll` execs had). Writes are
+// stage-and-rename, so each file applies atomically — a crash or error
+// mid-loop never leaves a half-written destination (though the set as a
+// whole is not transactional: earlier files in rels stay applied).
 func (o *Overlay) applyPaths(ctx context.Context, rels []string) error {
 	for _, rel := range rels {
-		src := filepath.Join(o.Copy, rel)
-		// Containment check (S10): refuse any rel whose destination
-		// escapes the project root — lexically (`..`) OR through a host
-		// symlink in the parent chain (a repo shipping `docs -> ~/.ssh`
-		// would otherwise let `cp`/`RemoveAll` write/delete outside the
-		// project). Checked per path, immediately before the mutating op.
-		dst, err := o.containedDst(rel)
-		if err != nil {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := os.Lstat(src); err == nil {
-			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		src := filepath.Join(o.Copy, rel)
+		// Lexical + existing-symlink containment (S10), defence in depth;
+		// the fd-anchored ops below independently refuse symlink traversal.
+		if _, err := o.containedDst(rel); err != nil {
+			return err
+		}
+		fi, statErr := os.Lstat(src)
+		if statErr == nil {
+			if err := safeCopyInto(o.Project, rel, src, fi); err != nil {
 				return fmt.Errorf("workspace: apply %s: %w", rel, err)
-			}
-			// cp -a per file: preserves mode/symlink, reflinks on CoW.
-			c := exec.CommandContext(ctx, "cp", "-a", "--reflink=auto", "-f", "--", src, dst)
-			if out, err := c.CombinedOutput(); err != nil {
-				return fmt.Errorf("workspace: apply %s: %v\n%s", rel, err, out)
 			}
 		} else {
 			// Agent deleted it.
-			if err := os.RemoveAll(dst); err != nil {
+			if err := safeDelete(o.Project, rel); err != nil {
 				return fmt.Errorf("workspace: delete %s: %w", rel, err)
 			}
-			pruneEmptyParents(o.Project, filepath.Dir(dst))
+			pruneEmptyParents(o.Project, filepath.Dir(filepath.Join(o.Project, rel)))
 		}
 	}
 	return nil
+}
+
+// applyTmpSeq names staging files uniquely within a destination dir.
+var applyTmpSeq atomic.Uint64
+
+func applyTmpName() string {
+	return fmt.Sprintf(".enso-apply.%d.%d.tmp", os.Getpid(), applyTmpSeq.Add(1))
+}
+
+// openDirNoFollow opens the directory root/relDir and returns its fd. The
+// root itself is trusted and opened normally; every component BELOW it is
+// opened with O_NOFOLLOW so a symlink anywhere in the chain fails the
+// open (ELOOP) instead of redirecting the caller outside root. When
+// create is true missing intermediate dirs are made (0o755, matching the
+// old MkdirAll); when false a missing component surfaces as
+// fs.ErrNotExist. Caller must Close the returned fd.
+func openDirNoFollow(root, relDir string, create bool) (int, error) {
+	fd, err := unix.Open(root, unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("open root: %w", err)
+	}
+	if relDir == "" || relDir == "." {
+		return fd, nil
+	}
+	for part := range strings.SplitSeq(filepath.ToSlash(relDir), "/") {
+		if part == "" || part == "." {
+			continue
+		}
+		if create {
+			if err := unix.Mkdirat(fd, part, 0o755); err != nil && !errors.Is(err, fs.ErrExist) {
+				_ = unix.Close(fd)
+				return -1, fmt.Errorf("mkdir %s: %w", part, err)
+			}
+		}
+		next, err := unix.Openat(fd, part, unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		_ = unix.Close(fd)
+		if err != nil {
+			return -1, fmt.Errorf("open dir %s: %w", part, err)
+		}
+		fd = next
+	}
+	return fd, nil
+}
+
+// safeCopyInto copies src (a regular file or symlink, described by fi)
+// onto root/rel via a fd anchored at the destination's parent directory
+// (see openDirNoFollow). It stages into a temp name in that dir and
+// renameat's it over the destination, so the apply is atomic and never
+// writes through a pre-existing symlink. Note: unlike the old
+// `cp --reflink=auto`, this is a byte copy (no CoW reflink) — acceptable
+// for the small agent-changed set this runs over. Mode and mtime are
+// preserved for regular files.
+func safeCopyInto(root, rel, src string, fi os.FileInfo) error {
+	dirfd, err := openDirNoFollow(root, filepath.Dir(rel), true)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(dirfd)
+	base := filepath.Base(rel)
+	tmp := applyTmpName()
+
+	if fi.Mode()&fs.ModeSymlink != 0 {
+		target, err := os.Readlink(src)
+		if err != nil {
+			return err
+		}
+		if err := unix.Symlinkat(target, dirfd, tmp); err != nil {
+			return fmt.Errorf("symlink: %w", err)
+		}
+		if err := unix.Renameat(dirfd, tmp, dirfd, base); err != nil {
+			_ = unix.Unlinkat(dirfd, tmp, 0)
+			return fmt.Errorf("rename: %w", err)
+		}
+		return nil
+	}
+
+	perm := fi.Mode().Perm()
+	tfd, err := unix.Openat(dirfd, tmp,
+		unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(perm))
+	if err != nil {
+		return fmt.Errorf("create temp: %w", err)
+	}
+	tf := os.NewFile(uintptr(tfd), tmp)
+	in, err := os.Open(src)
+	if err != nil {
+		_ = tf.Close()
+		_ = unix.Unlinkat(dirfd, tmp, 0)
+		return err
+	}
+	_, cerr := io.Copy(tf, in)
+	_ = in.Close()
+	if cerr == nil {
+		cerr = tf.Chmod(perm) // fchmod: O_CREAT mode is masked by umask
+	}
+	if ferr := tf.Close(); cerr == nil {
+		cerr = ferr
+	}
+	if cerr != nil {
+		_ = unix.Unlinkat(dirfd, tmp, 0)
+		return cerr
+	}
+	// Preserve mtime so downstream build tools don't see a spurious
+	// change; best-effort.
+	ts := unix.NsecToTimespec(fi.ModTime().UnixNano())
+	_ = unix.UtimesNanoAt(dirfd, tmp, []unix.Timespec{ts, ts}, unix.AT_SYMLINK_NOFOLLOW)
+
+	if err := unix.Renameat(dirfd, tmp, dirfd, base); err != nil {
+		_ = unix.Unlinkat(dirfd, tmp, 0)
+		return fmt.Errorf("rename: %w", err)
+	}
+	return nil
+}
+
+// safeDelete removes root/rel via a parent-dir fd opened with O_NOFOLLOW
+// on every component, so the unlink can't be redirected through a
+// symlinked ancestor. A missing path (or missing parent) is a no-op.
+// rels are always files; a directory that drifted in is removed only if
+// empty (the conservative AT_REMOVEDIR fallback).
+func safeDelete(root, rel string) error {
+	dirfd, err := openDirNoFollow(root, filepath.Dir(rel), false)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // nothing to delete under a missing parent
+		}
+		return err
+	}
+	defer unix.Close(dirfd)
+	base := filepath.Base(rel)
+	err = unix.Unlinkat(dirfd, base, 0)
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if errors.Is(err, unix.EISDIR) || errors.Is(err, unix.EPERM) {
+		if err2 := unix.Unlinkat(dirfd, base, unix.AT_REMOVEDIR); err2 == nil || errors.Is(err2, fs.ErrNotExist) {
+			return nil
+		}
+	}
+	return err
 }
 
 // containedDst returns the absolute destination for rel under the
