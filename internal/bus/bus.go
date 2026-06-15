@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 )
 
 // EventType identifies the kind of bus event.
@@ -128,14 +129,15 @@ func (e Event) WireForm() (typ string, payload json.RawMessage, ok bool) {
 	case EventInputDiscarded:
 		typ = "InputDiscarded"
 	case EventPermissionRequest:
-		// PermissionRequest's payload (*permissions.PromptRequest)
-		// carries a live Respond channel + Deadline (time.Time). Both
-		// are json:"-" on the struct so json.Marshal silently skips
-		// them, leaving only the wire-safe fields (tool_name, args,
-		// agent_id, agent_role). Observers see the request shape and
-		// can render an "awaiting permission" indicator; they don't
-		// get to answer (that goes through PermissionResponseReq).
-		typ = "PermissionRequest"
+		// Not wire-serializable. The payload (*permissions.PromptRequest)
+		// carries a live Respond channel that can't cross the wire, and
+		// it lacks the RequestID a client needs to answer. Both the
+		// daemon and the Backend worker proxy permission requests through
+		// a dedicated, answerable path (daemon proxyPermission /
+		// MsgPermissionRequest); a generic wire fan-out of this event
+		// produces an un-answerable phantom prompt that replays on every
+		// reconnect, so return ok=false here.
+		return "", nil, false
 	default:
 		return "", nil, false
 	}
@@ -250,6 +252,13 @@ type Bus struct {
 	mu          sync.RWMutex
 	closed      bool
 	subscribers []chan Event
+
+	// dropped counts events discarded because a subscriber's buffer was
+	// full. Before, such drops were only per-event log lines — invisible
+	// in aggregate and untestable (finding #2). The seam's QueueWriter now
+	// drains its subscriber fast enough that drops are rare, but when the
+	// host genuinely can't keep up this is the honest running total.
+	dropped atomic.Uint64
 }
 
 // New creates a new event bus.
@@ -292,7 +301,10 @@ func (b *Bus) Publish(evt Event) {
 		select {
 		case ch <- evt:
 		default:
-			slog.Warn("bus: slow consumer, event dropped", slog.String("type", eventTypeString(evt.Type)))
+			total := b.dropped.Add(1)
+			slog.Warn("bus: slow consumer, event dropped",
+				slog.String("type", eventTypeString(evt.Type)),
+				slog.Uint64("dropped_total", total))
 		}
 	}
 }
@@ -311,6 +323,10 @@ func (b *Bus) Close() {
 		close(ch)
 	}
 }
+
+// Dropped returns the cumulative count of events discarded because a
+// subscriber's buffer was full. Monotonic; safe to call concurrently.
+func (b *Bus) Dropped() uint64 { return b.dropped.Load() }
 
 func eventTypeString(t EventType) string {
 	switch t {

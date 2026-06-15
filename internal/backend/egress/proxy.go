@@ -401,7 +401,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		_ = dst.Close()
 		return
 	}
-	_, _ = src.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+	if _, err := src.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
+		// Client vanished before the tunnel opened — don't start the two
+		// relay goroutines (they'd otherwise sit blocked on Read until the
+		// idle timeout, holding both fds for nothing).
+		_ = dst.Close()
+		_ = src.Close()
+		return
+	}
 	// Relay both directions. Closing BOTH conns the instant EITHER
 	// direction ends unblocks the other goroutine's Read immediately, so
 	// the tunnel always releases its two fds — relying on the cascade to

@@ -129,7 +129,15 @@ func (t ReadTool) Run(ctx context.Context, args map[string]any, ac *AgentContext
 		}
 	}
 
-	lines := strings.Split(string(data), "\n")
+	raw := string(data)
+	lines := strings.Split(raw, "\n")
+	// A trailing newline (every normal text file has one) makes Split
+	// yield a final empty element; drop it so we don't render a phantom
+	// blank last line with its own line number. An empty file keeps its
+	// single (blank) line, matching prior behaviour.
+	if strings.HasSuffix(raw, "\n") {
+		lines = lines[:len(lines)-1]
+	}
 
 	first := 1
 	if fl, ok := args["first_line"].(float64); ok {

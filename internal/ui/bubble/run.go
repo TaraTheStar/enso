@@ -417,7 +417,13 @@ func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []hos
 	} else {
 		for _, sk := range skills {
 			sk.SetSubmitter(skillSubmit)
-			slashReg.Register(sk)
+			// Skills must not shadow built-ins: a cloned repo's
+			// ./.enso/skills/<name>.md could otherwise hijack a command
+			// like /quit. Built-ins are registered above and win.
+			if !slashReg.RegisterIfAbsent(sk) {
+				fmt.Println(noticeStyle.Render(fmt.Sprintf(
+					"skill /%s shadows a built-in command — skipped", sk.Name())))
+			}
 		}
 	}
 

@@ -34,6 +34,15 @@ type Manager struct {
 }
 
 type serverInstance struct {
+	// mu serializes the lazy spawn and guards every field startServer
+	// writes (cmd/client/rootURI/initErr). Held across the client==nil
+	// check + startServer so two concurrent ClientFor calls for the same
+	// server can't each spawn a process (leaking one) or race on these
+	// fields. It is per-instance, so distinct servers still spawn in
+	// parallel. Lock ordering: take m.mu first (only to find/create the
+	// instance), release it, then take inst.mu — never the reverse.
+	mu sync.Mutex
+
 	name    string
 	cfg     config.LSPConfig
 	cmd     *exec.Cmd
@@ -92,11 +101,15 @@ func (m *Manager) IsRunning(name string) bool {
 		return false
 	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	inst, ok := m.clients[name]
+	m.mu.Unlock()
 	if !ok {
 		return false
 	}
+	// client/initErr are written under inst.mu by a lazy spawn that may
+	// be racing this read.
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
 	return inst.client != nil && inst.initErr == nil
 }
 
@@ -121,6 +134,11 @@ func (m *Manager) ClientFor(ctx context.Context, absPath string) (*Client, strin
 	}
 	m.mu.Unlock()
 
+	// Per-instance lock spans the nil-check + spawn so a concurrent
+	// ClientFor for the same server waits for the first spawn instead of
+	// starting a second process.
+	inst.mu.Lock()
+	defer inst.mu.Unlock()
 	if inst.initErr != nil {
 		return nil, "", inst.initErr
 	}
@@ -235,7 +253,12 @@ func (m *Manager) Close() {
 	m.mu.Unlock()
 
 	for _, inst := range insts {
+		// Hold inst.mu so we don't read client/cmd while a concurrent
+		// lazy spawn is mid-flight; it also blocks any new spawn from
+		// racing the teardown.
+		inst.mu.Lock()
 		if inst.client == nil {
+			inst.mu.Unlock()
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -250,6 +273,7 @@ func (m *Manager) Close() {
 				_ = inst.cmd.Process.Kill()
 			}
 		}
+		inst.mu.Unlock()
 	}
 }
 

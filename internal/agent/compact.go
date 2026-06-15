@@ -512,15 +512,17 @@ func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (
 	a.refreshEstimate()
 	afterTokens := a.estimateTokens()
 
-	a.Bus.Publish(bus.Event{
-		Type: bus.EventCompacted,
-		Payload: map[string]any{
-			"reason":        reason,
-			"summary":       summary,
-			"before_tokens": beforeTokens,
-			"after_tokens":  afterTokens,
-		},
-	})
+	if a.Bus != nil {
+		a.Bus.Publish(bus.Event{
+			Type: bus.EventCompacted,
+			Payload: map[string]any{
+				"reason":        reason,
+				"summary":       summary,
+				"before_tokens": beforeTokens,
+				"after_tokens":  afterTokens,
+			},
+		})
+	}
 	return true, nil
 }
 

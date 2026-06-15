@@ -74,3 +74,29 @@ func TestGrepTool_NoMatches(t *testing.T) {
 		t.Errorf("output = %q", res.LLMOutput)
 	}
 }
+
+// TestGrepTool_CancelledContext checks a cancelled search is reported as a
+// cancellation, not a bogus "rg error" (and never as a normal result). The
+// assertion holds whether ripgrep is present (cmd killed by signal) or
+// absent (the in-process walk aborts on ctx).
+func TestGrepTool_CancelledContext(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "a.txt"), "hello\n")
+	ac := newToolAC(tmp)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already done before the search starts
+
+	res, err := GrepTool{}.Run(ctx, map[string]any{"pattern": "hello", "path": tmp}, ac)
+	combined := err
+	out := res.LLMOutput
+	if combined != nil {
+		out = combined.Error()
+	}
+	if strings.Contains(out, "rg error") {
+		t.Fatalf("cancellation mislabelled as rg error: %q", out)
+	}
+	if !strings.Contains(out, "context canceled") {
+		t.Fatalf("expected a cancellation report, got %q", out)
+	}
+}

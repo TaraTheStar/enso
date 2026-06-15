@@ -16,6 +16,8 @@ import (
 	"os"
 	"os/exec"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/TaraTheStar/enso/internal/backend"
 )
@@ -118,14 +120,23 @@ func (w *localWorker) Wait(ctx context.Context) error {
 }
 
 // Teardown closes the Channel (EOF → worker winds down) then ensures
-// the process is gone. Idempotent; safe after (or concurrent with)
-// Wait — both consume the same single reaper.
+// the process is gone. SIGTERM with a grace window first — an immediate
+// SIGKILL would cut the worker off mid-frame before it can flush its
+// final persist envelopes and run OnSessionEnd hooks; SIGKILL is only
+// the backstop if it overstays. Mirrors lima's reap-with-timeout.
+// Idempotent; safe after (or concurrent with) Wait — both consume the
+// same single reaper.
 func (w *localWorker) Teardown(context.Context) error {
 	w.once.Do(func() {
 		_ = w.ch.Close()
 		if w.cmd.Process != nil {
-			_ = w.cmd.Process.Kill()
-			<-w.reap()
+			_ = w.cmd.Process.Signal(syscall.SIGTERM)
+			select {
+			case <-w.reap():
+			case <-time.After(3 * time.Second):
+				_ = w.cmd.Process.Kill()
+				<-w.reap()
+			}
 		}
 	})
 	return nil

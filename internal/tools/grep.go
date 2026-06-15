@@ -32,6 +32,11 @@ func (t GrepTool) Parameters() map[string]any {
 	}
 }
 
+// searchToolTimeout bounds a single grep/glob invocation. Generous
+// enough for large real repositories, tight enough that a pathological
+// directory tree can't wedge a turn forever.
+const searchToolTimeout = 60 * time.Second
+
 func (t GrepTool) Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error) {
 	pattern, _ := args["pattern"].(string)
 	searchPath, _ := args["path"].(string)
@@ -44,6 +49,11 @@ func (t GrepTool) Run(ctx context.Context, args map[string]any, ac *AgentContext
 		searchPath = abs
 	}
 
+	// Bound the whole search: unlike bash there is no user-set timeout, so
+	// a pathological tree could otherwise stall the turn indefinitely.
+	ctx, cancel := context.WithTimeout(ctx, searchToolTimeout)
+	defer cancel()
+
 	if result := tryRG(ctx, searchPath, pattern, ac); result != nil {
 		return *result, nil
 	}
@@ -55,6 +65,9 @@ func (t GrepTool) Run(ctx context.Context, args map[string]any, ac *AgentContext
 
 	var results []string
 	err = filepath.Walk(searchPath, func(path string, info os.FileInfo, err error) error {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr // timeout / cancellation aborts the walk
+		}
 		if err != nil || info.IsDir() || info.Size() > 1024*1024 {
 			return nil
 		}
@@ -71,6 +84,9 @@ func (t GrepTool) Run(ctx context.Context, args map[string]any, ac *AgentContext
 		return nil
 	})
 	if err != nil {
+		if ctx.Err() != nil {
+			return Result{}, fmt.Errorf("grep: %w", ctx.Err())
+		}
 		return Result{}, fmt.Errorf("grep walk: %w", err)
 	}
 
@@ -124,6 +140,12 @@ func tryRG(ctx context.Context, path, pattern string, ac *AgentContext) *Result 
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 1 {
 			return &Result{LLMOutput: "no matches found", FullOutput: "no matches found", Meta: ResultMeta{CacheKey: cacheKey}}
+		}
+		// A cancelled/timed-out search exits via signal, not a real rg
+		// failure — report it as such instead of "rg error".
+		if ctx.Err() != nil {
+			msg := fmt.Sprintf("grep: %v", ctx.Err())
+			return &Result{LLMOutput: msg, FullOutput: msg, Meta: ResultMeta{CacheKey: cacheKey}}
 		}
 		return &Result{LLMOutput: fmt.Sprintf("rg error: %v", err), FullOutput: fmt.Sprintf("rg error: %v", err), Meta: ResultMeta{CacheKey: cacheKey}}
 	}

@@ -19,6 +19,7 @@ func newTestClient() *Client {
 		opened:      map[string]bool{},
 		docVersions: map[string]int{},
 		diagsByURI:  map[string][]Diagnostic{},
+		diagGen:     map[string]uint64{},
 		diagWaiters: map[string]chan struct{}{},
 	}
 }
@@ -40,15 +41,17 @@ func TestWaitForDiagnostics_ReceivesNextPublication(t *testing.T) {
 	uri := "file:///a.go"
 
 	// Pre-seed the cache with a stale publication; WaitForDiagnostics
-	// must NOT short-circuit on this.
+	// must NOT short-circuit on this. Snapshot the generation AFTER the
+	// stale publish so only a later one satisfies the wait.
 	c.handleNotification("textDocument/publishDiagnostics",
 		mkDiagPayload(uri, []Diagnostic{{Message: "old"}}))
+	sinceGen := c.DiagGen(uri)
 
 	got := make(chan []Diagnostic, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		got <- c.WaitForDiagnostics(ctx, uri, 0)
+		got <- c.WaitForDiagnostics(ctx, uri, sinceGen, 0)
 	}()
 
 	// Give the goroutine a moment to register its waiter, then publish.
@@ -76,7 +79,7 @@ func TestWaitForDiagnostics_CtxCancel(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	got := c.WaitForDiagnostics(ctx, uri, 0)
+	got := c.WaitForDiagnostics(ctx, uri, 0, 0)
 	if got != nil {
 		t.Errorf("expected nil on ctx timeout, got %+v", got)
 	}
@@ -99,7 +102,7 @@ func TestWaitForDiagnostics_DedupWindow(t *testing.T) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		got <- c.WaitForDiagnostics(ctx, uri, 80*time.Millisecond)
+		got <- c.WaitForDiagnostics(ctx, uri, 0, 80*time.Millisecond)
 	}()
 
 	time.Sleep(20 * time.Millisecond)
@@ -134,13 +137,13 @@ func TestWaitForDiagnostics_MultipleWaitersSameURI(t *testing.T) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = c.WaitForDiagnostics(ctx, uri, 0)
+		_ = c.WaitForDiagnostics(ctx, uri, 0, 0)
 		close(done1)
 	}()
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		_ = c.WaitForDiagnostics(ctx, uri, 0)
+		_ = c.WaitForDiagnostics(ctx, uri, 0, 0)
 		close(done2)
 	}()
 
@@ -154,6 +157,33 @@ func TestWaitForDiagnostics_MultipleWaitersSameURI(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatalf("waiter %d didn't wake on single publication", i+1)
 		}
+	}
+}
+
+// TestWaitForDiagnostics_PublishBeforeWait is the regression test for
+// the publish-before-wait race: a server fast enough to publish between
+// the triggering edit and WaitForDiagnostics registering its waiter
+// channel would, under the old close-the-channel-only design, wake
+// nobody and time out to nil — discarding diagnostics it already had.
+// With the generation snapshot the wait observes the publication
+// immediately and returns it without ever blocking.
+func TestWaitForDiagnostics_PublishBeforeWait(t *testing.T) {
+	c := newTestClient()
+	uri := "file:///e.go"
+
+	// Snapshot BEFORE the edit, exactly as Notifier.NotifyWrite does.
+	sinceGen := c.DiagGen(uri)
+
+	// The server publishes before any waiter is registered (the race).
+	c.handleNotification("textDocument/publishDiagnostics",
+		mkDiagPayload(uri, []Diagnostic{{Message: "boom"}}))
+
+	// A short context: if the fix regressed we'd block and time out to nil.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	got := c.WaitForDiagnostics(ctx, uri, sinceGen, 0)
+	if len(got) != 1 || got[0].Message != "boom" {
+		t.Errorf("race lost the publication: got %+v, want one 'boom'", got)
 	}
 }
 

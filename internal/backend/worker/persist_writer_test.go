@@ -23,7 +23,7 @@ import (
 // and the worker-side seq mirror.
 func TestRemoteWriter_PersistEnvelopes(t *testing.T) {
 	workerCh, hostCh := newChannelPair()
-	rw := &remoteWriter{s: &seam{ch: workerCh}, sessionID: "sess-1"}
+	rw := &remoteWriter{s: withWriter(&seam{ch: workerCh}), sessionID: "sess-1"}
 
 	if got := rw.SessionID(); got != "sess-1" {
 		t.Fatalf("SessionID() = %q, want %q", got, "sess-1")
@@ -134,7 +134,7 @@ func TestRemoteWriter_PersistEnvelopes(t *testing.T) {
 // agent loop sees the persistence failure instead of silently dropping
 // session rows.
 func TestRemoteWriter_SendFailureSurfacesError(t *testing.T) {
-	rw := &remoteWriter{s: &seam{ch: failSendChannel{}}, sessionID: "sess-dead"}
+	rw := &remoteWriter{s: withWriter(&seam{ch: failSendChannel{}}), sessionID: "sess-dead"}
 
 	seq, err := rw.AppendMessage(llm.Message{Role: "user", Content: "hi"}, "")
 	if err == nil {

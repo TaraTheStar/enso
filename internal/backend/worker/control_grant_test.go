@@ -32,7 +32,7 @@ func TestServeControl_AddAllowGrants(t *testing.T) {
 	workerCh, hostCh := newChannelPair()
 	// agt is non-nil only to clear serveControl's readiness guard; these
 	// two verbs touch s.checker exclusively and never call the agent.
-	s := &seam{ch: workerCh, agt: &agent.Agent{}, checker: checker}
+	s := withWriter(&seam{ch: workerCh, agt: &agent.Agent{}, checker: checker})
 
 	call := func(method, pattern string) wire.ControlResponse {
 		t.Helper()

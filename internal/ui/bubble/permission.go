@@ -139,85 +139,119 @@ func summarizeArgs(args map[string]any) string {
 	return strings.Join(parts, ", ")
 }
 
-// resolvePerm dispatches a key into a permission decision. Returns the
-// Decision (or noDecision sentinel) plus a Cmd to print any side-effect
-// notice (the "remembered" line). decided=true means the prompt is
-// resolved and should be cleared from m.permPending.
-func resolvePerm(p *permPending, key string) (decision permissions.Decision, decided bool, cmd tea.Cmd) {
+// resolvePerm dispatches a key into a permission decision. decided=true
+// means the prompt is resolved and should be cleared from m.permPending;
+// the returned Cmd both sends the Decision on req.Respond and prints any
+// side-effect notice.
+//
+// CRITICAL: the Cmd does all the slow work — the up-to-5s
+// AddAllow/AddTurnAllow worker RPC and the config-file write — so it
+// MUST run off the Bubble Tea event loop (Cmds do, by design). Calling
+// any of this inline in Update would freeze the UI for the RPC's
+// duration. Enforcement is applied BEFORE the Decision is sent so the
+// next call in this session is gated by the new rule, not a race.
+func resolvePerm(p *permPending, key string) (decided bool, cmd tea.Cmd) {
 	switch strings.ToLower(key) {
 	case "y", "enter":
-		return permissions.Allow, true, nil
+		return true, decisionCmd(p.req, permissions.Allow, nil)
 	case "n", "esc":
-		return permissions.Deny, true, nil
+		return true, decisionCmd(p.req, permissions.Deny, nil)
 	case "a":
-		// "Remember" — apply a matching allow pattern to the enforcing
-		// checker (worker-side via sess on the default local path; the
-		// in-process checker otherwise), persist it to project config,
-		// and mirror it onto the host display checker, then allow this
-		// call. Only in true attach mode (no sess, no checker) is there
-		// no wire path to enforcement — fall back to plain Allow with a
-		// notice so the user knows the grant didn't take.
+		return true, rememberCmd(p, false)
+	case "t":
+		return true, rememberCmd(p, true)
+	}
+	return false, nil
+}
+
+// sendDecision unblocks the agent goroutine parked on req.Respond. Safe
+// when Respond is nil (unit tests construct bare PromptRequests).
+func sendDecision(req *permissions.PromptRequest, d permissions.Decision) {
+	if req != nil && req.Respond != nil {
+		req.Respond <- d
+	}
+}
+
+// decisionCmd returns a Cmd that sends d on req.Respond and then runs
+// the optional follow-up notice Cmd. Used for the plain y/n path.
+func decisionCmd(req *permissions.PromptRequest, d permissions.Decision, notice tea.Cmd) tea.Cmd {
+	return func() tea.Msg {
+		sendDecision(req, d)
+		if notice != nil {
+			return notice()
+		}
+		return nil
+	}
+}
+
+// rememberCmd builds the Cmd for the "always" (turn=false) and "turn"
+// (turn=true) grants. It applies the grant to the enforcing checker —
+// worker-side via sess on the default local path, the in-process checker
+// otherwise — sends the Allow decision once enforcement is in place, and
+// (for "always") persists the pattern to project config. Every blocking
+// step runs here, inside the Cmd, never on the event loop.
+func rememberCmd(p *permPending, turn bool) tea.Cmd {
+	return func() tea.Msg {
+		// True attach mode (no sess, no checker): no wire path to
+		// enforcement — fall back to plain Allow with a notice so the
+		// user knows the grant didn't take.
 		if p.sess == nil && p.checker == nil {
-			cmd = tea.Println(noticeStyle.Render("(allowed once; remember/turn unavailable in attach mode)"))
-			return permissions.Allow, true, cmd
+			sendDecision(p.req, permissions.Allow)
+			return tea.Println(noticeStyle.Render("(allowed once; remember/turn unavailable in attach mode)"))()
 		}
 		pattern := permissions.DerivePattern(p.req.ToolName, p.req.Args, p.cwd)
+		verb := "remember"
+		if turn {
+			verb = "allow-turn"
+		}
+
 		// Enforcement first: apply to the worker's real checker before
-		// the decision is sent so the next call in this session is
-		// gated by the new rule, not a race.
+		// the decision is sent.
 		if p.sess != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := p.sess.AddAllow(ctx, pattern)
+			var err error
+			if turn {
+				err = p.sess.AddTurnAllow(ctx, pattern)
+			} else {
+				err = p.sess.AddAllow(ctx, pattern)
+			}
 			cancel()
 			if err != nil {
-				cmd = tea.Println(errorStyle.Render(fmt.Sprintf("remember %s: %v", pattern, err)))
-				return permissions.Allow, true, cmd
+				sendDecision(p.req, permissions.Allow)
+				return tea.Println(errorStyle.Render(fmt.Sprintf("%s %s: %v", verb, pattern, err)))()
 			}
 		}
-		if p.checker != nil {
-			if err := p.checker.AddAllow(pattern); err != nil {
-				cmd = tea.Println(errorStyle.Render(fmt.Sprintf("remember %s: %v", pattern, err)))
-				return permissions.Allow, true, cmd
+
+		if turn {
+			// Mirror onto the host checker only when it is itself the
+			// enforcing checker (in-process path, sess == nil). The host
+			// display mirror is never reset host-side — only the worker
+			// agent loop calls ResetTurnAllows at each user message — so
+			// mirroring a transient turn grant onto it would leave stale
+			// entries that over-report in /perms.
+			if p.sess == nil && p.checker != nil {
+				if err := p.checker.AddTurnAllow(pattern); err != nil {
+					sendDecision(p.req, permissions.Allow)
+					return tea.Println(errorStyle.Render(fmt.Sprintf("%s %s: %v", verb, pattern, err)))()
+				}
 			}
+		} else if p.checker != nil {
+			if err := p.checker.AddAllow(pattern); err != nil {
+				sendDecision(p.req, permissions.Allow)
+				return tea.Println(errorStyle.Render(fmt.Sprintf("%s %s: %v", verb, pattern, err)))()
+			}
+		}
+
+		// Enforcement is in place — release the agent.
+		sendDecision(p.req, permissions.Allow)
+
+		if turn {
+			return tea.Println(statusStyle.Render(fmt.Sprintf("→ allowing %s for this turn", pattern)))()
 		}
 		path := config.ProjectLocalPath(p.cwd)
 		if err := config.AppendAllow(path, pattern); err != nil {
-			cmd = tea.Println(noticeStyle.Render(fmt.Sprintf("remembered %s in this session, but couldn't persist: %v", pattern, err)))
-			return permissions.Allow, true, cmd
+			return tea.Println(noticeStyle.Render(fmt.Sprintf("remembered %s in this session, but couldn't persist: %v", pattern, err)))()
 		}
-		cmd = tea.Println(statusStyle.Render(fmt.Sprintf("→ remembered %s · %s", pattern, path)))
-		return permissions.Allow, true, cmd
-	case "t":
-		// Turn-scoped grant: matches future calls in this turn but
-		// doesn't persist. Same enforcement surfaces as "always".
-		if p.sess == nil && p.checker == nil {
-			cmd = tea.Println(noticeStyle.Render("(allowed once; remember/turn unavailable in attach mode)"))
-			return permissions.Allow, true, cmd
-		}
-		pattern := permissions.DerivePattern(p.req.ToolName, p.req.Args, p.cwd)
-		if p.sess != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := p.sess.AddTurnAllow(ctx, pattern)
-			cancel()
-			if err != nil {
-				cmd = tea.Println(errorStyle.Render(fmt.Sprintf("allow-turn %s: %v", pattern, err)))
-				return permissions.Allow, true, cmd
-			}
-		}
-		// Mirror onto the host checker only when it is itself the
-		// enforcing checker (in-process path, sess == nil). The host
-		// display mirror is never reset host-side — only the worker
-		// agent loop calls ResetTurnAllows at each user message — so
-		// mirroring a transient turn grant onto it would leave stale
-		// entries that over-report in /perms.
-		if p.sess == nil && p.checker != nil {
-			if err := p.checker.AddTurnAllow(pattern); err != nil {
-				cmd = tea.Println(errorStyle.Render(fmt.Sprintf("allow-turn %s: %v", pattern, err)))
-				return permissions.Allow, true, cmd
-			}
-		}
-		cmd = tea.Println(statusStyle.Render(fmt.Sprintf("→ allowing %s for this turn", pattern)))
-		return permissions.Allow, true, cmd
+		return tea.Println(statusStyle.Render(fmt.Sprintf("→ remembered %s · %s", pattern, path)))()
 	}
-	return permissions.Deny, false, nil
 }

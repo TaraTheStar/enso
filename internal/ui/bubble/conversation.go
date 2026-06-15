@@ -325,15 +325,27 @@ func toolBlockFromCall(tc llm.ToolCall, output string) *blocks.Tool {
 	}
 }
 
+// clipRunes shortens s to at most max runes, appending an ellipsis when
+// it had to cut. Rune-aware so it never splits a multi-byte character —
+// byte-slicing at max-1 could emit invalid UTF-8 into the TUI.
+func clipRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max == 1 {
+		return "…"
+	}
+	return string(r[:max-1]) + "…"
+}
+
 // summarizeArg flattens a JSON-y argument into a short display form.
 // Long strings get truncated; non-strings render via fmt.Sprintf("%v").
 func summarizeArg(v any) string {
-	const max = 40
-	s := fmt.Sprintf("%v", v)
-	if len(s) > max {
-		return s[:max-1] + "…"
-	}
-	return s
+	return clipRunes(fmt.Sprintf("%v", v), 40)
 }
 
 // getString reads a string field from a payload map; returns "" when

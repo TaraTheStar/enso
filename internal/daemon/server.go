@@ -527,15 +527,28 @@ func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateS
 		}
 	}()
 
+	// Register before launching Run so the run goroutine's end-of-session
+	// delete can never race ahead of the insert.
+	s.mu.Lock()
+	s.sessions[id] = state
+	s.mu.Unlock()
+
 	s.sessionWG.Add(1)
 	go func() {
 		defer s.sessionWG.Done()
 		_ = agt.Run(sessCtx, state.inputCh)
+		// Run has returned — the session is over. Cancel its ctx, close
+		// the bus (ends the permCh + relay reader goroutines above; both
+		// range over bus subscriptions and would otherwise leak for the
+		// daemon's lifetime), and drop it from s.sessions so list_sessions
+		// stops reporting a dead session. Close is idempotent, so the
+		// shutdown path's cancel() is harmless here.
+		cancel()
+		busInst.Close()
+		s.mu.Lock()
+		delete(s.sessions, id)
+		s.mu.Unlock()
 	}()
-
-	s.mu.Lock()
-	s.sessions[id] = state
-	s.mu.Unlock()
 
 	state.inputCh <- agent.UserInput{Text: req.Prompt}
 

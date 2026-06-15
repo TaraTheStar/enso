@@ -212,7 +212,12 @@ type Session struct {
 	providers map[string]*llm.Provider
 	bus       *bus.Bus
 
-	sendMu sync.Mutex // Channel.Send serialized across producers
+	// chWriter is the single owner of Channel.Send: producers enqueue,
+	// control-plane envelopes (Cancel, permission/control responses)
+	// overtake bulk inference/event traffic. Replaces the old sendMu +
+	// blocking ch.Send per producer, which let a stream flood head-of-line
+	// block a Cancel (findings #2 & #3).
+	chWriter *backend.QueueWriter
 
 	doneOnce sync.Once
 	done     chan error
@@ -492,6 +497,10 @@ func Start(
 	if s.broker == nil {
 		s.broker = denyBroker{}
 	}
+	// Single writer goroutine owns Channel.Send from here on; every
+	// s.send() below (including the MsgTaskSpec handshake) enqueues onto it.
+	// loop() closes it when the session ends.
+	s.chWriter = backend.NewQueueWriter(s.ch)
 	// The interactive broker prompts over the host bus, which does not
 	// exist at SelectBackend time — bind it now, before the worker can
 	// issue any request (the handshake below gates that).
@@ -509,10 +518,12 @@ func Start(
 
 	specBody, err := backend.NewBody(spec)
 	if err != nil {
+		_ = s.chWriter.Close()
 		_ = w.Teardown(context.Background())
 		return nil, err
 	}
 	if err := s.send(backend.Envelope{Kind: backend.MsgTaskSpec, Body: specBody}); err != nil {
+		_ = s.chWriter.Close()
 		_ = w.Teardown(context.Background())
 		return nil, fmt.Errorf("host: send task spec: %w", err)
 	}
@@ -542,9 +553,7 @@ func Start(
 }
 
 func (s *Session) send(env backend.Envelope) error {
-	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
-	return s.ch.Send(env)
+	return s.chWriter.Send(env)
 }
 
 // Submit feeds a user message to the worker (interactive specs).
@@ -615,6 +624,11 @@ func (s *Session) captureCheckpoint(seq int) {
 // loop is the sole reader of the Channel. It never blocks on agent
 // work: inference and permission service run in their own goroutines.
 func (s *Session) loop(ctx context.Context, ready chan<- error) {
+	// loop is the lifecycle owner: when it returns (worker done/error, or
+	// the Channel dropped) no more sends can matter, so it stops the writer
+	// goroutine. In-flight producer goroutines (serveInference, etc.) then
+	// get ErrWriterClosed from send() instead of writing a dead channel.
+	defer s.chWriter.Close()
 	readyOnce := sync.Once{}
 	signalReady := func(err error) { readyOnce.Do(func() { ready <- err }) }
 

@@ -139,6 +139,15 @@ func pipe() (io.Reader, io.Writer) {
 	return r, w
 }
 
+// withWriter attaches a real QueueWriter to a test-built seam. Production
+// wires this in RunAgent before any send; unit tests that exercise a send
+// path (serveControl, proxyPermission, remoteWriter) must too, or s.send
+// nil-derefs s.writer.
+func withWriter(s *seam) *seam {
+	s.writer = backend.NewQueueWriter(s.ch)
+	return s
+}
+
 // newChannelPair returns two Channels wired back to back over a pair of
 // in-memory pipes (worker side, host side).
 func newChannelPair() (workerCh, hostCh backend.Channel) {

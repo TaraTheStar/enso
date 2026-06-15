@@ -40,8 +40,9 @@ import (
 //   - wireSafe: WireForm returns ok=true (event crosses process
 //     boundaries: daemon socket, worker Channel, on_event hooks).
 //   - fromWire: FromWire(typeString, …) reconstructs the event.
-//     PermissionRequest is asymmetric on purpose (WireForm yes,
-//     FromWire no — see the comment in bus.go).
+//     PermissionRequest is neither WireForm- nor FromWire-safe: it is
+//     proxied host-local through a dedicated answerable path (see the
+//     comment in bus.go).
 //   - docType: the snake_case name frozen in
 //     docs/content/advanced/json-events.md for the `--format json`
 //     stream ("" = not documented there). Where set, it must equal
@@ -68,11 +69,14 @@ var wireProtocolTable = []struct {
 	// --format json and is absent from json-events.md.
 	{EventToolCallProgress, "EventToolCallProgress", "ToolCallProgress", true, true, ""},
 	{EventToolCallEnd, "EventToolCallEnd", "ToolCallEnd", true, true, "tool_call_end"},
-	// PermissionRequest: WireForm emits it (channel/deadline are
-	// json:"-" on the payload) but FromWire rejects it — in-process
-	// consumers use the dedicated permission path. json-events.md
+	// PermissionRequest is HOST-LOCAL: the payload carries a live Respond
+	// channel and lacks the RequestID a client needs to answer, so a
+	// generic wire fan-out would render an un-answerable phantom prompt.
+	// Neither WireForm nor FromWire handle it — both the daemon and the
+	// Backend worker proxy it through a dedicated, answerable path.
+	// eventTypeString still names it (slow-consumer logs). json-events.md
 	// explicitly documents it as not emitted.
-	{EventPermissionRequest, "EventPermissionRequest", "PermissionRequest", true, false, ""},
+	{EventPermissionRequest, "EventPermissionRequest", "PermissionRequest", false, false, ""},
 	{EventPermissionResponse, "EventPermissionResponse", "PermissionResponse", false, false, ""},
 	// PermissionAuto is host-local; the doc's permission_auto_deny is
 	// a separate run.go-synthesized record, NOT this event's wire form.
