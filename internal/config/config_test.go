@@ -3,6 +3,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -395,5 +396,30 @@ func mustWrite(t *testing.T, p, body string) {
 	t.Helper()
 	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
 		t.Fatalf("write %s: %v", p, err)
+	}
+}
+
+// TestUnionStringArrays_DedupsNonStrings is the regression for the
+// security-sensitive permissions arrays: a non-string entry must be
+// deduplicated too, or it grows unbounded across config reloads.
+func TestUnionStringArrays_DedupsNonStrings(t *testing.T) {
+	dst := []any{"a", 5, "b"}
+	src := []any{"a", 5, "c"} // "a" and 5 are dupes of dst
+	out, ok := unionStringArrays(dst, src)
+	if !ok {
+		t.Fatal("unionStringArrays returned ok=false for two arrays")
+	}
+	// Expect a, 5, b, c — each once.
+	if len(out) != 4 {
+		t.Fatalf("len = %d, want 4 (got %v)", len(out), out)
+	}
+	counts := map[string]int{}
+	for _, e := range out {
+		counts[fmt.Sprintf("%T:%v", e, e)]++
+	}
+	for k, n := range counts {
+		if n != 1 {
+			t.Errorf("entry %q appeared %d times, want 1", k, n)
+		}
 	}
 }

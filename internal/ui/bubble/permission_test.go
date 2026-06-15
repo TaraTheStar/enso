@@ -13,18 +13,18 @@ import (
 	"github.com/TaraTheStar/enso/internal/permissions"
 )
 
-// printlnText extracts the plain (ANSI-stripped) text from a tea.Println
-// Cmd. tea.Println returns an unexported printLineMessage whose body is
-// read via reflection (read-only access works for unexported fields).
-func printlnText(t *testing.T, cmd tea.Cmd) string {
+// printlnMsgText extracts the plain (ANSI-stripped) text from an already
+// -produced printLineMessage. The body is read via reflection (read-only
+// access works for unexported fields).
+func printlnMsgText(t *testing.T, msg tea.Msg) string {
 	t.Helper()
-	if cmd == nil {
+	if msg == nil {
 		return ""
 	}
-	v := reflect.ValueOf(cmd())
+	v := reflect.ValueOf(msg)
 	f := v.FieldByName("messageBody")
 	if !f.IsValid() {
-		t.Fatalf("cmd did not produce a printLineMessage: %T", cmd())
+		t.Fatalf("cmd did not produce a printLineMessage: %T", msg)
 	}
 	return ansi.Strip(f.String())
 }
@@ -34,15 +34,24 @@ func printlnText(t *testing.T, cmd tea.Cmd) string {
 // mode), "always"/"turn" honestly fall back to allow-once and say so.
 func TestResolvePerm_AttachModeDegrades(t *testing.T) {
 	for _, key := range []string{"a", "t"} {
+		// Buffered Respond so the Cmd's decision send doesn't block.
 		p := &permPending{
-			req: &permissions.PromptRequest{ToolName: "bash", Args: map[string]any{"cmd": "ls"}},
+			req: &permissions.PromptRequest{
+				ToolName: "bash",
+				Args:     map[string]any{"cmd": "ls"},
+				Respond:  make(chan permissions.Decision, 1),
+			},
 			// checker + sess both nil → no path to enforcement.
 		}
-		decision, decided, cmd := resolvePerm(p, key)
-		if !decided || decision != permissions.Allow {
-			t.Fatalf("key %q: got (%v, decided=%v), want (Allow, true)", key, decision, decided)
+		decided, cmd := resolvePerm(p, key)
+		if !decided {
+			t.Fatalf("key %q: decided=false, want true", key)
 		}
-		if got := printlnText(t, cmd); !strings.Contains(got, "unavailable in attach mode") {
+		msg := cmd()
+		if d := <-p.req.Respond; d != permissions.Allow {
+			t.Fatalf("key %q: decision = %v, want Allow", key, d)
+		}
+		if got := printlnMsgText(t, msg); !strings.Contains(got, "unavailable in attach mode") {
 			t.Fatalf("key %q: notice = %q, want the attach-mode fallback", key, got)
 		}
 	}
@@ -56,20 +65,30 @@ func TestResolvePerm_AttachModeDegrades(t *testing.T) {
 func TestResolvePerm_TurnGrantApplied(t *testing.T) {
 	checker := permissions.NewChecker(nil, nil, nil, "deny")
 	p := &permPending{
-		req:     &permissions.PromptRequest{ToolName: "bash", Args: map[string]any{"cmd": "ls -la"}},
+		req: &permissions.PromptRequest{
+			ToolName: "bash",
+			Args:     map[string]any{"cmd": "ls -la"},
+			Respond:  make(chan permissions.Decision, 1),
+		},
 		checker: checker,
 	}
 	if checker.HasTurnAllows() {
 		t.Fatalf("precondition: no turn allows yet")
 	}
-	decision, decided, cmd := resolvePerm(p, "t")
-	if !decided || decision != permissions.Allow {
-		t.Fatalf("got (%v, decided=%v), want (Allow, true)", decision, decided)
+	decided, cmd := resolvePerm(p, "t")
+	if !decided {
+		t.Fatalf("decided=false, want true")
+	}
+	// Enforcement + notice now run inside the Cmd (off the event loop),
+	// so execute it before asserting the checker was mutated.
+	msg := cmd()
+	if d := <-p.req.Respond; d != permissions.Allow {
+		t.Fatalf("decision = %v, want Allow", d)
 	}
 	if !checker.HasTurnAllows() {
 		t.Fatalf("turn grant was not applied to the enforcing checker")
 	}
-	got := printlnText(t, cmd)
+	got := printlnMsgText(t, msg)
 	if strings.Contains(got, "unavailable in attach mode") {
 		t.Fatalf("notice still lies about attach mode: %q", got)
 	}

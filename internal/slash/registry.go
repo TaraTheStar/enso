@@ -16,9 +16,10 @@ type Command interface {
 	Run(ctx context.Context, args string) error
 }
 
-// Registry maps names to commands. Project-scoped commands shadow
-// user-scoped commands which shadow built-ins; for MVP we only have
-// built-ins so we register everything via Register.
+// Registry maps names to commands. Built-ins are registered first via
+// Register and always win: user/project skills are added with
+// RegisterIfAbsent so a cloned repo's `./.enso/skills/quit.md` can't
+// silently hijack the built-in `/quit` (a trust/safety concern).
 type Registry struct {
 	cmds map[string]Command
 }
@@ -26,8 +27,22 @@ type Registry struct {
 // NewRegistry constructs an empty registry.
 func NewRegistry() *Registry { return &Registry{cmds: make(map[string]Command)} }
 
-// Register adds (or replaces) a command by name.
+// Register adds (or replaces) a command by name. Use only for trusted,
+// first-party commands (the built-ins); untrusted skills go through
+// RegisterIfAbsent so they can't overwrite a built-in.
 func (r *Registry) Register(c Command) { r.cmds[c.Name()] = c }
+
+// RegisterIfAbsent adds c only if no command with its name already
+// exists, returning false on collision (the existing command is kept).
+// Used for user/project skills so they shadow nothing already
+// registered — built-ins, registered first, take precedence.
+func (r *Registry) RegisterIfAbsent(c Command) bool {
+	if _, exists := r.cmds[c.Name()]; exists {
+		return false
+	}
+	r.cmds[c.Name()] = c
+	return true
+}
 
 // Get looks up a command by name (without leading slash).
 func (r *Registry) Get(name string) Command { return r.cmds[name] }

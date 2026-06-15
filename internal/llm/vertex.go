@@ -183,11 +183,21 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		// (and breaking compaction-boundary matching / cross-provider
 		// /model swap). Suffixing with this index keeps them distinct.
 		toolCallIdx := 0
+		// Track the terminal finish/block reasons so a blocked or
+		// truncated turn doesn't end as a silent, empty EventDone. The
+		// candidate's FinishReason is authoritative; PromptFeedback's
+		// BlockReason fires when the *prompt itself* was rejected (no
+		// candidate at all).
+		var finishReason genai.FinishReason
+		var blockReason genai.BlockedReason
 
 		stream(func(resp *genai.GenerateContentResponse, err error) bool {
 			if err != nil {
 				streamErr = err
 				return false
+			}
+			if pf := resp.PromptFeedback; pf != nil && pf.BlockReason != "" {
+				blockReason = pf.BlockReason
 			}
 			if u := resp.UsageMetadata; u != nil && (u.PromptTokenCount > 0 || u.CachedContentTokenCount > 0) {
 				// Gemini 2.5+ reports CachedContentTokenCount when
@@ -205,7 +215,13 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 				sawUsage = true
 			}
 			for _, cand := range resp.Candidates {
-				if cand == nil || cand.Content == nil {
+				if cand == nil {
+					continue
+				}
+				if cand.FinishReason != "" {
+					finishReason = cand.FinishReason
+				}
+				if cand.Content == nil {
 					continue
 				}
 				for _, part := range cand.Content.Parts {
@@ -259,10 +275,62 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		if sawUsage {
 			eventCh <- Event{Type: EventUsage, Usage: lastUsage}
 		}
-		eventCh <- Event{Type: EventDone}
+		// A prompt-level block (no candidate) or a content-block finish
+		// reason (SAFETY/RECITATION/…) must surface as an error — otherwise
+		// the turn ends as a clean but empty EventDone and the agent loops
+		// on an assistant message it can't explain.
+		if msg := vertexBlockMessage(finishReason, blockReason); msg != "" {
+			eventCh <- Event{Type: EventError, Error: fmt.Errorf("vertex: %s", msg)}
+			return
+		}
+		eventCh <- Event{Type: EventDone, FinishReason: mapVertexFinishReason(finishReason)}
 	}()
 
 	return eventCh, nil
+}
+
+// vertexBlockMessage returns a human-readable reason when the turn was
+// blocked (by content safety, recitation, a blocklist, etc.) and so
+// produced no usable output, or "" when it finished normally (STOP,
+// MAX_TOKENS, tool call, …). Prompt-level blocks (BlockReason, no
+// candidate) take precedence over the candidate finish reason.
+func vertexBlockMessage(fr genai.FinishReason, br genai.BlockedReason) string {
+	switch br {
+	case "", genai.BlockedReasonUnspecified:
+		// no prompt-level block; fall through to the finish reason
+	default:
+		return "prompt blocked (" + string(br) + ")"
+	}
+	switch fr {
+	case genai.FinishReasonSafety:
+		return "response blocked by safety filters"
+	case genai.FinishReasonRecitation:
+		return "response blocked for recitation (cited/copyrighted content)"
+	case genai.FinishReasonBlocklist:
+		return "response blocked by a terminology blocklist"
+	case genai.FinishReasonProhibitedContent:
+		return "response blocked: prohibited content"
+	case genai.FinishReasonSPII:
+		return "response blocked: sensitive personally identifiable information"
+	case genai.FinishReasonImageSafety:
+		return "response blocked: image safety"
+	case genai.FinishReasonMalformedFunctionCall:
+		return "model emitted a malformed function call"
+	}
+	return ""
+}
+
+// mapVertexFinishReason maps a Gemini FinishReason onto the adapter's
+// shared finish-reason vocabulary (see openai.go) so the agent's
+// auto-recovery can engage. Most relevant: MAX_TOKENS → FinishLength,
+// which lets a truncated Vertex turn be continued just like an OpenAI
+// one. Block reasons are handled by vertexBlockMessage (EventError), not
+// here. Anything else maps to the empty string ("normal stop").
+func mapVertexFinishReason(fr genai.FinishReason) string {
+	if fr == genai.FinishReasonMaxTokens {
+		return FinishLength
+	}
+	return ""
 }
 
 // synthVertexToolCallID returns the tool-call ID to emit for a Gemini

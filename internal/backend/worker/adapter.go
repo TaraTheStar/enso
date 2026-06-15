@@ -53,6 +53,12 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 		wfCancels: map[uint64]context.CancelFunc{},
 		cancelAll: cancel,
 	}
+	// All seam sends funnel through one writer goroutine from here. The
+	// handshake (MsgWorkerReady) was already written on the raw Channel by
+	// Serve before this runs, so the writer is the sole Channel writer for
+	// the whole agent run; it is closed (and drained) below before Serve
+	// regains the Channel to send the terminal MsgWorkerDone/Error.
+	s.writer = backend.NewQueueWriter(ch)
 
 	providers, err := buildProviders(spec, s)
 	if err != nil {
@@ -371,15 +377,29 @@ func RunAgent(ctx context.Context, spec backend.TaskSpec, ch backend.Channel) er
 
 	cancel()
 	busInst.Close() // ends forwardBus's range, bounded
-	wg.Wait()
+	wg.Wait()       // forwardBus has enqueued its last events
+	// Drain + stop the writer before returning: Serve sends the terminal
+	// MsgWorkerDone/Error on the raw Channel next, and it must be the sole
+	// writer when it does. A lingering demux goroutine that sends after
+	// this gets ErrWriterClosed (no raw-Channel write), so it can't race
+	// Serve's terminal envelope.
+	_ = s.writer.Close()
 	return runErr
 }
 
 // session holds the per-task wiring shared by the demux, the bus
 // forwarder, and the Channel-backed inference client.
 type seam struct {
-	ch        backend.Channel
-	sendMu    sync.Mutex // Channel.Send must be serialized across producers
+	ch backend.Channel
+	// writer is the single owner of Channel.Send: forwardBus, the persist
+	// shipper, the inference client and the demux's control responses all
+	// enqueue onto it instead of blocking on a shared mutex across the pipe
+	// write. Its priority lane keeps a permission request / inference
+	// cancel from queuing behind a flood of streamed events (findings #2 &
+	// #3). Created in RunAgent before the first send; closed (drained)
+	// before RunAgent returns so Serve's terminal MsgWorkerDone/Error on
+	// the raw Channel is the sole writer again.
+	writer    *backend.QueueWriter
 	agt       *agent.Agent
 	checker   *permissions.Checker // the REAL enforcing checker (CtrlSetYolo)
 	cancelAll context.CancelFunc
@@ -447,9 +467,16 @@ func (s *seam) emitTelemetry() {
 }
 
 func (s *seam) send(env backend.Envelope) error {
-	s.sendMu.Lock()
-	defer s.sendMu.Unlock()
-	return s.ch.Send(env)
+	return s.writer.Send(env)
+}
+
+// sendSync ships env and waits for the real write result. Used by the
+// fail-closed paths — permission/capability requests (a lost send must
+// not hang the tool or default open) and session persistence (a lost
+// append must surface, not silently drop a row) — where the synchronous
+// error semantics predate the writer queue and must be preserved.
+func (s *seam) sendSync(env backend.Envelope) error {
+	return s.writer.SendSync(env)
 }
 
 // remoteWriter is the session.Writer substitute for an ISOLATED worker
@@ -487,7 +514,7 @@ func (rw *remoteWriter) AppendMessage(msg llm.Message, agentID string) (int, err
 	if err != nil {
 		return 0, err
 	}
-	if err := rw.s.send(backend.Envelope{Kind: backend.MsgPersistMessage, Body: body}); err != nil {
+	if err := rw.s.sendSync(backend.Envelope{Kind: backend.MsgPersistMessage, Body: body}); err != nil {
 		return 0, err
 	}
 	return seq, nil
@@ -502,7 +529,7 @@ func (rw *remoteWriter) AppendMessageUsage(seq int, usage llm.MessageUsage, agen
 	if err != nil {
 		return err
 	}
-	return rw.s.send(backend.Envelope{Kind: backend.MsgPersistMessageUsage, Body: body})
+	return rw.s.sendSync(backend.Envelope{Kind: backend.MsgPersistMessageUsage, Body: body})
 }
 
 func (rw *remoteWriter) AppendToolCall(callID, name string, args map[string]any, llmOutput, fullOutput, status string) error {
@@ -513,7 +540,7 @@ func (rw *remoteWriter) AppendToolCall(callID, name string, args map[string]any,
 	if err != nil {
 		return err
 	}
-	return rw.s.send(backend.Envelope{Kind: backend.MsgPersistToolCall, Body: body})
+	return rw.s.sendSync(backend.Envelope{Kind: backend.MsgPersistToolCall, Body: body})
 }
 
 func (s *seam) nextCorr(prefix string) string {
@@ -826,7 +853,7 @@ func (s *seam) RequestCapability(ctx context.Context, capType, name, reason stri
 	if err != nil {
 		return "", 0, false
 	}
-	if err := s.send(backend.Envelope{Kind: backend.MsgCapabilityRequest, Corr: corr, Body: body}); err != nil {
+	if err := s.sendSync(backend.Envelope{Kind: backend.MsgCapabilityRequest, Corr: corr, Body: body}); err != nil {
 		return "", 0, false
 	}
 	select {
@@ -894,9 +921,11 @@ func (s *seam) proxyPermission(pr *permissions.PromptRequest) {
 		s.deliverPermission(corr, permissions.Deny)
 		return
 	}
-	if err := s.send(backend.Envelope{
+	if err := s.sendSync(backend.Envelope{
 		Kind: backend.MsgPermissionRequest, Corr: corr, Body: body,
 	}); err != nil {
+		// A dead Channel must fail closed, never hang the tool waiting on
+		// a decision the host can't ask for.
 		s.deliverPermission(corr, permissions.Deny)
 	}
 }

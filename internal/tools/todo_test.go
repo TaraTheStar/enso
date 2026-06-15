@@ -50,6 +50,28 @@ func TestTodoTool_AddListUpdateDone(t *testing.T) {
 	}
 }
 
+// TestTodoTool_PerAgentIsolation is the regression for cross-agent list
+// bleed: two agents (two AgentContexts) sharing the one registered
+// TodoTool must keep independent lists.
+func TestTodoTool_PerAgentIsolation(t *testing.T) {
+	tt := TodoTool{}
+	a := newToolAC(t.TempDir())
+	b := newToolAC(t.TempDir())
+
+	_, _ = tt.Run(context.Background(), map[string]any{"action": "add", "title": "a-task"}, a)
+
+	// b's list must NOT see a's task.
+	res, _ := tt.Run(context.Background(), map[string]any{"action": "list"}, b)
+	if !strings.Contains(res.LLMOutput, "no tasks") {
+		t.Errorf("agent b saw agent a's todos: %q", res.LLMOutput)
+	}
+	// a still has its own.
+	res, _ = tt.Run(context.Background(), map[string]any{"action": "list"}, a)
+	if !strings.Contains(res.LLMOutput, "a-task") {
+		t.Errorf("agent a lost its todo: %q", res.LLMOutput)
+	}
+}
+
 func TestTodoTool_AddRequiresTitle(t *testing.T) {
 	tt := &TodoTool{}
 	ac := newToolAC(t.TempDir())

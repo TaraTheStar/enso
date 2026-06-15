@@ -4,7 +4,6 @@ package bus
 
 import (
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -44,11 +43,13 @@ func TestWireFormSerializableEvents(t *testing.T) {
 func TestWireFormDropsInternalEvents(t *testing.T) {
 	// PermissionResponse / PermissionAuto are decision-feedback events
 	// that travel host-locally only; they must never cross as plain
-	// wire events. EventPermissionRequest IS now wire-safe (see
-	// TestWireFormPermissionRequest) because the payload's channel and
-	// deadline are json:"-" — observers get the safe shape.
+	// wire events. EventPermissionRequest is also dropped: it carries a
+	// live Respond channel and lacks the RequestID a client needs to
+	// answer, so a generic wire fan-out would render an un-answerable
+	// phantom prompt. Both the daemon and the Backend worker proxy it
+	// through a dedicated, answerable path instead.
 	for _, et := range []EventType{
-		EventPermissionResponse, EventPermissionAuto,
+		EventPermissionResponse, EventPermissionAuto, EventPermissionRequest,
 	} {
 		if _, _, ok := (Event{Type: et}).WireForm(); ok {
 			t.Fatalf("event %d should be dropped from the wire", et)
@@ -56,49 +57,23 @@ func TestWireFormDropsInternalEvents(t *testing.T) {
 	}
 }
 
-// TestWireFormPermissionRequest checks that EventPermissionRequest
-// carries a sanitised payload across the wire: tool_name, args, and
-// agent identifiers survive; the live Respond channel and Deadline
-// (both json:"-" on permissions.PromptRequest) are stripped.
-//
-// Uses an inline struct that mirrors PromptRequest's json shape rather
-// than importing internal/permissions (which would create a cycle —
-// permissions imports bus). The integration test in
-// internal/permissions/wireform_test.go runs the same assertion against
-// the real type.
+// TestWireFormPermissionRequest checks that EventPermissionRequest is
+// not wire-serializable via the generic path: WireForm returns ok=false
+// so it never reaches a daemon/worker fan-out. Permission requests are
+// proxied through a dedicated, answerable control path instead.
 func TestWireFormPermissionRequest(t *testing.T) {
 	type promptLike struct {
-		ToolName  string         `json:"tool_name"`
-		ArgString string         `json:"arg_string,omitempty"`
-		Args      map[string]any `json:"args,omitempty"`
-		AgentID   string         `json:"agent_id,omitempty"`
-		Respond   chan struct{}  `json:"-"`
+		ToolName string        `json:"tool_name"`
+		AgentID  string        `json:"agent_id,omitempty"`
+		Respond  chan struct{} `json:"-"`
 	}
 	payload := &promptLike{
 		ToolName: "bash",
-		Args:     map[string]any{"cmd": "ls"},
 		AgentID:  "agent-7",
 		Respond:  make(chan struct{}),
 	}
 
-	typ, raw, ok := Event{Type: EventPermissionRequest, Payload: payload}.WireForm()
-	if !ok || typ != "PermissionRequest" {
-		t.Fatalf("WireForm: ok=%v typ=%q", ok, typ)
-	}
-	got := string(raw)
-	if !strings.Contains(got, `"tool_name":"bash"`) {
-		t.Errorf("payload missing tool_name: %s", got)
-	}
-	if !strings.Contains(got, `"agent_id":"agent-7"`) {
-		t.Errorf("payload missing agent_id: %s", got)
-	}
-	if strings.Contains(got, "Respond") || strings.Contains(got, "respond") {
-		t.Errorf("Respond channel leaked into wire payload: %s", got)
-	}
-
-	// FromWire returns ok=false on purpose (see comment in bus.go) —
-	// in-process consumers reach permissions via a separate path.
-	if _, ok := FromWire("PermissionRequest", raw); ok {
-		t.Errorf("FromWire should return ok=false for PermissionRequest (see asymmetry comment)")
+	if _, _, ok := (Event{Type: EventPermissionRequest, Payload: payload}).WireForm(); ok {
+		t.Fatal("WireForm should return ok=false for EventPermissionRequest")
 	}
 }

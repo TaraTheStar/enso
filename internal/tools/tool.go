@@ -169,6 +169,12 @@ type AgentContext struct {
 	// nil disables background mode (the tools report it unavailable).
 	BashJobs *BashJobs
 
+	// Todos is this agent's in-session task list (the todo tool). Each
+	// agent (top-level and every sub-agent) gets its own so sibling/child
+	// lists don't bleed together and unrelated daemon sessions sharing the
+	// tool Registry stay isolated. nil → the tool uses a transient store.
+	Todos *TodoStore
+
 	// RecentUserHint is the most recent user message text — used by
 	// RelevantTruncate (B2) as a relevance signal when an output
 	// exceeds its cap. Empty disables relevance truncation.

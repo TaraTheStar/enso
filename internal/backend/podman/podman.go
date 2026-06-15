@@ -31,6 +31,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/TaraTheStar/enso/internal/backend"
@@ -567,10 +568,20 @@ func (w *podmanWorker) Teardown(ctx context.Context) error {
 	w.once.Do(func() {
 		_ = w.ch.Close()
 		if w.cmd.Process != nil {
-			_ = w.cmd.Process.Kill()
+			// SIGTERM with a grace window first — `podman run` forwards it
+			// to the container's main process so the worker can flush its
+			// final persist envelopes and run OnSessionEnd hooks. An
+			// immediate SIGKILL would cut it off mid-frame. SIGKILL is the
+			// backstop if it overstays. Mirrors lima's reap-with-timeout.
+			_ = w.cmd.Process.Signal(syscall.SIGTERM)
 			// Consume the exit via the shared reaper, never a second
 			// concurrent cmd.Wait() racing the one in Wait(ctx).
-			<-w.reap()
+			select {
+			case <-w.reap():
+			case <-time.After(3 * time.Second):
+				_ = w.cmd.Process.Kill()
+				<-w.reap()
+			}
 		}
 		// Best-effort: --rm usually already removed it. -v also drops
 		// the worker's anonymous volumes (the workspace

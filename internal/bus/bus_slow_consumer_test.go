@@ -28,7 +28,7 @@ func TestPublish_DoesNotBlockOnFullSubscriber(t *testing.T) {
 	const events = 1000
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < events; i++ {
+		for range events {
 			b.Publish(Event{Type: EventAssistantDelta, Payload: "x"})
 		}
 		close(done)
@@ -68,7 +68,7 @@ func TestPublish_ContinuesToOtherSubscribersWhenOneIsFull(t *testing.T) {
 	}()
 
 	const events = 50
-	for i := 0; i < events; i++ {
+	for range events {
 		b.Publish(Event{Type: EventAssistantDelta, Payload: "x"})
 	}
 
@@ -84,6 +84,47 @@ func TestPublish_ContinuesToOtherSubscribersWhenOneIsFull(t *testing.T) {
 	// Sanity-check: slow buffer hit its cap (received exactly 1).
 	if len(slow) != 1 {
 		t.Errorf("slow buffer len=%d, want 1 (subscriber should have received exactly the first event)", len(slow))
+	}
+}
+
+// TestPublish_CountsDroppedEvents covers finding #2: drops used to be
+// only per-event log lines, invisible in aggregate and untestable. The
+// Dropped() counter makes residual loss (after the seam's QueueWriter
+// absorbs bursts) observable.
+func TestPublish_CountsDroppedEvents(t *testing.T) {
+	b := New()
+	b.Subscribe(0) // zero-cap → every Publish drops
+
+	if got := b.Dropped(); got != 0 {
+		t.Fatalf("Dropped() before any publish = %d, want 0", got)
+	}
+	const events = 17
+	for range events {
+		b.Publish(Event{Type: EventAssistantDelta, Payload: "x"})
+	}
+	if got := b.Dropped(); got != events {
+		t.Fatalf("Dropped() = %d, want %d", got, events)
+	}
+}
+
+// TestPublish_DroppedNotIncrementedWhenDelivered: a drained subscriber
+// never inflates the counter.
+func TestPublish_DroppedNotIncrementedWhenDelivered(t *testing.T) {
+	b := New()
+	sub := b.Subscribe(100)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range sub {
+		}
+	}()
+	for range 50 {
+		b.Publish(Event{Type: EventAssistantDelta, Payload: "x"})
+	}
+	b.Close()
+	<-done
+	if got := b.Dropped(); got != 0 {
+		t.Fatalf("Dropped() with a drained subscriber = %d, want 0", got)
 	}
 }
 
