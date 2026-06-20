@@ -19,7 +19,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.46.0
-	google.golang.org/genai v1.59.0
+	google.golang.org/genai v1.61.0
 	modernc.org/sqlite v1.52.0
 )
 
