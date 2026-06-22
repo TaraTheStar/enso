@@ -65,9 +65,13 @@ func renderBlock(b blocks.Block, width int, finalized bool) string {
 		}
 		// Live streaming: no markdown parse (partial fenced blocks
 		// would render broken, and re-parsing every delta is wasteful),
-		// but still hard-wrap to the terminal width so the in-flight
-		// text doesn't run off the right edge before it graduates.
-		// Continuation lines hang-indent under the prefix.
+		// but LaTeX symbol/Greek fragments are folded to Unicode (cheap,
+		// and resolves `$\rightarrow$` → → as it streams), then hard-wrap
+		// to the terminal width so the in-flight text doesn't run off the
+		// right edge before it graduates. Continuation lines hang-indent
+		// under the prefix. Must match the cache's renderAssistant exactly
+		// (TestLiveRenderMatchesRenderBlock).
+		text = delatexStream(text)
 		lines := strings.Split(liveWrap(text, width, markdownPrefixWidth), "\n")
 		var ab strings.Builder
 		ab.WriteString(prefix)
@@ -264,7 +268,7 @@ func renderMarkdown(text string, width int) string {
 	if err != nil {
 		return text
 	}
-	out, err := r.Render(text)
+	out, err := r.Render(delatex(text))
 	if err != nil {
 		return text
 	}
