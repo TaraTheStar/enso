@@ -104,6 +104,11 @@ func (c *liveRenderCache) renderAssistant(v *blocks.Assistant, width int) string
 	if text == "" {
 		return ""
 	}
+	// Mirror renderBlock's live arm: fold LaTeX to Unicode before wrapping.
+	// delatexStream transforms only complete lines in full (immutable once
+	// their newline has streamed) and holds a trailing partial command raw,
+	// so the cache's stable-prefix invariant still holds.
+	text = delatexStream(text)
 	c.ensure(v, width, len(text))
 	pad := strings.Repeat(" ", markdownPrefixWidth)
 	stable := c.fold(text, markdownPrefixWidth, "\n"+pad, func(ln string) string { return ln })
