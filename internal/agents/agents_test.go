@@ -154,10 +154,10 @@ func TestApplyFiltersAndOverrides(t *testing.T) {
 		t.Errorf("original provider's sampler must not be mutated")
 	}
 
-	if out.Registry.Get("read") == nil || out.Registry.Get("grep") == nil {
+	if !has(out.Registry, "read") || !has(out.Registry, "grep") {
 		t.Errorf("allowed tools missing from filtered registry")
 	}
-	if out.Registry.Get("bash") != nil {
+	if has(out.Registry, "bash") {
 		t.Errorf("bash should not be in a plan-style restricted registry")
 	}
 
@@ -176,15 +176,21 @@ func TestApplyDeniedTools(t *testing.T) {
 		DeniedTools: []string{"bash", "edit"},
 	}
 	out := Apply(spec, &provider.Provider{}, registry)
-	if out.Registry.Get("bash") != nil {
+	if has(out.Registry, "bash") {
 		t.Errorf("denied tool 'bash' should be excluded")
 	}
-	if out.Registry.Get("edit") != nil {
+	if has(out.Registry, "edit") {
 		t.Errorf("denied tool 'edit' should be excluded")
 	}
-	if out.Registry.Get("read") == nil {
+	if !has(out.Registry, "read") {
 		t.Errorf("undenied tool 'read' should remain")
 	}
+}
+
+// has reports whether the registry contains a tool by name (two-value Get).
+func has(r *tools.Registry, name string) bool {
+	_, ok := r.Get(name)
+	return ok
 }
 
 func writeAgent(t *testing.T, path, name, desc string, allowed []string) {

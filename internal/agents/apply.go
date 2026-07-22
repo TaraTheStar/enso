@@ -46,10 +46,10 @@ func Apply(spec *Spec, provider *provider.Provider, registry *tools.Registry) Ap
 	}
 
 	if len(spec.AllowedTools) > 0 {
-		out.Registry = out.Registry.Filter(spec.AllowedTools)
+		out.Registry = out.Registry.Filter(spec.AllowedTools...)
 	}
 	if len(spec.DeniedTools) > 0 {
-		out.Registry = out.Registry.Without(spec.DeniedTools)
+		out.Registry = out.Registry.Without(spec.DeniedTools...)
 	}
 
 	out.PromptAppend = spec.PromptAppend

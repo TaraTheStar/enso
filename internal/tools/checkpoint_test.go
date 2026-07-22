@@ -66,7 +66,7 @@ func TestCheckpointTool_NoRequesterWired(t *testing.T) {
 
 func TestCheckpointTool_RegisteredByDefault(t *testing.T) {
 	r := BuildDefault()
-	if r.Get("checkpoint") == nil {
+	if getTool(r, "checkpoint") == nil {
 		t.Fatal("checkpoint tool not registered in BuildDefault")
 	}
 }

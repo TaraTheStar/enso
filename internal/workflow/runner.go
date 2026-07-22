@@ -285,7 +285,7 @@ func runRole(
 
 	childRegistry := deps.Registry
 	if len(role.AllowedTools) > 0 {
-		childRegistry = deps.Registry.Filter(role.AllowedTools)
+		childRegistry = deps.Registry.Filter(role.AllowedTools...)
 	}
 
 	agentID := name + ":" + shortID()

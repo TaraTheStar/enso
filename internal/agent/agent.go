@@ -1100,7 +1100,7 @@ func (a *Agent) runUntilQuiescent(ctx context.Context) {
 	// reverts to the full registry on the next user message.
 	registry := a.Registry
 	if names := a.consumeNextTurnTools(); len(names) > 0 {
-		registry = a.Registry.Filter(names)
+		registry = a.Registry.Filter(names...)
 	}
 
 	for {
@@ -1510,8 +1510,8 @@ func (a *Agent) historySnapshot() []llm.Message {
 // paths Meta is the zero value, which the prune layer treats as "no
 // pruning hints."
 func (a *Agent) executeToolCall(ctx context.Context, registry *tools.Registry, tc llm.ToolCall) (string, []llm.MessagePart, tools.ResultMeta) {
-	tool := registry.Get(tc.Function.Name)
-	if tool == nil {
+	tool, ok := registry.Get(tc.Function.Name)
+	if !ok {
 		return fmt.Sprintf("error: unknown tool %q", tc.Function.Name), nil, tools.ResultMeta{}
 	}
 
