@@ -22,9 +22,9 @@ func TestProviderFactory_AnthropicVertexType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	vc, ok := client.(*anthropic.AnthropicVertexClient)
+	vc, ok := client.(*anthropic.VertexClient)
 	if !ok {
-		t.Fatalf("want *anthropic.AnthropicVertexClient, got %T", client)
+		t.Fatalf("want *anthropic.VertexClient, got %T", client)
 	}
 	if vc.Model != cfg.Model || vc.Project != "acme-prod" || vc.Region != "us-east5" {
 		t.Fatalf("config not threaded: %+v", vc)
@@ -52,18 +52,14 @@ func TestProviderFactory_GenerateContentAndAnthropicVertexCoexist(t *testing.T) 
 	if err != nil {
 		t.Fatalf("anthropic-vertex: %v", err)
 	}
-	if _, ok := gemini.(*vertex.VertexClient); !ok {
-		t.Fatalf("vertex: want *vertex.VertexClient, got %T", gemini)
+	if _, ok := gemini.(*vertex.Client); !ok {
+		t.Fatalf("vertex: want *vertex.Client, got %T", gemini)
 	}
-	if _, ok := claude.(*anthropic.AnthropicVertexClient); !ok {
-		t.Fatalf("anthropic-vertex: want *anthropic.AnthropicVertexClient, got %T", claude)
+	if _, ok := claude.(*anthropic.VertexClient); !ok {
+		t.Fatalf("anthropic-vertex: want *anthropic.VertexClient, got %T", claude)
 	}
 }
 
-// TestAnthropicVertexClient_MissingRegionErrors exercises the up-front
-// validation we add to avoid the SDK's WithGoogleAuth panic when region
-// is empty. The error needs to be a clean Go error the caller can see,
-// not a runtime panic surfacing from a goroutine.
 func TestProviderFactory_AnthropicVertexPromptCaching(t *testing.T) {
 	client, err := newChatClient(config.ProviderConfig{
 		Type:          "anthropic-vertex",
@@ -75,7 +71,7 @@ func TestProviderFactory_AnthropicVertexPromptCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	if !client.(*anthropic.AnthropicVertexClient).PromptCaching {
+	if !client.(*anthropic.VertexClient).PromptCaching {
 		t.Fatal("PromptCaching not threaded")
 	}
 }

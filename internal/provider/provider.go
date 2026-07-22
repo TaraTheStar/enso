@@ -261,7 +261,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			ReasoningBudget: cfg.Generation.ReasoningBudget,
 		}, nil
 	case "bedrock":
-		return &bedrock.BedrockClient{
+		return &bedrock.Client{
 			Model:                  cfg.Model,
 			Region:                 cfg.AWSRegion,
 			Profile:                cfg.AWSProfile,
@@ -274,7 +274,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	case "vertex":
-		return &vertex.VertexClient{
+		return &vertex.Client{
 			Model:                  cfg.Model,
 			Project:                cfg.GCPProject,
 			Location:               cfg.GCPLocation,
@@ -284,7 +284,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			Safety:                 cfg.VertexSafety,
 		}, nil
 	case "anthropic":
-		return &anthropic.AnthropicClient{
+		return &anthropic.Client{
 			APIKey:                 cfg.APIKey,
 			Model:                  cfg.Model,
 			BaseURL:                cfg.Endpoint,
@@ -294,7 +294,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	case "anthropic-bedrock":
-		return &anthropic.AnthropicBedrockClient{
+		return &anthropic.BedrockClient{
 			Model:                  cfg.Model,
 			Region:                 cfg.AWSRegion,
 			Profile:                cfg.AWSProfile,
@@ -307,7 +307,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	case "anthropic-vertex":
-		return &anthropic.AnthropicVertexClient{
+		return &anthropic.VertexClient{
 			Model:                  cfg.Model,
 			Region:                 cfg.GCPLocation,
 			Project:                cfg.GCPProject,

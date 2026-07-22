@@ -23,9 +23,9 @@ func TestProviderFactory_BedrockType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	bc, ok := client.(*bedrock.BedrockClient)
+	bc, ok := client.(*bedrock.Client)
 	if !ok {
-		t.Fatalf("want *bedrock.BedrockClient, got %T", client)
+		t.Fatalf("want *bedrock.Client, got %T", client)
 	}
 	if bc.Model != cfg.Model || bc.Region != "us-west-2" || bc.Profile != "dev" {
 		t.Fatalf("config not threaded: %+v", bc)
@@ -62,7 +62,7 @@ func TestProviderFactory_BedrockExtendedThinking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	bc := client.(*bedrock.BedrockClient)
+	bc := client.(*bedrock.Client)
 	if !bc.ExtendedThinking || bc.ExtendedThinkingBudget != 8000 {
 		t.Fatalf("thinking config not threaded: %+v", bc)
 	}
@@ -79,7 +79,7 @@ func TestProviderFactory_BedrockGuardrails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	bc := client.(*bedrock.BedrockClient)
+	bc := client.(*bedrock.Client)
 	if bc.GuardrailID != "gr-abc" || bc.GuardrailVersion != "DRAFT" || bc.GuardrailTrace != "enabled_full" {
 		t.Fatalf("guardrail fields not threaded: %+v", bc)
 	}
@@ -114,7 +114,7 @@ func TestProviderFactory_BedrockPromptCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	if !client.(*bedrock.BedrockClient).PromptCaching {
+	if !client.(*bedrock.Client).PromptCaching {
 		t.Fatal("PromptCaching not threaded")
 	}
 }
