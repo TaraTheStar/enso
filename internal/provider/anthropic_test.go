@@ -23,9 +23,9 @@ func TestProviderFactory_AnthropicType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	ac, ok := client.(*anthropic.AnthropicClient)
+	ac, ok := client.(*anthropic.Client)
 	if !ok {
-		t.Fatalf("want *anthropic.AnthropicClient, got %T", client)
+		t.Fatalf("want *anthropic.Client, got %T", client)
 	}
 	if ac.APIKey != cfg.APIKey || ac.Model != cfg.Model {
 		t.Fatalf("config not threaded: %+v", ac)
@@ -51,7 +51,7 @@ func TestProviderFactory_AnthropicPromptCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	if !client.(*anthropic.AnthropicClient).PromptCaching {
+	if !client.(*anthropic.Client).PromptCaching {
 		t.Fatal("PromptCaching not threaded")
 	}
 }

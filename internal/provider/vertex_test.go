@@ -20,9 +20,9 @@ func TestProviderFactory_VertexType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	vc, ok := client.(*vertex.VertexClient)
+	vc, ok := client.(*vertex.Client)
 	if !ok {
-		t.Fatalf("want *vertex.VertexClient, got %T", client)
+		t.Fatalf("want *vertex.Client, got %T", client)
 	}
 	if vc.Project != "acme-prod" || vc.Location != "europe-west4" {
 		t.Fatalf("GCP fields not threaded: %+v", vc)
@@ -46,7 +46,7 @@ func TestProviderFactory_VertexExtendedThinking(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	vc := client.(*vertex.VertexClient)
+	vc := client.(*vertex.Client)
 	if !vc.ExtendedThinking || vc.ExtendedThinkingBudget != 12000 {
 		t.Fatalf("thinking config not threaded: %+v", vc)
 	}
@@ -70,7 +70,7 @@ func TestProviderFactory_VertexSafety(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	vc := client.(*vertex.VertexClient)
+	vc := client.(*vertex.Client)
 	if len(vc.Safety) != 2 {
 		t.Fatalf("Safety not threaded: %+v", vc.Safety)
 	}

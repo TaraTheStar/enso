@@ -22,9 +22,9 @@ func TestProviderFactory_AnthropicBedrockType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	bc, ok := client.(*anthropic.AnthropicBedrockClient)
+	bc, ok := client.(*anthropic.BedrockClient)
 	if !ok {
-		t.Fatalf("want *anthropic.AnthropicBedrockClient, got %T", client)
+		t.Fatalf("want *anthropic.BedrockClient, got %T", client)
 	}
 	if bc.Model != cfg.Model || bc.Region != "us-west-2" || bc.Profile != "dev" {
 		t.Fatalf("config not threaded: %+v", bc)
@@ -50,7 +50,7 @@ func TestProviderFactory_AnthropicBedrockGuardrails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	abc := client.(*anthropic.AnthropicBedrockClient)
+	abc := client.(*anthropic.BedrockClient)
 	if abc.GuardrailID != "gr-xyz" || abc.GuardrailVersion != "1" || abc.GuardrailTrace != "enabled" {
 		t.Fatalf("guardrail fields not threaded: %+v", abc)
 	}
@@ -74,11 +74,11 @@ func TestProviderFactory_ConverseAndAnthropicBedrockCoexist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("anthropic-bedrock: %v", err)
 	}
-	if _, ok := converse.(*bedrock.BedrockClient); !ok {
-		t.Fatalf("converse: want *bedrock.BedrockClient, got %T", converse)
+	if _, ok := converse.(*bedrock.Client); !ok {
+		t.Fatalf("converse: want *bedrock.Client, got %T", converse)
 	}
-	if _, ok := native.(*anthropic.AnthropicBedrockClient); !ok {
-		t.Fatalf("anthropic-bedrock: want *anthropic.AnthropicBedrockClient, got %T", native)
+	if _, ok := native.(*anthropic.BedrockClient); !ok {
+		t.Fatalf("anthropic-bedrock: want *anthropic.BedrockClient, got %T", native)
 	}
 }
 
@@ -94,7 +94,7 @@ func TestProviderFactory_AnthropicBedrockPromptCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	if !client.(*anthropic.AnthropicBedrockClient).PromptCaching {
+	if !client.(*anthropic.BedrockClient).PromptCaching {
 		t.Fatal("PromptCaching not threaded")
 	}
 }
