@@ -9,59 +9,27 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/azoth/llm"
+	aztools "github.com/TaraTheStar/azoth/tools"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/permissions"
 	"github.com/TaraTheStar/enso/internal/provider"
 )
 
-// Tool is the interface for all built-in and MCP-adapted tools.
-type Tool interface {
-	Name() string
-	Description() string
-	Parameters() map[string]any
-	Run(ctx context.Context, args map[string]any, ac *AgentContext) (Result, error)
-}
+// Tool is the interface for all built-in and MCP-adapted tools: the shared
+// azoth/tools.Tool contract bound to enso's AgentContext. Its method set is
+// Name / Description / Parameters / Run(ctx, args, *AgentContext) (Result, error).
+type Tool = aztools.Tool[AgentContext]
 
-// Result separates the text fed back to the LLM from the full output stored in the session.
-type Result struct {
-	LLMOutput     string // truncated text sent back to the model
-	FullOutput    string // complete output stored in the session
-	DisplayOutput string // optional terse line(s) for scrollback; falls back to LLMOutput when empty
-	Display       any    // rich display data (e.g., diff for permission modal)
-	Meta          ResultMeta
+// Result and ResultMeta are enso's aliases for the shared azoth/tools types.
+// Result separates the text fed back to the LLM (LLMOutput) from the full
+// output stored in the session (FullOutput), plus DisplayOutput/Display for
+// the UI and Parts for non-text (image) content the model should see.
+// ResultMeta carries the context-pruning side channel (PathsRead /
+// PathsWritten / CacheKey); zero values are safe (no pruning effect).
+type Result = aztools.Result
 
-	// Parts carries non-text content the tool wants the model to see —
-	// today that's just images (read tool on a PNG, etc.). When
-	// populated, the agent loop wraps the tool-result Message with
-	// these Parts so the adapter can translate them to the vendor's
-	// multimodal shape. LLMOutput is still set for adapters that don't
-	// speak images yet and for session persistence (the DB schema is
-	// still TEXT-only); the model "sees" the image via Parts.
-	Parts []llm.MessagePart
-}
-
-// ResultMeta carries side-channel metadata used by the agent's
-// context-pruning machinery. Tools opt into pruning behaviours by
-// populating these fields; zero values are safe (no pruning effect).
-type ResultMeta struct {
-	// PathsRead is the set of absolute file paths whose contents this
-	// tool surfaced to the model. The pruner uses this to invalidate
-	// stale read results after a write/edit touches the same path
-	// (A4), and to decide whether the message references a "pinned"
-	// path that should survive stubbing/compaction (C1).
-	PathsRead []string
-
-	// PathsWritten is the set of absolute file paths this tool
-	// modified. Drives A4 invalidation: any prior read of a path in
-	// this set is stubbed when the write/edit message is appended.
-	PathsWritten []string
-
-	// CacheKey is a normalized identifier used for same-call dedup
-	// (A3). When two tool messages share a CacheKey, the older is
-	// stubbed regardless of the per-tool retention threshold.
-	// Examples: "read:/abs/path:1-200", "bash:git status".
-	CacheKey string
-}
+// ResultMeta is the context-pruning metadata a tool may populate on Result.
+type ResultMeta = aztools.ResultMeta
 
 // AgentContext carries request-scoped data for tool execution.
 type AgentContext struct {

@@ -92,18 +92,18 @@ func TestSpawn_RequiresGlobalAgentsCounter(t *testing.T) {
 
 func TestFilterRegistry_PicksNamedToolsOnly(t *testing.T) {
 	parent := tools.BuildDefault()
-	child := parent.Filter(asStringSlice([]any{"read", "grep", "nonexistent"}))
+	child := parent.Filter(asStringSlice([]any{"read", "grep", "nonexistent"})...)
 
-	if got := child.Get("read"); got == nil {
+	if _, ok := child.Get("read"); !ok {
 		t.Errorf("child should have read")
 	}
-	if got := child.Get("grep"); got == nil {
+	if _, ok := child.Get("grep"); !ok {
 		t.Errorf("child should have grep")
 	}
-	if got := child.Get("write"); got != nil {
+	if _, ok := child.Get("write"); ok {
 		t.Errorf("child should not have write")
 	}
-	if got := child.Get("nonexistent"); got != nil {
+	if _, ok := child.Get("nonexistent"); ok {
 		t.Errorf("nonexistent should be silently skipped")
 	}
 }

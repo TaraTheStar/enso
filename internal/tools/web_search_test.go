@@ -41,7 +41,7 @@ func TestWebSearch_SearXNG_HappyPath(t *testing.T) {
 	}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	tool := r.Get("web_search")
+	tool := getTool(r, "web_search")
 	if tool == nil {
 		t.Fatal("web_search not registered")
 	}
@@ -70,7 +70,7 @@ func TestWebSearch_SearXNG_MaxResultsCap(t *testing.T) {
 	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{Endpoint: srv.URL, MaxResults: 3}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	res, _ := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	res, _ := getTool(r, "web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	// Three results numbered 1..3, no "4." line.
 	if !strings.Contains(res.LLMOutput, "1.") || !strings.Contains(res.LLMOutput, "3.") {
 		t.Errorf("missing 1./3. in %q", res.LLMOutput)
@@ -91,7 +91,7 @@ func TestWebSearch_SearXNG_AuthHeader(t *testing.T) {
 	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{Endpoint: srv.URL, APIKey: "secret-token"}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	_, _ = r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	_, _ = getTool(r, "web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	if seen != "Bearer secret-token" {
 		t.Errorf("auth = %q", seen)
 	}
@@ -106,7 +106,7 @@ func TestWebSearch_SearXNG_HTTP500(t *testing.T) {
 	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{Endpoint: srv.URL}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	res, err := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	res, err := getTool(r, "web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestWebSearch_SearXNG_EmptyResults(t *testing.T) {
 	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{Endpoint: srv.URL}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	res, _ := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	res, _ := getTool(r, "web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	if !strings.Contains(res.LLMOutput, "no results") {
 		t.Errorf("expected 'no results', got %q", res.LLMOutput)
 	}
@@ -138,7 +138,7 @@ func TestWebSearch_SearXNG_TLS_DefaultRejectsSelfSigned(t *testing.T) {
 	cfg := config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{Endpoint: srv.URL}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	res, _ := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	res, _ := getTool(r, "web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	// No CA configured, server uses an untrusted cert — call should error,
 	// and the formatted output should mention the failure (not just be silent).
 	if !strings.Contains(strings.ToLower(res.LLMOutput), "certificate") &&
@@ -160,7 +160,7 @@ func TestWebSearch_SearXNG_TLS_InsecureSkipVerify(t *testing.T) {
 	}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	res, err := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	res, err := getTool(r, "web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestWebSearch_SearXNG_TLS_CACert(t *testing.T) {
 	}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	res, err := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	res, err := getTool(r, "web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestWebSearch_SearXNG_TLS_CACertPEM_NoPath(t *testing.T) {
 	}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	res, err := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	res, err := getTool(r, "web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -239,7 +239,7 @@ func TestWebSearch_SearXNG_TLS_BadCACertFallsBack(t *testing.T) {
 	}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	if r.Get("web_search") == nil {
+	if getTool(r, "web_search") == nil {
 		t.Fatal("web_search should still register on bad ca_cert")
 	}
 }
@@ -299,7 +299,7 @@ func TestWebSearch_SearXNG_RoutesThroughProxy(t *testing.T) {
 	}}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	res, err := r.Get("web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
+	res, err := getTool(r, "web_search").Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestWebSearch_SearXNG_RoutesThroughProxy(t *testing.T) {
 func TestWebSearch_QueryRequired(t *testing.T) {
 	r := NewRegistry()
 	RegisterSearch(r, config.SearchConfig{Provider: "searxng", SearXNG: config.SearXNGConfig{Endpoint: "http://unused"}})
-	_, err := r.Get("web_search").Run(context.Background(), map[string]any{}, newToolAC(t.TempDir()))
+	_, err := getTool(r, "web_search").Run(context.Background(), map[string]any{}, newToolAC(t.TempDir()))
 	if err == nil {
 		t.Fatal("expected error for missing query")
 	}
@@ -343,7 +343,7 @@ func TestWebSearch_DDG_HappyPath(t *testing.T) {
 	cfg := config.SearchConfig{Provider: "duckduckgo"}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	tool := r.Get("web_search").(WebSearchTool)
+	tool := getTool(r, "web_search").(WebSearchTool)
 	tool.backend.(*ddgBackend).baseURL = srv.URL // redirect to test server
 
 	res, err := tool.Run(context.Background(), map[string]any{"query": "foo"}, newToolAC(t.TempDir()))
@@ -370,7 +370,7 @@ func TestWebSearch_DDG_EmptyPage(t *testing.T) {
 	cfg := config.SearchConfig{Provider: "duckduckgo"}
 	r := NewRegistry()
 	RegisterSearch(r, cfg)
-	tool := r.Get("web_search").(WebSearchTool)
+	tool := getTool(r, "web_search").(WebSearchTool)
 	tool.backend.(*ddgBackend).baseURL = srv.URL
 
 	res, _ := tool.Run(context.Background(), map[string]any{"query": "x"}, newToolAC(t.TempDir()))
@@ -412,7 +412,7 @@ func TestPickSearchBackend(t *testing.T) {
 func TestRegisterSearch_NoneSuppresses(t *testing.T) {
 	r := NewRegistry()
 	RegisterSearch(r, config.SearchConfig{Provider: "none"})
-	if tool := r.Get("web_search"); tool != nil {
+	if tool := getTool(r, "web_search"); tool != nil {
 		t.Errorf("expected web_search to be absent when provider=none, got %v", tool)
 	}
 }

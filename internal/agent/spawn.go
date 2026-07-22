@@ -86,7 +86,7 @@ func (SpawnTool) Run(ctx context.Context, args map[string]any, ac *tools.AgentCo
 
 	childRegistry := ac.Registry
 	if list, ok := args["tools"].([]any); ok && len(list) > 0 {
-		childRegistry = ac.Registry.Filter(asStringSlice(list))
+		childRegistry = ac.Registry.Filter(asStringSlice(list)...)
 	}
 
 	var history []llm.Message
