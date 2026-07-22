@@ -9,10 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -43,11 +44,11 @@ func (t *recordTool) Run(ctx context.Context, args map[string]any, ac *tools.Age
 	return tools.Result{LLMOutput: "echoed: " + text, FullOutput: "echoed: " + text}, nil
 }
 
-// fakeProvider builds an llm.Provider whose Chat is the given mock.
+// fakeProvider builds an provider.Provider whose Chat is the given mock.
 // ContextWindow is set high enough that compaction never triggers in
 // tests that don't explicitly want it.
-func fakeProvider(mock *llmtest.Mock) *llm.Provider {
-	return &llm.Provider{
+func fakeProvider(mock *llmtest.Mock) *provider.Provider {
+	return &provider.Provider{
 		Name:          "test",
 		Client:        mock,
 		Model:         "fake",
@@ -80,7 +81,7 @@ func TestRunOneShot_ToolCallInterleavedWithFinalAnswer(t *testing.T) {
 	checker := permissions.NewChecker(nil, nil, nil, "allow") // auto-allow
 
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		DefaultProvider: "test",
 		Bus:             bus.New(),
 		Registry:        registry,
@@ -144,7 +145,7 @@ func TestRun_MultipleConsecutiveUserMessages(t *testing.T) {
 	checker := permissions.NewChecker(nil, nil, nil, "allow")
 
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		DefaultProvider: "test",
 		Bus:             busInst,
 		Registry:        registry,
@@ -202,11 +203,11 @@ func TestSetProvider_SwitchesActiveProvider(t *testing.T) {
 	mockA := llmtest.New()
 	mockB := llmtest.New()
 
-	pA := &llm.Provider{Name: "fast", Client: mockA, Model: "f", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
-	pB := &llm.Provider{Name: "deep", Client: mockB, Model: "d", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
+	pA := &provider.Provider{Name: "fast", Client: mockA, Model: "f", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
+	pB := &provider.Provider{Name: "deep", Client: mockB, Model: "d", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
 
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"fast": pA, "deep": pB},
+		Providers:       map[string]*provider.Provider{"fast": pA, "deep": pB},
 		DefaultProvider: "fast",
 		Bus:             bus.New(),
 		Registry:        tools.NewRegistry(),
@@ -237,11 +238,11 @@ func TestSetProvider_SwitchesActiveProvider(t *testing.T) {
 }
 
 func TestNew_DefaultProviderFallsBackToAlphabeticalFirst(t *testing.T) {
-	pA := &llm.Provider{Name: "alpha", Client: llmtest.New(), ContextWindow: 1_000, Pool: llm.NewPool(1)}
-	pB := &llm.Provider{Name: "beta", Client: llmtest.New(), ContextWindow: 1_000, Pool: llm.NewPool(1)}
+	pA := &provider.Provider{Name: "alpha", Client: llmtest.New(), ContextWindow: 1_000, Pool: llm.NewPool(1)}
+	pB := &provider.Provider{Name: "beta", Client: llmtest.New(), ContextWindow: 1_000, Pool: llm.NewPool(1)}
 
 	a, err := New(Config{
-		Providers: map[string]*llm.Provider{"beta": pB, "alpha": pA},
+		Providers: map[string]*provider.Provider{"beta": pB, "alpha": pA},
 		// DefaultProvider intentionally empty
 		Bus:      bus.New(),
 		Registry: tools.NewRegistry(),
@@ -258,9 +259,9 @@ func TestNew_DefaultProviderFallsBackToAlphabeticalFirst(t *testing.T) {
 }
 
 func TestNew_RejectsUnknownDefaultProvider(t *testing.T) {
-	pA := &llm.Provider{Name: "alpha", Client: llmtest.New(), ContextWindow: 1_000, Pool: llm.NewPool(1)}
+	pA := &provider.Provider{Name: "alpha", Client: llmtest.New(), ContextWindow: 1_000, Pool: llm.NewPool(1)}
 	_, err := New(Config{
-		Providers:       map[string]*llm.Provider{"alpha": pA},
+		Providers:       map[string]*provider.Provider{"alpha": pA},
 		DefaultProvider: "missing",
 		Bus:             bus.New(),
 		Registry:        tools.NewRegistry(),
@@ -302,7 +303,7 @@ func TestRunOneShot_DenyPatternBlocksTool(t *testing.T) {
 	checker := permissions.NewChecker(nil, nil, []string{"echo(*)"}, "allow")
 
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		DefaultProvider: "test",
 		Bus:             bus.New(),
 		Registry:        registry,
@@ -354,7 +355,7 @@ func TestRunOneShot_InlineToolCallLeakedIntoReasoning(t *testing.T) {
 	checker := permissions.NewChecker(nil, nil, nil, "allow")
 
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		DefaultProvider: "test",
 		Bus:             bus.New(),
 		Registry:        registry,

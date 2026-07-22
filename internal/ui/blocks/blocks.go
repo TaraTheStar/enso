@@ -17,7 +17,7 @@ package blocks
 import (
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // Block is the marker interface for chat block types. The marker is a

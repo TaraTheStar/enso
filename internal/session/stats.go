@@ -10,7 +10,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // Stats is a summary of activity across all sessions in the store, optionally

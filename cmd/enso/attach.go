@@ -12,14 +12,14 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/enso/internal/daemon"
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/ui"
 )
 
 // pickDefaultProviderName mirrors agent.pickDefaultProvider so call
 // sites can resolve the configured default before constructing an
 // Agent. Empty `requested` falls back to alphabetical-first.
-func pickDefaultProviderName(providers map[string]*llm.Provider, requested string) (string, error) {
+func pickDefaultProviderName(providers map[string]*provider.Provider, requested string) (string, error) {
 	if len(providers) == 0 {
 		return "", fmt.Errorf("no providers configured")
 	}

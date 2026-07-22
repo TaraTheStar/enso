@@ -9,8 +9,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -122,7 +123,7 @@ func (SpawnTool) Run(ctx context.Context, args map[string]any, ac *tools.AgentCo
 		// Defensive: older callers may not have set Providers
 		// yet. Fall back to a one-element map containing the parent's
 		// current provider so spawn still works.
-		childProviders = map[string]*llm.Provider{ac.Provider.Name: ac.Provider}
+		childProviders = map[string]*provider.Provider{ac.Provider.Name: ac.Provider}
 	}
 
 	roleLabel, _ := args["role"].(string)
@@ -188,7 +189,7 @@ func RegisterSpawn(r *tools.Registry) {
 // sortedProviderNames returns the configured provider keys in stable
 // order for inclusion in the LLM-visible error message when the model
 // asks for an unknown one.
-func sortedProviderNames(providers map[string]*llm.Provider) []string {
+func sortedProviderNames(providers map[string]*provider.Provider) []string {
 	out := make([]string, 0, len(providers))
 	for name := range providers {
 		out = append(out, name)

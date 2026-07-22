@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"context"
 	"fmt"
+	llm "github.com/TaraTheStar/azoth/llm"
 	"net/http"
 	"time"
 
@@ -74,7 +75,7 @@ type AnthropicBedrockClient struct {
 	// ProbeInterval — test seam. Zero uses the package default.
 	ProbeInterval time.Duration
 
-	conn connTracker
+	conn llm.ConnTracker
 
 	// sdk is built lazily on first Chat call so config changes before
 	// first use take effect.
@@ -83,7 +84,7 @@ type AnthropicBedrockClient struct {
 
 // LLMConnState lets the TUI render Bedrock's connection state through
 // the same ConnStateReporter interface every other provider uses.
-func (c *AnthropicBedrockClient) LLMConnState() ConnState { return c.conn.get() }
+func (c *AnthropicBedrockClient) LLMConnState() llm.ConnState { return c.conn.Get() }
 
 func (c *AnthropicBedrockClient) client(ctx context.Context) (*anthropic.Client, error) {
 	if c.sdk != nil {
@@ -129,7 +130,7 @@ func (c *AnthropicBedrockClient) client(ctx context.Context) (*anthropic.Client,
 
 // Chat translates the ChatRequest to Messages-API params and streams
 // the result through the bedrock-wrapped SDK client.
-func (c *AnthropicBedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event, error) {
+func (c *AnthropicBedrockClient) Chat(ctx context.Context, req llm.ChatRequest) (<-chan llm.Event, error) {
 	maxTokens := c.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 8192
@@ -156,11 +157,11 @@ func (c *AnthropicBedrockClient) Chat(ctx context.Context, req ChatRequest) (<-c
 // fail while inference works. Hold the claim for one interval and
 // release; the next Chat call drives recovery.
 func (c *AnthropicBedrockClient) startRecoveryProbe() {
-	if !c.conn.claimProbe() {
+	if !c.conn.ClaimProbe() {
 		return
 	}
 	go func() {
-		defer c.conn.releaseProbe()
+		defer c.conn.ReleaseProbe()
 		interval := probeInterval
 		if c.ProbeInterval > 0 {
 			interval = c.ProbeInterval

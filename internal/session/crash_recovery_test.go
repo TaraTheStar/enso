@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // TestCrashMidToolCall_ResumeProducesValidHistory simulates the most

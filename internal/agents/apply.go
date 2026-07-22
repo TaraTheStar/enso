@@ -3,7 +3,7 @@
 package agents
 
 import (
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -14,7 +14,7 @@ import (
 // call non-destructive — the caller's defaults survive untouched if no
 // Spec is in play.
 type Applied struct {
-	Provider     *llm.Provider
+	Provider     *provider.Provider
 	Registry     *tools.Registry
 	PromptAppend string
 	MaxTurns     int // 0 = leave caller default in place
@@ -25,7 +25,7 @@ type Applied struct {
 // overrides clone the provider so two agents in the same process don't share
 // mutated sampler state; the LLM Pool is shared because the endpoint is the
 // same.
-func Apply(spec *Spec, provider *llm.Provider, registry *tools.Registry) Applied {
+func Apply(spec *Spec, provider *provider.Provider, registry *tools.Registry) Applied {
 	out := Applied{Provider: provider, Registry: registry}
 	if spec == nil {
 		return out

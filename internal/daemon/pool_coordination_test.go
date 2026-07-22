@@ -7,7 +7,8 @@ package daemon
 import (
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
 // The daemon hosts every agent loop in-process, so cross-session pool
@@ -16,11 +17,11 @@ import (
 // sessionProviders is that seam.
 func TestSessionProviders_SharesOneMapAcrossSessions(t *testing.T) {
 	shared := llm.NewPoolNamed("gpu", 1, 0)
-	fast := &llm.Provider{Name: "fast", Pool: shared, PoolName: "gpu"}
-	deep := &llm.Provider{Name: "deep", Pool: shared, PoolName: "gpu"}
+	fast := &provider.Provider{Name: "fast", Pool: shared, PoolName: "gpu"}
+	deep := &provider.Provider{Name: "deep", Pool: shared, PoolName: "gpu"}
 	s := &Server{
 		provider:  fast,
-		providers: map[string]*llm.Provider{"fast": fast, "deep": deep},
+		providers: map[string]*provider.Provider{"fast": fast, "deep": deep},
 	}
 
 	a := s.sessionProviders()
@@ -41,7 +42,7 @@ func TestSessionProviders_SharesOneMapAcrossSessions(t *testing.T) {
 // directly, e.g. older tests), sessionProviders still yields a usable
 // one-entry map rather than nil.
 func TestSessionProviders_FallsBackToSingleProvider(t *testing.T) {
-	only := &llm.Provider{Name: "solo", Pool: llm.NewPool(1)}
+	only := &provider.Provider{Name: "solo", Pool: llm.NewPool(1)}
 	s := &Server{provider: only}
 
 	got := s.sessionProviders()

@@ -8,9 +8,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
 // Tool is the interface for all built-in and MCP-adapted tools.
@@ -110,8 +111,8 @@ type AgentContext struct {
 	// /model swaps via Agent.SetProvider so a child spawned after the
 	// switch inherits the new provider by default. spawn_agent's
 	// per-call `model` arg picks a different one out of Providers.
-	Provider     *llm.Provider
-	Providers    map[string]*llm.Provider // full configured set; spawn_agent's `model` arg looks up here
+	Provider     *provider.Provider
+	Providers    map[string]*provider.Provider // full configured set; spawn_agent's `model` arg looks up here
 	Registry     *Registry
 	Depth        int
 	MaxDepth     int

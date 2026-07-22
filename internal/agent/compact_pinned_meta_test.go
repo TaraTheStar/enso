@@ -7,10 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -20,7 +21,7 @@ import (
 func newCompactableAgent(cfg config.ContextPruneConfig, mock *llmtest.Mock) *Agent {
 	ag := newPruneAgent(cfg)
 	prov := fakeProvider(mock)
-	ag.Providers = map[string]*llm.Provider{"test": prov}
+	ag.Providers = map[string]*provider.Provider{"test": prov}
 	ag.currentProvider = prov
 	ag.Bus = bus.New()
 	return ag

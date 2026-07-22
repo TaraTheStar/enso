@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	llm "github.com/TaraTheStar/azoth/llm"
 
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
@@ -17,8 +19,8 @@ import (
 // move to the top-level System field rather than appearing in Messages
 // — Converse rejects system entries in the Messages array.
 func TestBuildConverseInput_SystemHoisted(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "system", Content: "be brief"},
 			{Role: "user", Content: "hi"},
 		},
@@ -49,12 +51,12 @@ func TestBuildConverseInput_SystemHoisted(t *testing.T) {
 // adapter and asserts both surface in the right Bedrock shapes. This
 // is the round-trip the agent loop generates after every tool turn.
 func TestBuildConverseInput_ToolCallRoundTrip(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "user", Content: "what's the weather?"},
 			{
 				Role: "assistant",
-				ToolCalls: []ToolCall{{
+				ToolCalls: []llm.ToolCall{{
 					ID:   "call_42",
 					Type: "function",
 					Function: struct {
@@ -130,8 +132,8 @@ func TestBuildConverseInput_ToolCallRoundTrip(t *testing.T) {
 // strict user/assistant alternation, so emitting two adjacent user
 // Messages here would 400.
 func TestBuildConverseInput_ConsecutiveToolResultsCollapse(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "tool", ToolCallID: "a", Content: "result-a"},
 			{Role: "tool", ToolCallID: "b", Content: "result-b"},
 		},
@@ -151,11 +153,11 @@ func TestBuildConverseInput_ConsecutiveToolResultsCollapse(t *testing.T) {
 // tool definition surfaces as a Converse ToolSpecification with the
 // schema wrapped as a JSON document.
 func TestBuildConverseInput_ToolSchemaTranslation(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{{Role: "user", Content: "go"}},
-		Tools: []ToolDef{{
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "go"}},
+		Tools: []llm.ToolDef{{
 			Type: "function",
-			Function: ToolFunctionDef{
+			Function: llm.ToolFunctionDef{
 				Name:        "lookup",
 				Description: "find a thing",
 				Parameters: map[string]any{
@@ -206,8 +208,8 @@ func TestBuildConverseInput_ToolSchemaTranslation(t *testing.T) {
 // default — surprising for users coming from OpenAI where the default
 // is "unbounded".
 func TestBuildConverseInput_DefaultMaxTokens(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{{Role: "user", Content: "hi"}},
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "hi"}},
 	}, "anthropic.claude-3-5-haiku-20241022-v1:0", 0 /* zero -> default */)
 	if err != nil {
 		t.Fatalf("buildConverseInput: %v", err)
@@ -223,8 +225,8 @@ func TestBuildConverseInput_DefaultMaxTokens(t *testing.T) {
 // TestBuildConverseInput_RequiresModel rejects an empty model ID
 // rather than letting an opaque AWS error surface to the user.
 func TestBuildConverseInput_RequiresModel(t *testing.T) {
-	_, err := buildConverseInput(ChatRequest{
-		Messages: []Message{{Role: "user", Content: "hi"}},
+	_, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "hi"}},
 	}, "", 1024)
 	if err == nil {
 		t.Fatal("expected error for empty model")
@@ -278,8 +280,8 @@ func TestProviderFactory_UnknownType(t *testing.T) {
 // AdditionalModelRequestFields with the expected JSON shape. These
 // constraints come from the API — violating them gets a 400 back.
 func TestApplyExtendedThinking_ForcesAnthropicConstraints(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages:    []Message{{Role: "user", Content: "think"}},
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages:    []llm.Message{{Role: "user", Content: "think"}},
 		Temperature: 0.7, // should be overwritten
 		TopP:        0.9, // should be cleared
 	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 16000)
@@ -326,8 +328,8 @@ func TestApplyExtendedThinking_BudgetClamps(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			in, err := buildConverseInput(ChatRequest{
-				Messages: []Message{{Role: "user", Content: "x"}},
+			in, err := buildConverseInput(llm.ChatRequest{
+				Messages: []llm.Message{{Role: "user", Content: "x"}},
 			}, "anthropic.claude-3-5-sonnet-20241022-v2:0", tc.maxTokens)
 			if err != nil {
 				t.Fatalf("buildConverseInput: %v", err)
@@ -393,8 +395,8 @@ func itoa(n int64) string {
 // requires the latter, and silently picking the wrong one would 400
 // the whole turn.
 func TestApplyBedrockGuardrail_WiresStreamConfiguration(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{{Role: "user", Content: "hi"}},
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "hi"}},
 	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
 	if err != nil {
 		t.Fatalf("buildConverseInput: %v", err)
@@ -436,8 +438,8 @@ func TestApplyBedrockGuardrail_TraceDefaultsAndAliases(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			in, err := buildConverseInput(ChatRequest{
-				Messages: []Message{{Role: "user", Content: "x"}},
+			in, err := buildConverseInput(llm.ChatRequest{
+				Messages: []llm.Message{{Role: "user", Content: "x"}},
 			}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
 			if err != nil {
 				t.Fatalf("buildConverseInput: %v", err)
@@ -541,7 +543,7 @@ func TestProviderFactory_OpenAIBackCompat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	if _, ok := client.(*OpenAIClient); !ok {
+	if _, ok := client.(*llm.OpenAIClient); !ok {
 		t.Fatalf("want *OpenAIClient (empty type), got %T", client)
 	}
 }
@@ -552,12 +554,12 @@ func TestProviderFactory_OpenAIBackCompat(t *testing.T) {
 // bytes (not a URI) and explicit format enum.
 func TestBuildConverseInput_UserImagePart(t *testing.T) {
 	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{
 			{
 				Role:    "user",
 				Content: "what is in this?",
-				Parts:   []MessagePart{NewImagePart("image/png", imgBytes)},
+				Parts:   []llm.MessagePart{llm.NewImagePart("image/png", imgBytes)},
 			},
 		},
 	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
@@ -587,9 +589,9 @@ func TestBuildConverseInput_UserImagePart(t *testing.T) {
 // Bedrock Converse needs inline bytes — a URI-only image surfaces as
 // a clean Go error rather than a confusing 400 mid-stream.
 func TestBuildConverseInput_URIImageFails(t *testing.T) {
-	_, err := buildConverseInput(ChatRequest{
-		Messages: []Message{
-			{Role: "user", Parts: []MessagePart{NewImagePartURI("https://example.com/cat.jpg")}},
+	_, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{
+			{Role: "user", Parts: []llm.MessagePart{llm.NewImagePartURI("https://example.com/cat.jpg")}},
 		},
 	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
 	if err == nil {
@@ -615,13 +617,13 @@ func TestBedrockImageFormat_UnknownMIMEFails(t *testing.T) {
 // image path: read tool on a PNG produces a tool_result whose Content
 // carries a ToolResultContentBlockMemberImage.
 func TestBedrockToolResultContent_WithImage(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{
 			{
 				Role:       "tool",
 				ToolCallID: "call_42",
 				Content:    "[image: ok.png]",
-				Parts:      []MessagePart{NewImagePart("image/png", []byte("pngdata"))},
+				Parts:      []llm.MessagePart{llm.NewImagePart("image/png", []byte("pngdata"))},
 			},
 		},
 	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
@@ -645,14 +647,14 @@ func TestBedrockToolResultContent_WithImage(t *testing.T) {
 // tail of the trailing conversation message — the Converse equivalent
 // of Anthropic's cache_control:ephemeral markers.
 func TestApplyBedrockCachePoints_InsertsMarkers(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "system", Content: "be brief"},
 			{Role: "user", Content: "hi"},
 		},
-		Tools: []ToolDef{{
+		Tools: []llm.ToolDef{{
 			Type: "function",
-			Function: ToolFunctionDef{
+			Function: llm.ToolFunctionDef{
 				Name: "read", Description: "read", Parameters: map[string]any{"type": "object"},
 			},
 		}},
@@ -698,8 +700,8 @@ func TestApplyBedrockCachePoints_InsertsMarkers(t *testing.T) {
 // third trailing message stays unmarked. Bedrock Converse rejects
 // requests that exceed the cache-point cap.
 func TestApplyBedrockCachePoints_CapsAtFour(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "system", Content: "be brief"},
 			{Role: "user", Content: "one"},
 			{Role: "assistant", Content: "two"},
@@ -707,9 +709,9 @@ func TestApplyBedrockCachePoints_CapsAtFour(t *testing.T) {
 			{Role: "assistant", Content: "four"},
 			{Role: "user", Content: "five"},
 		},
-		Tools: []ToolDef{{
+		Tools: []llm.ToolDef{{
 			Type: "function",
-			Function: ToolFunctionDef{
+			Function: llm.ToolFunctionDef{
 				Name: "read", Description: "x", Parameters: map[string]any{"type": "object"},
 			},
 		}},
@@ -749,8 +751,8 @@ func TestApplyBedrockCachePoints_CapsAtFour(t *testing.T) {
 // for multi-turn workloads, but system/tool slices must stay empty
 // (Converse rejects empty-System=non-empty payloads).
 func TestApplyBedrockCachePoints_NoSystemNoTools(t *testing.T) {
-	in, err := buildConverseInput(ChatRequest{
-		Messages: []Message{{Role: "user", Content: "hi"}},
+	in, err := buildConverseInput(llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "hi"}},
 	}, "anthropic.claude-3-5-sonnet-20241022-v2:0", 1024)
 	if err != nil {
 		t.Fatalf("buildConverseInput: %v", err)

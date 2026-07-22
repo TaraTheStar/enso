@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // WriteMarkdown renders a loaded session State as a Markdown

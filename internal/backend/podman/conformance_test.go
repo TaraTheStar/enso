@@ -12,13 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/backend/podman"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
 const testImage = "docker.io/library/alpine:latest"
@@ -102,7 +103,7 @@ func runConformance(t *testing.T, ociRuntime string) {
 
 	mock := llmtest.New()
 	mock.Push(llmtest.Script{Text: "pong"})
-	providers := map[string]*llm.Provider{
+	providers := map[string]*provider.Provider{
 		"test": {Name: "test", Model: "m", ContextWindow: 4096, Pool: llm.NewPool(2), Client: mock},
 	}
 

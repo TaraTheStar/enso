@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"context"
 	"strings"
 	"testing"
+
+	llm "github.com/TaraTheStar/azoth/llm"
 
 	"github.com/TaraTheStar/enso/internal/config"
 )
@@ -69,8 +71,8 @@ func TestProviderFactory_GenerateContentAndAnthropicVertexCoexist(t *testing.T) 
 // not a runtime panic surfacing from a goroutine.
 func TestAnthropicVertexClient_MissingRegionErrors(t *testing.T) {
 	c := &AnthropicVertexClient{Model: "claude-3-5-sonnet-v2@20241022", Project: "p"}
-	_, err := c.Chat(context.Background(), ChatRequest{
-		Messages: []Message{{Role: "user", Content: "hi"}},
+	_, err := c.Chat(context.Background(), llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "hi"}},
 	})
 	if err == nil {
 		t.Fatal("want error for missing region")
@@ -84,8 +86,8 @@ func TestAnthropicVertexClient_MissingRegionErrors(t *testing.T) {
 // check — project is also required, also pre-validated.
 func TestAnthropicVertexClient_MissingProjectErrors(t *testing.T) {
 	c := &AnthropicVertexClient{Model: "claude-3-5-sonnet-v2@20241022", Region: "us-east5"}
-	_, err := c.Chat(context.Background(), ChatRequest{
-		Messages: []Message{{Role: "user", Content: "hi"}},
+	_, err := c.Chat(context.Background(), llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "hi"}},
 	})
 	if err == nil {
 		t.Fatal("want error for missing project")

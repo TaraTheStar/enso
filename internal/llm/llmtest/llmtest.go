@@ -12,7 +12,7 @@
 //	})
 //	mock.Push(llmtest.Script{Text: "all done"})
 //
-//	provider := &llm.Provider{Client: mock, Pool: llm.NewPool(1), ContextWindow: 32_000}
+//	provider := &provider.Provider{Client: mock, Pool: llm.NewPool(1), ContextWindow: 32_000}
 //	// drive agent.Run with this provider...
 //
 // Each Chat() call consumes the next queued Script. Test
@@ -27,7 +27,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // Script is one scheduled response. Events fire in order:

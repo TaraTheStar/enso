@@ -17,13 +17,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/hooks"
 	"github.com/TaraTheStar/enso/internal/instructions"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/paths"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -42,7 +43,7 @@ const (
 // streaming chat all route through whichever provider is current at
 // the moment of the call.
 type Agent struct {
-	Providers map[string]*llm.Provider
+	Providers map[string]*provider.Provider
 	History   []llm.Message
 	Bus       *bus.Bus
 	Registry  *tools.Registry
@@ -107,7 +108,7 @@ type Agent struct {
 	// currentProvider is the active provider for new turns. Read with
 	// Provider(); write with SetProvider(). The same `mu` mutex
 	// protects this and curCancel — neither is contended on a hot path.
-	currentProvider *llm.Provider
+	currentProvider *provider.Provider
 
 	// nextTurnTools is a one-shot allow-list applied to the registry at
 	// the start of the next runUntilQuiescent. Used by skills'
@@ -217,7 +218,7 @@ type Agent struct {
 // section is suppressed: fewer than two endpoints, or the user opted out
 // via [instructions] include_providers=false (the resolved flag is
 // mirrored onto every Provider, so sub-agents inherit it for free).
-func providerContext(providers map[string]*llm.Provider, active string) *instructions.ProviderContext {
+func providerContext(providers map[string]*provider.Provider, active string) *instructions.ProviderContext {
 	if len(providers) < 2 {
 		return nil
 	}
@@ -247,7 +248,7 @@ func (a *Agent) ProviderCtx() *instructions.ProviderContext { return a.providerC
 // If `requested` is non-empty and missing, that's an error. If empty,
 // the alphabetically-first key wins — deterministic regardless of map
 // iteration order.
-func pickDefaultProvider(providers map[string]*llm.Provider, requested string) (string, error) {
+func pickDefaultProvider(providers map[string]*provider.Provider, requested string) (string, error) {
 	if requested != "" {
 		if _, ok := providers[requested]; !ok {
 			names := sortedNames(providers)
@@ -259,7 +260,7 @@ func pickDefaultProvider(providers map[string]*llm.Provider, requested string) (
 	return names[0], nil
 }
 
-func sortedNames(providers map[string]*llm.Provider) []string {
+func sortedNames(providers map[string]*provider.Provider) []string {
 	out := make([]string, 0, len(providers))
 	for name := range providers {
 		out = append(out, name)
@@ -343,7 +344,7 @@ func (a *Agent) CumulativeOutputTokens() int64 { return a.cumOut.Load() }
 // Provider returns the agent's active provider. Safe to call from any
 // goroutine. The pointer itself is stable for the duration of one
 // turn — SetProvider swaps it atomically between turns.
-func (a *Agent) Provider() *llm.Provider {
+func (a *Agent) Provider() *provider.Provider {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.currentProvider
@@ -426,7 +427,7 @@ func (a *Agent) learnContextLimit(providerName string, tokens int) {
 // against for provider p: the limit learned from a server rejection when
 // we have one, else the configured value. Lets compaction work correctly
 // when context_window is unset (0) or doesn't match the backend's reality.
-func (a *Agent) effectiveContextWindow(p *llm.Provider) int {
+func (a *Agent) effectiveContextWindow(p *provider.Provider) int {
 	if p == nil {
 		return 0
 	}
@@ -524,7 +525,7 @@ func (a *Agent) stampUsage(historyIdx, persistSeq int, usage llm.MessageUsage) {
 type Config struct {
 	// Providers is the full set of configured LLM endpoints, keyed by
 	// the user-facing label (e.g. "qwen-fast"). Must be non-empty.
-	Providers map[string]*llm.Provider
+	Providers map[string]*provider.Provider
 	// DefaultProvider names which entry in Providers is active at
 	// construction. Empty = pick the alphabetically-first key. Validated
 	// by New: a non-empty value that doesn't match any key is an error.
@@ -1357,7 +1358,7 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 // finalization" (and the retry budget has been reset for a healthy
 // finish). Retries are bounded by the provider's MaxRecoverAttempts so a
 // pathological prompt can't loop forever.
-func (a *Agent) maybeRecover(p *llm.Provider, finishReason, content string, asst llm.Message, usage llm.MessageUsage) (handled, cont bool, err error) {
+func (a *Agent) maybeRecover(p *provider.Provider, finishReason, content string, asst llm.Message, usage llm.MessageUsage) (handled, cont bool, err error) {
 	if !p.AutoRecover {
 		return false, false, nil
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 func TestStore_OpenAtAppliesMigrations(t *testing.T) {

@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	llm "github.com/TaraTheStar/azoth/llm"
 	"strings"
 	"sync"
 	"time"
@@ -90,7 +91,7 @@ type BedrockClient struct {
 	// conn tracks the last-known reachability state, surfaced to the
 	// TUI through ConnStateReporter (same indicator the OpenAI adapter
 	// uses).
-	conn connTracker
+	conn llm.ConnTracker
 
 	// sdkOnce + sdk: lazily build the client on first Chat so config
 	// changes prior to first use take effect. Subsequent calls reuse
@@ -112,7 +113,7 @@ type bedrockConverseAPI interface {
 }
 
 // LLMConnState satisfies ConnStateReporter.
-func (c *BedrockClient) LLMConnState() ConnState { return c.conn.get() }
+func (c *BedrockClient) LLMConnState() llm.ConnState { return c.conn.Get() }
 
 func (c *BedrockClient) client(ctx context.Context) (bedrockConverseAPI, error) {
 	c.sdkOnce.Do(func() {
@@ -143,7 +144,7 @@ func newBedrockClient(ctx context.Context, region, profile string) (bedrockConve
 // Chat translates the OpenAI-shaped ChatRequest into a Converse stream
 // input, dispatches it, and translates the streamed events back to the
 // adapter-agnostic Event channel.
-func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event, error) {
+func (c *BedrockClient) Chat(ctx context.Context, req llm.ChatRequest) (<-chan llm.Event, error) {
 	model := c.Model
 	if model == "" {
 		model = req.Model
@@ -174,8 +175,8 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 		return nil, fmt.Errorf("bedrock: %w", err)
 	}
 
-	if debugEnabled.Load() {
-		fmt.Fprintf(debugLog(), "bedrock: ConverseStream model=%s region=%s\n", model, c.Region)
+	if llm.DebugEnabled() {
+		llm.Debugf("bedrock: ConverseStream model=%s region=%s\n", model, c.Region)
 	}
 
 	out, err := sdk.ConverseStream(ctx, input)
@@ -183,16 +184,16 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 		// Transport-class errors flip the indicator; HTTP/IAM errors
 		// from Bedrock arrive here as well, but those leave the
 		// indicator alone (TLS+TCP succeeded).
-		if classifyTransportError(err) != "" {
-			if c.conn.set(StateDisconnected) != StateDisconnected {
+		if llm.ClassifyTransportError(err) != "" {
+			if c.conn.Set(llm.StateDisconnected) != llm.StateDisconnected {
 				c.startRecoveryProbe()
 			}
 		}
 		return nil, fmt.Errorf("bedrock: %w", err)
 	}
-	c.conn.set(StateConnected)
+	c.conn.Set(llm.StateConnected)
 
-	eventCh := make(chan Event, 32)
+	eventCh := make(chan llm.Event, 32)
 	stream := out.GetStream()
 
 	go func() {
@@ -221,7 +222,7 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 				switch d := e.Value.Delta.(type) {
 				case *types.ContentBlockDeltaMemberText:
 					if d.Value != "" {
-						eventCh <- Event{Type: EventTextDelta, Text: d.Value}
+						eventCh <- llm.Event{Type: llm.EventTextDelta, Text: d.Value}
 					}
 				case *types.ContentBlockDeltaMemberReasoningContent:
 					// Reasoning content arrives from models with
@@ -229,7 +230,7 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 					// variants). Route to the same channel the TUI
 					// already renders for OpenAI reasoning models.
 					if rc, ok := d.Value.(*types.ReasoningContentBlockDeltaMemberText); ok && rc.Value != "" {
-						eventCh <- Event{Type: EventReasoningDelta, Text: rc.Value}
+						eventCh <- llm.Event{Type: llm.EventReasoningDelta, Text: rc.Value}
 					}
 				case *types.ContentBlockDeltaMemberToolUse:
 					if acc, ok := tools[idx]; ok && d.Value.Input != nil {
@@ -247,10 +248,10 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 					if args == "" {
 						args = "{}"
 					}
-					tc := ToolCall{ID: acc.id, Type: "function"}
+					tc := llm.ToolCall{ID: acc.id, Type: "function"}
 					tc.Function.Name = acc.name
 					tc.Function.Arguments = args
-					eventCh <- Event{Type: EventToolCallComplete, ToolCalls: []ToolCall{tc}}
+					eventCh <- llm.Event{Type: llm.EventToolCallComplete, ToolCalls: []llm.ToolCall{tc}}
 					delete(tools, idx)
 				}
 
@@ -260,12 +261,12 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 				// Event channel so the agent can use real numbers
 				// instead of the 4-char heuristic.
 				if u := e.Value.Usage; u != nil {
-					if debugEnabled.Load() {
-						fmt.Fprintf(debugLog(), "bedrock usage: in=%d out=%d cache_read=%d cache_write=%d\n",
+					if llm.DebugEnabled() {
+						llm.Debugf("bedrock usage: in=%d out=%d cache_read=%d cache_write=%d\n",
 							derefInt32(u.InputTokens), derefInt32(u.OutputTokens),
 							derefInt32(u.CacheReadInputTokens), derefInt32(u.CacheWriteInputTokens))
 					}
-					eventCh <- Event{Type: EventUsage, Usage: bedrockUsageFrom(
+					eventCh <- llm.Event{Type: llm.EventUsage, Usage: bedrockUsageFrom(
 						derefInt32(u.InputTokens), derefInt32(u.OutputTokens),
 						derefInt32(u.CacheReadInputTokens), derefInt32(u.CacheWriteInputTokens),
 					)}
@@ -283,10 +284,10 @@ func (c *BedrockClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event
 			// Treat stream-side errors as best-effort: emit and stop.
 			// Don't flip the conn indicator — we got far enough to open
 			// the stream, so the transport itself was healthy.
-			eventCh <- Event{Type: EventError, Error: fmt.Errorf("bedrock stream: %w", err)}
+			eventCh <- llm.Event{Type: llm.EventError, Error: fmt.Errorf("bedrock stream: %w", err)}
 			return
 		}
-		eventCh <- Event{Type: EventDone}
+		eventCh <- llm.Event{Type: llm.EventDone}
 	}()
 
 	return eventCh, nil
@@ -307,11 +308,11 @@ type bedrockToolAcc struct {
 // one interval, then release; the next user-driven Chat call decides
 // recovery.
 func (c *BedrockClient) startRecoveryProbe() {
-	if !c.conn.claimProbe() {
+	if !c.conn.ClaimProbe() {
 		return
 	}
 	go func() {
-		defer c.conn.releaseProbe()
+		defer c.conn.ReleaseProbe()
 		interval := probeInterval
 		if c.ProbeInterval > 0 {
 			interval = c.ProbeInterval
@@ -333,14 +334,14 @@ func (c *BedrockClient) startRecoveryProbe() {
 //   - Tools translate to ToolConfiguration; the OpenAI JSON Schema in
 //     ToolDef.Function.Parameters is wrapped verbatim as a
 //     ToolInputSchemaMemberJson document.
-func buildConverseInput(req ChatRequest, model string, maxTokens int64) (*bedrockruntime.ConverseStreamInput, error) {
+func buildConverseInput(req llm.ChatRequest, model string, maxTokens int64) (*bedrockruntime.ConverseStreamInput, error) {
 	if model == "" {
 		return nil, errors.New("model is required")
 	}
 	if maxTokens == 0 {
 		maxTokens = defaultBedrockMaxTokens
 	}
-	req.Messages = FilterForRequest(req.Messages)
+	req.Messages = llm.FilterForRequest(req.Messages)
 
 	var system []types.SystemContentBlock
 	var messages []types.Message
@@ -649,7 +650,7 @@ func applyBedrockGuardrail(input *bedrockruntime.ConverseStreamInput, id, versio
 // bedrockUserContent builds the ContentBlock slice for a user-role
 // message. Empty Parts collapses to the single-text-block legacy shape
 // so existing flows are byte-identical on the wire.
-func bedrockUserContent(m Message) ([]types.ContentBlock, error) {
+func bedrockUserContent(m llm.Message) ([]types.ContentBlock, error) {
 	if len(m.Parts) == 0 {
 		if m.Content == "" {
 			return nil, nil
@@ -674,7 +675,7 @@ func bedrockUserContent(m Message) ([]types.ContentBlock, error) {
 // ContentBlock. Bedrock requires raw bytes — URI-only images return an
 // error rather than getting silently dropped. Text parts fall through
 // to ContentBlockMemberText for callers that mix text + image in Parts.
-func bedrockContentBlock(p MessagePart) (types.ContentBlock, error) {
+func bedrockContentBlock(p llm.MessagePart) (types.ContentBlock, error) {
 	switch p.Type {
 	case "text":
 		return &types.ContentBlockMemberText{Value: p.Text}, nil
@@ -703,7 +704,7 @@ func bedrockContentBlock(p MessagePart) (types.ContentBlock, error) {
 // ToolResult-side content union. Same legacy fall-through: text-only
 // stays single-block; Parts opt into image content for tools that
 // return non-text (the read tool on a PNG, etc.).
-func bedrockToolResultContent(m Message) ([]types.ToolResultContentBlock, error) {
+func bedrockToolResultContent(m llm.Message) ([]types.ToolResultContentBlock, error) {
 	if len(m.Parts) == 0 {
 		return []types.ToolResultContentBlock{
 			&types.ToolResultContentBlockMemberText{Value: m.Content},
@@ -778,8 +779,8 @@ func derefInt32(p *int32) int32 {
 // Bedrock Converse mirrors Anthropic's semantics: InputTokens is
 // fresh-only (cache reads and writes are reported separately), so
 // summing all four gives the authoritative total.
-func bedrockUsageFrom(input, output, cacheRead, cacheWrite int32) MessageUsage {
-	u := MessageUsage{
+func bedrockUsageFrom(input, output, cacheRead, cacheWrite int32) llm.MessageUsage {
+	u := llm.MessageUsage{
 		InputTokens:      int(input),
 		OutputTokens:     int(output),
 		CacheReadTokens:  int(cacheRead),

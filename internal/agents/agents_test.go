@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -110,7 +110,7 @@ func TestFind(t *testing.T) {
 }
 
 func TestApplyNilSpec(t *testing.T) {
-	provider := &llm.Provider{Name: "p", Model: "m"}
+	provider := &provider.Provider{Name: "p", Model: "m"}
 	registry := tools.BuildDefault()
 	out := Apply(nil, provider, registry)
 	if out.Provider != provider || out.Registry != registry {
@@ -122,7 +122,7 @@ func TestApplyNilSpec(t *testing.T) {
 }
 
 func TestApplyFiltersAndOverrides(t *testing.T) {
-	provider := &llm.Provider{
+	provider := &provider.Provider{
 		Name:    "p",
 		Model:   "m",
 		Sampler: config.SamplerConfig{Temperature: 0.6, TopP: 0.95, TopK: 20},
@@ -175,7 +175,7 @@ func TestApplyDeniedTools(t *testing.T) {
 		Name:        "no-bash",
 		DeniedTools: []string{"bash", "edit"},
 	}
-	out := Apply(spec, &llm.Provider{}, registry)
+	out := Apply(spec, &provider.Provider{}, registry)
 	if out.Registry.Get("bash") != nil {
 		t.Errorf("denied tool 'bash' should be excluded")
 	}

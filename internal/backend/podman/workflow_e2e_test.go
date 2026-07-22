@@ -15,13 +15,14 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/backend/podman"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/session"
 )
 
@@ -89,7 +90,7 @@ func TestPodmanWorkflowOverSeam(t *testing.T) {
 	mock.Push(llmtest.Script{ToolCalls: []llm.ToolCall{probe}})
 	mock.Push(llmtest.Script{Text: "alpha done"})
 	mock.Push(llmtest.Script{Text: "beta done"})
-	providers := map[string]*llm.Provider{
+	providers := map[string]*provider.Provider{
 		"test": {Name: "test", Model: "m", ContextWindow: 4096, Pool: llm.NewPool(2), Client: mock},
 	}
 

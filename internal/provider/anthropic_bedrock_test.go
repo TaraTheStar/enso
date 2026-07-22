@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	llm "github.com/TaraTheStar/azoth/llm"
 
 	"github.com/TaraTheStar/enso/internal/config"
 )
@@ -17,8 +19,8 @@ import (
 // direct Anthropic adapter, the shared helper is the wrong shape.
 func TestAnthropicBedrock_BuildParamsReusesAnthropicTranslator(t *testing.T) {
 	params, err := buildAnthropicParams(
-		ChatRequest{
-			Messages: []Message{
+		llm.ChatRequest{
+			Messages: []llm.Message{
 				{Role: "system", Content: "be brief"},
 				{Role: "user", Content: "hi"},
 			},

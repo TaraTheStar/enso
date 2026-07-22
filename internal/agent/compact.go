@@ -11,8 +11,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
 // inputBudget is the largest prompt (input) token count allowed before
@@ -26,7 +27,7 @@ import (
 // output reservation: with a large max_tokens (e.g. 64K on a 256K window)
 // the 25% "headroom" was entirely consumed by the reply, so a prompt at
 // the threshold plus max_tokens overflowed the real ceiling.
-func (a *Agent) inputBudget(p *llm.Provider, window int) int {
+func (a *Agent) inputBudget(p *provider.Provider, window int) int {
 	maxTokens, compactionBudget := 0, 0
 	if p != nil {
 		maxTokens = p.MaxTokens
@@ -35,7 +36,7 @@ func (a *Agent) inputBudget(p *llm.Provider, window int) int {
 	// window is the EFFECTIVE window (learned-from-rejection override when
 	// present); ComputeInputBudget applies the same legacy formula or the
 	// decoupled compaction_budget knob, shared with host telemetry.
-	return llm.ComputeInputBudget(window, maxTokens, compactionBudget)
+	return provider.ComputeInputBudget(window, maxTokens, compactionBudget)
 }
 
 // tailTurnsForBudget returns how many recent user-bounded turns can be
@@ -534,7 +535,7 @@ func (a *Agent) forceCompactWithSeed(ctx context.Context, reason, seed string) (
 // (ping the endpoint) would block compaction on a slow probe. The
 // missing-provider path logs once per resolution so an operator can
 // spot a typo in the TOML key without scrolling old logs.
-func (a *Agent) compactionProvider() *llm.Provider {
+func (a *Agent) compactionProvider() *provider.Provider {
 	if name := a.compactionProviderName; name != "" {
 		if p, ok := a.Providers[name]; ok && p != nil {
 			return p
@@ -548,7 +549,7 @@ func (a *Agent) compactionProvider() *llm.Provider {
 // providerNames returns the keys of providers in deterministic order
 // for the warn-log above. Tiny helper; keeps log lines stable across
 // invocations so log-diffing remains readable.
-func providerNames(m map[string]*llm.Provider) []string {
+func providerNames(m map[string]*provider.Provider) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
 		out = append(out, k)

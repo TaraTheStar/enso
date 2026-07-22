@@ -8,9 +8,9 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -30,7 +30,7 @@ func TestRun_DrainsQueuedSubmitsOnCancel(t *testing.T) {
 	busInst := bus.New()
 
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		DefaultProvider: "test",
 		Bus:             busInst,
 		Registry:        registry,
@@ -95,7 +95,7 @@ func TestRun_NoDrainOnNaturalCompletion(t *testing.T) {
 	busInst := bus.New()
 
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		DefaultProvider: "test",
 		Bus:             busInst,
 		Registry:        registry,

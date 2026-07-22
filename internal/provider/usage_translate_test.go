@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
-import "testing"
+import (
+	"testing"
+
+	llm "github.com/TaraTheStar/azoth/llm"
+)
 
 // Per-provider usage-translation tests. The wire-level SDK paths are
 // implementation details of the upstream SDKs; what we own — and what
@@ -13,7 +17,7 @@ func TestAnthropicUsageFrom_SummingTotal(t *testing.T) {
 	// Anthropic InputTokens is fresh-only; cache reads/writes are
 	// separate. Total = sum of all four.
 	got := anthropicUsageFrom(100, 50, 20, 5)
-	want := MessageUsage{
+	want := llm.MessageUsage{
 		InputTokens:      100,
 		OutputTokens:     50,
 		CacheReadTokens:  20,
@@ -35,7 +39,7 @@ func TestAnthropicUsageFrom_ZeroIsEmpty(t *testing.T) {
 func TestBedrockUsageFrom_SummingTotal(t *testing.T) {
 	// Bedrock Converse mirrors Anthropic accounting.
 	got := bedrockUsageFrom(120, 60, 25, 7)
-	want := MessageUsage{
+	want := llm.MessageUsage{
 		InputTokens:      120,
 		OutputTokens:     60,
 		CacheReadTokens:  25,
@@ -59,7 +63,7 @@ func TestVertexUsageFrom_TotalIsAuthoritative(t *testing.T) {
 	// rather than re-summing. CachedContentTokenCount is a sub-line
 	// of PromptTokenCount, not additive.
 	got := vertexUsageFrom(150, 75, 30, 225)
-	want := MessageUsage{
+	want := llm.MessageUsage{
 		InputTokens:     150, // prompt
 		OutputTokens:    75,  // candidates
 		CacheReadTokens: 30,  // cached (sub-line of prompt)

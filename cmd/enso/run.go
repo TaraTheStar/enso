@@ -17,13 +17,13 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/TaraTheStar/enso/internal/daemon"
+	"github.com/TaraTheStar/enso/internal/provider"
 
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/workflow"
@@ -56,7 +56,7 @@ func runOnce(promptArgs []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	providers, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
+	providers, err := provider.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func runOnce(promptArgs []string) error {
 // minted host-side (so the json header can name the run before the
 // worker is ready); the worker, which owns the store, inserts the row
 // under that id.
-func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.Option, prompt, cwd string, cfg *config.Config, providers map[string]*llm.Provider, defaultName string) error {
+func runViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.Option, prompt, cwd string, cfg *config.Config, providers map[string]*provider.Provider, defaultName string) error {
 	// Workspace overlay: run the agent against a throwaway copy
 	// bind-mounted at the real path inside the box. `enso run` is
 	// non-interactive, so at task end Resolve keeps the diverged copy
@@ -482,7 +482,7 @@ func runWorkflow(name string, argParts []string) error {
 		}
 		return fmt.Errorf("load config: %w", err)
 	}
-	providers, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
+	providers, err := provider.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
 	}

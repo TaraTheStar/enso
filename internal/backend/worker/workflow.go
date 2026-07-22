@@ -11,8 +11,8 @@ import (
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/wire"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 	"github.com/TaraTheStar/enso/internal/workflow"
 )
@@ -26,7 +26,7 @@ import (
 // permission prompts ride the seam proxy, and their persistence land in
 // the host DB via the remoteWriter on isolated backends.
 type workflowEnv struct {
-	providers          map[string]*llm.Provider
+	providers          map[string]*provider.Provider
 	defaultProvider    string
 	bus                *bus.Bus
 	registry           *tools.Registry

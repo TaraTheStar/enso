@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"fmt"
+	llm "github.com/TaraTheStar/azoth/llm"
 	"time"
 
 	"github.com/TaraTheStar/enso/internal/config"
@@ -74,7 +75,7 @@ func boolOr(p *bool, def bool) bool {
 // fake via internal/llm/llmtest without standing up a real HTTP server.
 type Provider struct {
 	Name          string
-	Client        ChatClient
+	Client        llm.ChatClient
 	Model         string
 	ContextWindow int
 	// MaxTokens is the resolved per-request output cap (what the adapter
@@ -92,7 +93,7 @@ type Provider struct {
 	// same *Pool pointer is handed to every co-pooled provider (see
 	// BuildProviders) so a /model swap between co-pooled members still
 	// contends on one semaphore.
-	Pool *Pool
+	Pool *llm.Pool
 	// PoolName is the resolved pool this provider belongs to. Surfaced
 	// in the auto "## Available models" section.
 	PoolName string
@@ -182,9 +183,9 @@ func BuildProviders(cfg map[string]config.ProviderConfig, res config.PoolResolut
 		return nil, fmt.Errorf("no providers configured")
 	}
 
-	pools := make(map[string]*Pool, len(res.Pools))
+	pools := make(map[string]*llm.Pool, len(res.Pools))
 	for name, rp := range res.Pools {
-		pools[name] = NewPoolNamed(name, rp.Concurrency, rp.QueueTimeout)
+		pools[name] = llm.NewPoolNamed(name, rp.Concurrency, rp.QueueTimeout)
 	}
 
 	out := make(map[string]*Provider, len(cfg))
@@ -196,7 +197,7 @@ func BuildProviders(cfg map[string]config.ProviderConfig, res config.PoolResolut
 			// resolution passed at all) gets its own size-1 pool so a
 			// provider is never left without a semaphore.
 			poolName = "auto-" + name
-			pool = NewPoolNamed(poolName, 1, 0)
+			pool = llm.NewPoolNamed(poolName, 1, 0)
 			pools[poolName] = pool
 		}
 		prov, err := NewProvider(name, pcfg, pool, poolName)
@@ -211,9 +212,9 @@ func BuildProviders(cfg map[string]config.ProviderConfig, res config.PoolResolut
 
 // NewProvider creates a Provider from config, bound to the given shared
 // pool. Callers go through BuildProviders; tests may call directly.
-func NewProvider(name string, cfg config.ProviderConfig, pool *Pool, poolName string) (*Provider, error) {
+func NewProvider(name string, cfg config.ProviderConfig, pool *llm.Pool, poolName string) (*Provider, error) {
 	if pool == nil {
-		pool = NewPool(1)
+		pool = llm.NewPool(1)
 	}
 	client, err := newChatClient(cfg)
 	if err != nil {
@@ -243,10 +244,10 @@ func NewProvider(name string, cfg config.ProviderConfig, pool *Pool, poolName st
 // written before multi-vendor support — any OpenAI-compat endpoint
 // (llama.cpp / vLLM / Groq / OpenRouter / OpenAI proper) falls under
 // this case. New types are added here as their adapters land.
-func newChatClient(cfg config.ProviderConfig) (ChatClient, error) {
+func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 	switch cfg.Type {
 	case "", "openai":
-		return &OpenAIClient{
+		return &llm.OpenAIClient{
 			Endpoint:        cfg.Endpoint,
 			APIKey:          cfg.APIKey,
 			Model:           cfg.Model,

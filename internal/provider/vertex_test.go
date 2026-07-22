@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	llm "github.com/TaraTheStar/azoth/llm"
 
 	"github.com/TaraTheStar/enso/internal/config"
 	"google.golang.org/genai"
@@ -16,8 +18,8 @@ import (
 // contents list. Vertex's contents array only accepts user/model
 // roles — a system entry would be rejected by the API.
 func TestBuildVertexRequest_SystemHoisted(t *testing.T) {
-	contents, cfg, err := buildVertexRequest(ChatRequest{
-		Messages: []Message{
+	contents, cfg, err := buildVertexRequest(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "system", Content: "be brief"},
 			{Role: "user", Content: "hi"},
 		},
@@ -48,8 +50,8 @@ func TestBuildVertexRequest_SystemHoisted(t *testing.T) {
 // (role-prompt + tool-prompt + workspace-prompt), so dropping any of
 // them would silently degrade the agent.
 func TestBuildVertexRequest_SystemMessagesConcatenate(t *testing.T) {
-	_, cfg, err := buildVertexRequest(ChatRequest{
-		Messages: []Message{
+	_, cfg, err := buildVertexRequest(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "system", Content: "you are helpful"},
 			{Role: "system", Content: "be concise"},
 			{Role: "user", Content: "hi"},
@@ -69,12 +71,12 @@ func TestBuildVertexRequest_SystemMessagesConcatenate(t *testing.T) {
 // FunctionResponse parts. Gemini matches responses to calls by *name*,
 // not id — so the test inspects the name on the FunctionResponse.
 func TestBuildVertexRequest_ToolCallRoundTrip(t *testing.T) {
-	contents, _, err := buildVertexRequest(ChatRequest{
-		Messages: []Message{
+	contents, _, err := buildVertexRequest(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "user", Content: "what's the weather?"},
 			{
 				Role: "assistant",
-				ToolCalls: []ToolCall{{
+				ToolCalls: []llm.ToolCall{{
 					ID:   "call_42",
 					Type: "function",
 					Function: struct {
@@ -142,11 +144,11 @@ func TestBuildVertexRequest_ToolCallRoundTrip(t *testing.T) {
 // wrapped into {"content": "..."} rather than failing JSON parse —
 // Gemini's FunctionResponse needs a structured payload.
 func TestBuildVertexRequest_NonJSONToolOutputWrapped(t *testing.T) {
-	contents, _, err := buildVertexRequest(ChatRequest{
-		Messages: []Message{
+	contents, _, err := buildVertexRequest(llm.ChatRequest{
+		Messages: []llm.Message{
 			{
 				Role: "assistant",
-				ToolCalls: []ToolCall{{
+				ToolCalls: []llm.ToolCall{{
 					ID: "call_1", Type: "function",
 					Function: struct {
 						Name      string `json:"name"`
@@ -175,11 +177,11 @@ func TestBuildVertexRequest_NonJSONToolOutputWrapped(t *testing.T) {
 // batches ToolResult blocks and matches what Gemini expects (one
 // per-turn boundary, not one per tool).
 func TestBuildVertexRequest_ConsecutiveToolResponsesCollapse(t *testing.T) {
-	contents, _, err := buildVertexRequest(ChatRequest{
-		Messages: []Message{
+	contents, _, err := buildVertexRequest(llm.ChatRequest{
+		Messages: []llm.Message{
 			{
 				Role: "assistant",
-				ToolCalls: []ToolCall{
+				ToolCalls: []llm.ToolCall{
 					{ID: "a", Type: "function", Function: struct {
 						Name      string `json:"name"`
 						Arguments string `json:"arguments"`
@@ -226,11 +228,11 @@ func TestBuildVertexRequest_ToolSchemaTranslation(t *testing.T) {
 		"required":             []any{"path"},
 		"additionalProperties": false,
 	}
-	_, cfg, err := buildVertexRequest(ChatRequest{
-		Messages: []Message{{Role: "user", Content: "x"}},
-		Tools: []ToolDef{{
+	_, cfg, err := buildVertexRequest(llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "x"}},
+		Tools: []llm.ToolDef{{
 			Type: "function",
-			Function: ToolFunctionDef{
+			Function: llm.ToolFunctionDef{
 				Name:        "read_file",
 				Description: "Read a file from disk",
 				Parameters:  schema,
@@ -265,8 +267,8 @@ func TestBuildVertexRequest_ToolSchemaTranslation(t *testing.T) {
 // fallback. Gemini accepts an unset MaxOutputTokens, but mirroring
 // Bedrock with an explicit ceiling keeps adapter behaviour comparable.
 func TestBuildVertexRequest_DefaultMaxTokens(t *testing.T) {
-	_, cfg, err := buildVertexRequest(ChatRequest{
-		Messages: []Message{{Role: "user", Content: "x"}},
+	_, cfg, err := buildVertexRequest(llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "x"}},
 	}, 0)
 	if err != nil {
 		t.Fatalf("buildVertexRequest: %v", err)
@@ -280,8 +282,8 @@ func TestBuildVertexRequest_DefaultMaxTokens(t *testing.T) {
 // extended thinking flips IncludeThoughts on. Without that flag,
 // Gemini won't return Thought parts even on 2.5 models.
 func TestApplyVertexThinking_TogglesIncludeThoughts(t *testing.T) {
-	_, cfg, err := buildVertexRequest(ChatRequest{
-		Messages: []Message{{Role: "user", Content: "x"}},
+	_, cfg, err := buildVertexRequest(llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "x"}},
 	}, 16000)
 	if err != nil {
 		t.Fatalf("buildVertexRequest: %v", err)
@@ -319,8 +321,8 @@ func TestApplyVertexThinking_ZeroBudgetLeavesDynamic(t *testing.T) {
 // Anthropic-specific rules. Sampling settings the caller provided must
 // survive applyVertexThinking unchanged.
 func TestApplyVertexThinking_NoAnthropicConstraints(t *testing.T) {
-	_, cfg, err := buildVertexRequest(ChatRequest{
-		Messages:    []Message{{Role: "user", Content: "x"}},
+	_, cfg, err := buildVertexRequest(llm.ChatRequest{
+		Messages:    []llm.Message{{Role: "user", Content: "x"}},
 		Temperature: 0.7,
 		TopP:        0.9,
 	}, 16000)
@@ -386,10 +388,10 @@ func TestProviderFactory_VertexExtendedThinking(t *testing.T) {
 // entry with non-JSON arguments, we want to fail loudly at translate
 // time, not stream a confusing error from Vertex.
 func TestBuildVertexRequest_MalformedArgsReturnsError(t *testing.T) {
-	_, _, err := buildVertexRequest(ChatRequest{
-		Messages: []Message{{
+	_, _, err := buildVertexRequest(llm.ChatRequest{
+		Messages: []llm.Message{{
 			Role: "assistant",
-			ToolCalls: []ToolCall{{
+			ToolCalls: []llm.ToolCall{{
 				ID: "call_1", Type: "function",
 				Function: struct {
 					Name      string `json:"name"`
@@ -544,10 +546,10 @@ func TestProviderFactory_VertexSafety(t *testing.T) {
 // FileData, since the bytes are inline). MIME passes through verbatim.
 func TestVertexUserParts_ImageInline(t *testing.T) {
 	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
-	parts, err := vertexUserParts(Message{
+	parts, err := vertexUserParts(llm.Message{
 		Role:    "user",
 		Content: "what is this?",
-		Parts:   []MessagePart{NewImagePart("image/png", imgBytes)},
+		Parts:   []llm.MessagePart{llm.NewImagePart("image/png", imgBytes)},
 	})
 	if err != nil {
 		t.Fatalf("vertexUserParts: %v", err)
@@ -567,9 +569,9 @@ func TestVertexUserParts_ImageInline(t *testing.T) {
 // resolves http(s)/gs:// URIs server-side, so URI-only parts work on
 // Vertex (unlike Bedrock).
 func TestVertexUserParts_URIImage(t *testing.T) {
-	parts, err := vertexUserParts(Message{
+	parts, err := vertexUserParts(llm.Message{
 		Role:  "user",
-		Parts: []MessagePart{NewImagePartURI("gs://bucket/cat.jpg")},
+		Parts: []llm.MessagePart{llm.NewImagePartURI("gs://bucket/cat.jpg")},
 	})
 	if err != nil {
 		t.Fatalf("vertexUserParts: %v", err)
@@ -583,11 +585,11 @@ func TestVertexUserParts_URIImage(t *testing.T) {
 // path: a read-tool PNG result attaches as a FunctionResponse.Parts
 // inline blob alongside the textual response payload.
 func TestVertexFunctionResponseImageParts(t *testing.T) {
-	out, err := vertexFunctionResponseImageParts(Message{
+	out, err := vertexFunctionResponseImageParts(llm.Message{
 		Role:       "tool",
 		ToolCallID: "call_42",
 		Content:    "[image: ok.png]",
-		Parts:      []MessagePart{NewImagePart("image/png", []byte("pngdata"))},
+		Parts:      []llm.MessagePart{llm.NewImagePart("image/png", []byte("pngdata"))},
 	})
 	if err != nil {
 		t.Fatalf("vertexFunctionResponseImageParts: %v", err)
@@ -604,7 +606,7 @@ func TestVertexFunctionResponseImageParts(t *testing.T) {
 // without a mime type is a caller bug, not a silent drop. Gemini
 // would reject the request server-side anyway with a less clear error.
 func TestVertexPart_MissingMIMEFails(t *testing.T) {
-	if _, err := vertexPart(MessagePart{Type: "image", Data: []byte("x")}); err == nil {
+	if _, err := vertexPart(llm.MessagePart{Type: "image", Data: []byte("x")}); err == nil {
 		t.Fatal("want error: image data without mime_type")
 	}
 }
@@ -668,8 +670,8 @@ func TestVertexBlockMessage(t *testing.T) {
 // TestMapVertexFinishReason confirms MAX_TOKENS maps to FinishLength so
 // the agent's truncation auto-recovery engages on the Vertex path too.
 func TestMapVertexFinishReason(t *testing.T) {
-	if got := mapVertexFinishReason(genai.FinishReasonMaxTokens); got != FinishLength {
-		t.Errorf("MAX_TOKENS mapped to %q, want %q", got, FinishLength)
+	if got := mapVertexFinishReason(genai.FinishReasonMaxTokens); got != llm.FinishLength {
+		t.Errorf("MAX_TOKENS mapped to %q, want %q", got, llm.FinishLength)
 	}
 	if got := mapVertexFinishReason(genai.FinishReasonStop); got != "" {
 		t.Errorf("STOP mapped to %q, want empty", got)

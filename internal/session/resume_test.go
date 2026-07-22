@@ -5,7 +5,7 @@ package session
 import (
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 func mkAsstWithCalls(content string, ids ...string) llm.Message {

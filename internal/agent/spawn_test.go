@@ -8,10 +8,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -110,8 +111,8 @@ func TestFilterRegistry_PicksNamedToolsOnly(t *testing.T) {
 func TestSpawn_PerCallModelRoutesToCorrectProvider(t *testing.T) {
 	mockFast := llmtest.NewT(t)
 	mockDeep := llmtest.NewT(t)
-	pFast := &llm.Provider{Name: "fast", Client: mockFast, Model: "f", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
-	pDeep := &llm.Provider{Name: "deep", Client: mockDeep, Model: "d", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
+	pFast := &provider.Provider{Name: "fast", Client: mockFast, Model: "f", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
+	pDeep := &provider.Provider{Name: "deep", Client: mockDeep, Model: "d", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
 
 	mockDeep.Push(llmtest.Script{Text: "DEEP-ANSWER"})
 
@@ -119,7 +120,7 @@ func TestSpawn_PerCallModelRoutesToCorrectProvider(t *testing.T) {
 		Bus:          bus.New(),
 		Permissions:  permissions.NewChecker(nil, nil, nil, "allow"),
 		Provider:     pFast,
-		Providers:    map[string]*llm.Provider{"fast": pFast, "deep": pDeep},
+		Providers:    map[string]*provider.Provider{"fast": pFast, "deep": pDeep},
 		Registry:     tools.NewRegistry(),
 		Cwd:          t.TempDir(),
 		MaxTurns:     5,
@@ -147,11 +148,11 @@ func TestSpawn_PerCallModelRoutesToCorrectProvider(t *testing.T) {
 
 func TestSpawn_UnknownModelArgReportsToLLM(t *testing.T) {
 	mock := llmtest.NewT(t)
-	p := &llm.Provider{Name: "fast", Client: mock, ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
+	p := &provider.Provider{Name: "fast", Client: mock, ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
 	ac := &tools.AgentContext{
 		Bus:          bus.New(),
 		Provider:     p,
-		Providers:    map[string]*llm.Provider{"fast": p},
+		Providers:    map[string]*provider.Provider{"fast": p},
 		Registry:     tools.NewRegistry(),
 		Cwd:          t.TempDir(),
 		MaxDepth:     3,

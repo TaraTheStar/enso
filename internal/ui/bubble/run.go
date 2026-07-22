@@ -34,14 +34,15 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/slash"
 	"github.com/TaraTheStar/enso/internal/tools"
@@ -79,7 +80,7 @@ func Run(opts Options) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	providers, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
+	providers, err := provider.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
 	}
@@ -120,7 +121,7 @@ func Run(opts Options) error {
 //     the existing notice (the enforcing checker is worker-side, like
 //     attach mode). /lsp /mcp reflect worker-side managers
 //     and show a host-derived view.
-func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.Option, opts Options, cwd string, cfg *config.Config, providers map[string]*llm.Provider, defaultName string) error {
+func runTUIViaBackend(b backend.Backend, isol backend.IsolationSpec, bopts []host.Option, opts Options, cwd string, cfg *config.Config, providers map[string]*provider.Provider, defaultName string) error {
 	provider := providers[defaultName]
 
 	// Workspace overlay: run the agent against a throwaway clone of the
@@ -630,7 +631,7 @@ func isStreamDelta(t bus.EventType) bool {
 
 // pickDefaultProvider mirrors internal/agent.pickDefaultProvider; we
 // replicate it here because the agent's copy is unexported.
-func pickDefaultProvider(providers map[string]*llm.Provider, requested string) (string, error) {
+func pickDefaultProvider(providers map[string]*provider.Provider, requested string) (string, error) {
 	if len(providers) == 0 {
 		return "", fmt.Errorf("no providers configured")
 	}
@@ -654,7 +655,7 @@ func pickDefaultProvider(providers map[string]*llm.Provider, requested string) (
 // confirmation that MCP/LSP and the isolation backend are spinning up;
 // the same data is also reachable on demand via /info or the
 // Ctrl-Space overlay.
-func printStartupBanner(provider *llm.Provider, cfg *config.Config, writer *session.Writer) {
+func printStartupBanner(provider *provider.Provider, cfg *config.Config, writer *session.Writer) {
 	header := asstStyle.Render("enso") + "  " + provider.Model
 	if writer != nil {
 		header += statusStyle.Render("  · " + shortID(writer.SessionID()))

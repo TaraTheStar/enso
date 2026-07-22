@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // State is the result of resuming a session.
