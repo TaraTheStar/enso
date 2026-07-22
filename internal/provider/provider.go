@@ -4,8 +4,12 @@ package provider
 
 import (
 	"fmt"
-	llm "github.com/TaraTheStar/azoth/llm"
 	"time"
+
+	llm "github.com/TaraTheStar/azoth/llm"
+	"github.com/TaraTheStar/azoth/llm/anthropic"
+	"github.com/TaraTheStar/azoth/llm/bedrock"
+	"github.com/TaraTheStar/azoth/llm/vertex"
 
 	"github.com/TaraTheStar/enso/internal/config"
 )
@@ -257,7 +261,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			ReasoningBudget: cfg.Generation.ReasoningBudget,
 		}, nil
 	case "bedrock":
-		return &BedrockClient{
+		return &bedrock.BedrockClient{
 			Model:                  cfg.Model,
 			Region:                 cfg.AWSRegion,
 			Profile:                cfg.AWSProfile,
@@ -270,7 +274,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	case "vertex":
-		return &VertexClient{
+		return &vertex.VertexClient{
 			Model:                  cfg.Model,
 			Project:                cfg.GCPProject,
 			Location:               cfg.GCPLocation,
@@ -280,7 +284,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			Safety:                 cfg.VertexSafety,
 		}, nil
 	case "anthropic":
-		return &AnthropicClient{
+		return &anthropic.AnthropicClient{
 			APIKey:                 cfg.APIKey,
 			Model:                  cfg.Model,
 			BaseURL:                cfg.Endpoint,
@@ -290,7 +294,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	case "anthropic-bedrock":
-		return &AnthropicBedrockClient{
+		return &anthropic.AnthropicBedrockClient{
 			Model:                  cfg.Model,
 			Region:                 cfg.AWSRegion,
 			Profile:                cfg.AWSProfile,
@@ -303,7 +307,7 @@ func newChatClient(cfg config.ProviderConfig) (llm.ChatClient, error) {
 			PromptCaching:          cfg.PromptCaching,
 		}, nil
 	case "anthropic-vertex":
-		return &AnthropicVertexClient{
+		return &anthropic.AnthropicVertexClient{
 			Model:                  cfg.Model,
 			Region:                 cfg.GCPLocation,
 			Project:                cfg.GCPProject,

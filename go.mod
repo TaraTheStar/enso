@@ -6,11 +6,8 @@ require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.4
-	github.com/TaraTheStar/azoth v0.5.0
+	github.com/TaraTheStar/azoth v0.6.0
 	github.com/adrg/frontmatter v0.2.0
-	github.com/anthropics/anthropic-sdk-go v1.50.2
-	github.com/aws/aws-sdk-go-v2/config v1.32.31
-	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.54.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/google/uuid v1.6.0
@@ -20,7 +17,6 @@ require (
 	github.com/spf13/cobra v1.10.2
 	golang.org/x/net v0.57.0
 	golang.org/x/sys v0.47.0
-	google.golang.org/genai v1.61.0
 )
 
 require (
@@ -30,13 +26,16 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/alecthomas/chroma/v2 v2.24.1 // indirect
+	github.com/anthropics/anthropic-sdk-go v1.50.2 // indirect
 	github.com/aws/aws-sdk-go-v2 v1.43.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.13 // indirect
+	github.com/aws/aws-sdk-go-v2/config v1.32.31 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.30 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.31 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.31 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.31 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.32 // indirect
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.54.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.13 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.31 // indirect
 	github.com/aws/aws-sdk-go-v2/service/signin v1.5.0 // indirect
@@ -105,6 +104,7 @@ require (
 	golang.org/x/text v0.40.0 // indirect
 	golang.org/x/time v0.6.0 // indirect
 	google.golang.org/api v0.197.0 // indirect
+	google.golang.org/genai v1.61.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
 	google.golang.org/protobuf v1.36.10 // indirect

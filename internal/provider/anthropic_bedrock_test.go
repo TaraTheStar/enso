@@ -3,54 +3,13 @@
 package provider
 
 import (
-	"encoding/json"
-	"strings"
 	"testing"
 
-	llm "github.com/TaraTheStar/azoth/llm"
-
+	"github.com/TaraTheStar/azoth/llm/anthropic"
+	"github.com/TaraTheStar/azoth/llm/bedrock"
 	"github.com/TaraTheStar/enso/internal/config"
 )
 
-// TestAnthropicBedrock_BuildParamsReusesAnthropicTranslator confirms
-// AnthropicBedrockClient goes through the same buildAnthropicParams
-// helper as AnthropicClient: system messages get hoisted, tool blocks
-// translate, thinking layers on correctly. If this diverges from the
-// direct Anthropic adapter, the shared helper is the wrong shape.
-func TestAnthropicBedrock_BuildParamsReusesAnthropicTranslator(t *testing.T) {
-	params, err := buildAnthropicParams(
-		llm.ChatRequest{
-			Messages: []llm.Message{
-				{Role: "system", Content: "be brief"},
-				{Role: "user", Content: "hi"},
-			},
-		},
-		"anthropic.claude-3-5-sonnet-20241022-v2:0",
-		16000,
-		true,  // extended thinking
-		8000,  // budget
-		false, // prompt caching
-	)
-	if err != nil {
-		t.Fatalf("buildAnthropicParams: %v", err)
-	}
-	data, _ := json.Marshal(params)
-	js := string(data)
-	if !strings.Contains(js, `"system":[{"text":"be brief"`) {
-		t.Fatalf("system not hoisted: %s", js)
-	}
-	if !strings.Contains(js, `"thinking"`) || !strings.Contains(js, `"budget_tokens":8000`) {
-		t.Fatalf("thinking not applied: %s", js)
-	}
-	if !strings.Contains(js, `"model":"anthropic.claude-3-5-sonnet-20241022-v2:0"`) {
-		t.Fatalf("bedrock model id not preserved: %s", js)
-	}
-}
-
-// TestProviderFactory_AnthropicBedrockType checks that
-// type = "anthropic-bedrock" constructs an AnthropicBedrockClient with
-// AWS-specific config (region, profile) threaded. Distinct from
-// type = "bedrock" (Converse) — both can coexist in one config.
 func TestProviderFactory_AnthropicBedrockType(t *testing.T) {
 	cfg := config.ProviderConfig{
 		Type:       "anthropic-bedrock",
@@ -63,9 +22,9 @@ func TestProviderFactory_AnthropicBedrockType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	bc, ok := client.(*AnthropicBedrockClient)
+	bc, ok := client.(*anthropic.AnthropicBedrockClient)
 	if !ok {
-		t.Fatalf("want *AnthropicBedrockClient, got %T", client)
+		t.Fatalf("want *anthropic.AnthropicBedrockClient, got %T", client)
 	}
 	if bc.Model != cfg.Model || bc.Region != "us-west-2" || bc.Profile != "dev" {
 		t.Fatalf("config not threaded: %+v", bc)
@@ -91,7 +50,7 @@ func TestProviderFactory_AnthropicBedrockGuardrails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	abc := client.(*AnthropicBedrockClient)
+	abc := client.(*anthropic.AnthropicBedrockClient)
 	if abc.GuardrailID != "gr-xyz" || abc.GuardrailVersion != "1" || abc.GuardrailTrace != "enabled" {
 		t.Fatalf("guardrail fields not threaded: %+v", abc)
 	}
@@ -115,11 +74,11 @@ func TestProviderFactory_ConverseAndAnthropicBedrockCoexist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("anthropic-bedrock: %v", err)
 	}
-	if _, ok := converse.(*BedrockClient); !ok {
-		t.Fatalf("converse: want *BedrockClient, got %T", converse)
+	if _, ok := converse.(*bedrock.BedrockClient); !ok {
+		t.Fatalf("converse: want *bedrock.BedrockClient, got %T", converse)
 	}
-	if _, ok := native.(*AnthropicBedrockClient); !ok {
-		t.Fatalf("anthropic-bedrock: want *AnthropicBedrockClient, got %T", native)
+	if _, ok := native.(*anthropic.AnthropicBedrockClient); !ok {
+		t.Fatalf("anthropic-bedrock: want *anthropic.AnthropicBedrockClient, got %T", native)
 	}
 }
 
@@ -135,7 +94,7 @@ func TestProviderFactory_AnthropicBedrockPromptCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	if !client.(*AnthropicBedrockClient).PromptCaching {
+	if !client.(*anthropic.AnthropicBedrockClient).PromptCaching {
 		t.Fatal("PromptCaching not threaded")
 	}
 }

@@ -3,18 +3,13 @@
 package provider
 
 import (
-	"context"
-	"strings"
 	"testing"
 
-	llm "github.com/TaraTheStar/azoth/llm"
-
+	"github.com/TaraTheStar/azoth/llm/anthropic"
+	"github.com/TaraTheStar/azoth/llm/vertex"
 	"github.com/TaraTheStar/enso/internal/config"
 )
 
-// TestProviderFactory_AnthropicVertexType verifies type = "anthropic-vertex"
-// constructs an AnthropicVertexClient with GCP fields threaded.
-// Distinct from type = "vertex" (Gemini-only generateContent).
 func TestProviderFactory_AnthropicVertexType(t *testing.T) {
 	cfg := config.ProviderConfig{
 		Type:        "anthropic-vertex",
@@ -27,9 +22,9 @@ func TestProviderFactory_AnthropicVertexType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	vc, ok := client.(*AnthropicVertexClient)
+	vc, ok := client.(*anthropic.AnthropicVertexClient)
 	if !ok {
-		t.Fatalf("want *AnthropicVertexClient, got %T", client)
+		t.Fatalf("want *anthropic.AnthropicVertexClient, got %T", client)
 	}
 	if vc.Model != cfg.Model || vc.Project != "acme-prod" || vc.Region != "us-east5" {
 		t.Fatalf("config not threaded: %+v", vc)
@@ -57,11 +52,11 @@ func TestProviderFactory_GenerateContentAndAnthropicVertexCoexist(t *testing.T) 
 	if err != nil {
 		t.Fatalf("anthropic-vertex: %v", err)
 	}
-	if _, ok := gemini.(*VertexClient); !ok {
-		t.Fatalf("vertex: want *VertexClient, got %T", gemini)
+	if _, ok := gemini.(*vertex.VertexClient); !ok {
+		t.Fatalf("vertex: want *vertex.VertexClient, got %T", gemini)
 	}
-	if _, ok := claude.(*AnthropicVertexClient); !ok {
-		t.Fatalf("anthropic-vertex: want *AnthropicVertexClient, got %T", claude)
+	if _, ok := claude.(*anthropic.AnthropicVertexClient); !ok {
+		t.Fatalf("anthropic-vertex: want *anthropic.AnthropicVertexClient, got %T", claude)
 	}
 }
 
@@ -69,36 +64,6 @@ func TestProviderFactory_GenerateContentAndAnthropicVertexCoexist(t *testing.T) 
 // validation we add to avoid the SDK's WithGoogleAuth panic when region
 // is empty. The error needs to be a clean Go error the caller can see,
 // not a runtime panic surfacing from a goroutine.
-func TestAnthropicVertexClient_MissingRegionErrors(t *testing.T) {
-	c := &AnthropicVertexClient{Model: "claude-3-5-sonnet-v2@20241022", Project: "p"}
-	_, err := c.Chat(context.Background(), llm.ChatRequest{
-		Messages: []llm.Message{{Role: "user", Content: "hi"}},
-	})
-	if err == nil {
-		t.Fatal("want error for missing region")
-	}
-	if !strings.Contains(err.Error(), "region") {
-		t.Fatalf("error should name region: %v", err)
-	}
-}
-
-// TestAnthropicVertexClient_MissingProjectErrors mirrors the region
-// check — project is also required, also pre-validated.
-func TestAnthropicVertexClient_MissingProjectErrors(t *testing.T) {
-	c := &AnthropicVertexClient{Model: "claude-3-5-sonnet-v2@20241022", Region: "us-east5"}
-	_, err := c.Chat(context.Background(), llm.ChatRequest{
-		Messages: []llm.Message{{Role: "user", Content: "hi"}},
-	})
-	if err == nil {
-		t.Fatal("want error for missing project")
-	}
-	if !strings.Contains(err.Error(), "project") {
-		t.Fatalf("error should name project: %v", err)
-	}
-}
-
-// TestProviderFactory_AnthropicVertexPromptCaching pins the factory
-// wiring on the anthropic-vertex adapter — same TOML key.
 func TestProviderFactory_AnthropicVertexPromptCaching(t *testing.T) {
 	client, err := newChatClient(config.ProviderConfig{
 		Type:          "anthropic-vertex",
@@ -110,7 +75,7 @@ func TestProviderFactory_AnthropicVertexPromptCaching(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newChatClient: %v", err)
 	}
-	if !client.(*AnthropicVertexClient).PromptCaching {
+	if !client.(*anthropic.AnthropicVertexClient).PromptCaching {
 		t.Fatal("PromptCaching not threaded")
 	}
 }
