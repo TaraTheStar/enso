@@ -4,11 +4,9 @@ package session
 
 import (
 	"database/sql"
-	"fmt"
-	"os"
 	"path/filepath"
 
-	_ "modernc.org/sqlite"
+	"github.com/TaraTheStar/azoth/store"
 
 	"github.com/TaraTheStar/enso/internal/paths"
 )
@@ -26,30 +24,20 @@ func Open() (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create data dir: %w", err)
-	}
-	// MkdirAll only sets mode on creation; clamp it on every Open so an
-	// install pre-dating the 0700 tightening gets upgraded.
-	_ = os.Chmod(dir, 0o700)
-	path := filepath.Join(dir, "enso.db")
-	return OpenAt(path)
+	return OpenAt(filepath.Join(dir, "enso.db"))
 }
 
-// OpenAt opens a Store at the given file path.
+// OpenAt opens a Store at the given file path. The parent directory is created
+// (0700) and the shared pragmas + embedded migrations are applied by
+// azoth/store; enso keeps only the Store wrapper and its own migrations/ tree.
 func OpenAt(path string) (*Store, error) {
-	dsn := "file:" + path + "?_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"
-	db, err := sql.Open("sqlite", dsn)
+	db, err := store.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, err
 	}
-	if err := db.Ping(); err != nil {
+	if err := store.Migrate(db, migrationsFS, "migrations"); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("ping sqlite: %w", err)
-	}
-	if err := applyMigrations(db); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("migrate: %w", err)
+		return nil, err
 	}
 	return &Store{DB: db, Path: path}, nil
 }
