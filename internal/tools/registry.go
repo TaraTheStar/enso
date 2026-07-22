@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // Registry holds the available tools.

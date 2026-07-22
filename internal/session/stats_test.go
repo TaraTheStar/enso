@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // TestComputeStats inserts two sessions worth of messages and tool calls into

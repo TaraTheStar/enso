@@ -14,7 +14,7 @@ package wire
 import (
 	"encoding/json"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // InferenceRequest is the body of a MsgInferenceRequest. Provider names

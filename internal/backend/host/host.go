@@ -24,6 +24,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/egress"
 	"github.com/TaraTheStar/enso/internal/backend/lima"
@@ -33,8 +34,8 @@ import (
 	"github.com/TaraTheStar/enso/internal/backend/workspace"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/session"
 )
 
@@ -209,7 +210,7 @@ func egressBrokerOpts(eg config.EgressConfig, yolo, interactive bool, setProxy f
 type Session struct {
 	worker    backend.Worker
 	ch        backend.Channel
-	providers map[string]*llm.Provider
+	providers map[string]*provider.Provider
 	bus       *bus.Bus
 
 	// chWriter is the single owner of Channel.Send: producers enqueue,
@@ -425,7 +426,7 @@ func (s *Session) Telemetry() Telemetry {
 // it by that exact name — the alphabetical fallback there is
 // unreachable on these paths, so catalog order can never cause a
 // host/worker default mismatch.
-func ProviderCatalog(providers map[string]*llm.Provider) []backend.ProviderInfo {
+func ProviderCatalog(providers map[string]*provider.Provider) []backend.ProviderInfo {
 	out := make([]backend.ProviderInfo, 0, len(providers))
 	for name, p := range providers {
 		out = append(out, backend.ProviderInfo{Name: name, Model: p.Model, Pool: p.PoolName})
@@ -473,7 +474,7 @@ func Start(
 	ctx context.Context,
 	b backend.Backend,
 	spec backend.TaskSpec,
-	providers map[string]*llm.Provider,
+	providers map[string]*provider.Provider,
 	busInst *bus.Bus,
 	opts ...Option,
 ) (*Session, error) {

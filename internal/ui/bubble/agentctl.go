@@ -9,7 +9,7 @@ import (
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/instructions"
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
 // agentControl is the surface the slash commands and the Ctrl-Space
@@ -19,7 +19,7 @@ import (
 // over the Channel (or serves it from the coalesced telemetry snapshot
 // / the host's own provider set where no RPC is needed).
 type agentControl interface {
-	Provider() *llm.Provider
+	Provider() *provider.Provider
 	ProviderCtx() *instructions.ProviderContext
 	SetProvider(name string) error
 	EstimateTokens() int
@@ -61,12 +61,12 @@ func controlCtx() (context.Context, context.CancelFunc) {
 // same provider set the agent uses).
 type sessionAgentControl struct {
 	sess      *host.Session
-	providers map[string]*llm.Provider
+	providers map[string]*provider.Provider
 }
 
 var _ agentControl = (*sessionAgentControl)(nil)
 
-func (s *sessionAgentControl) Provider() *llm.Provider {
+func (s *sessionAgentControl) Provider() *provider.Provider {
 	// The real provider object, looked up by the active name the worker
 	// reported. Carries the true ContextWindow + prices the host owns;
 	// the worker is credential-scrubbed and could not return one.
@@ -161,7 +161,7 @@ func (s *sessionAgentControl) SetNextTurnTools(names []string) {
 // "## Available models" section is a pure function of the provider set
 // + active name + the include-providers opt-out. Rebuilding it here is
 // behavior-identical and keeps it off the control RPC.
-func providerContextFrom(providers map[string]*llm.Provider, active string) *instructions.ProviderContext {
+func providerContextFrom(providers map[string]*provider.Provider, active string) *instructions.ProviderContext {
 	if len(providers) < 2 {
 		return nil
 	}

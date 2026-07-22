@@ -14,9 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
@@ -47,7 +48,7 @@ func startTestServer(t *testing.T) (socketPath string, mock *llmtest.Mock, srv *
 
 	s := &Server{
 		cfg: &config.Config{}, // empty defaults — Permissions.Mode "" → "prompt", but we use Yolo
-		provider: &llm.Provider{
+		provider: &provider.Provider{
 			Name:          "test",
 			Client:        mock,
 			Model:         "fake",

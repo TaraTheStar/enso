@@ -12,13 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/backend/worker"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/session"
 )
 
@@ -150,7 +151,7 @@ func TestSessionEndToEnd(t *testing.T) {
 	mock := llmtest.New()
 	mock.Push(llmtest.Script{Text: "pong"})
 
-	providers := map[string]*llm.Provider{
+	providers := map[string]*provider.Provider{
 		"test": {Name: "test", Model: "m", Pool: llm.NewPool(4), Client: mock},
 	}
 
@@ -215,7 +216,7 @@ func TestSessionTelemetry(t *testing.T) {
 	mock := llmtest.New()
 	mock.Push(llmtest.Script{Text: "pong"})
 
-	providers := map[string]*llm.Provider{
+	providers := map[string]*provider.Provider{
 		// ContextWindow is set ONLY host-side: the worker rebuilds
 		// providers from the non-secret catalog and has no window. If
 		// Telemetry() reports it, the host augmentation works.
@@ -289,7 +290,7 @@ func TestSessionIsolatedCheckpoint(t *testing.T) {
 	mock := llmtest.New()
 	mock.Push(llmtest.Script{Text: "ok"}) // text-only: one clean user turn
 
-	providers := map[string]*llm.Provider{
+	providers := map[string]*provider.Provider{
 		"test": {Name: "test", Model: "m", Pool: llm.NewPool(4), Client: mock},
 	}
 

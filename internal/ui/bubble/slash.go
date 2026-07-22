@@ -11,10 +11,10 @@ import (
 
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/lsp"
 	"github.com/TaraTheStar/enso/internal/mcp"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/slash"
 	"github.com/TaraTheStar/enso/internal/tools"
@@ -29,7 +29,7 @@ type slashCtx struct {
 	registry  *tools.Registry
 	store     *session.Store
 	writer    *session.Writer
-	providers map[string]*llm.Provider
+	providers map[string]*provider.Provider
 	cwd       string
 
 	// sess is the worker session when the TUI runs behind the Backend

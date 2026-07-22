@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	llm "github.com/TaraTheStar/azoth/llm"
 	"net/http"
 	"strings"
 	"time"
@@ -71,7 +72,7 @@ type AnthropicClient struct {
 	// conn tracks transport state for the TUI indicator (same contract
 	// as OpenAIClient.conn). Only network-class failures move it; HTTP
 	// 4xx/5xx leave it Connected because TLS+TCP succeeded.
-	conn connTracker
+	conn llm.ConnTracker
 
 	// sdk is lazily constructed on first Chat call so config changes
 	// before the first use stick.
@@ -81,7 +82,7 @@ type AnthropicClient struct {
 // LLMConnState satisfies ConnStateReporter so the TUI status bar can
 // surface reconnect/disconnected without caring which vendor backs the
 // provider.
-func (c *AnthropicClient) LLMConnState() ConnState { return c.conn.get() }
+func (c *AnthropicClient) LLMConnState() llm.ConnState { return c.conn.Get() }
 
 func (c *AnthropicClient) client() *anthropic.Client {
 	if c.sdk != nil {
@@ -113,7 +114,7 @@ func (c *AnthropicClient) client() *anthropic.Client {
 // Chat is the ChatClient entry point. It translates the OpenAI-shaped
 // ChatRequest into Anthropic's Messages API call, opens the stream, and
 // republishes events on a channel using our Event taxonomy.
-func (c *AnthropicClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event, error) {
+func (c *AnthropicClient) Chat(ctx context.Context, req llm.ChatRequest) (<-chan llm.Event, error) {
 	maxTokens := c.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 8192
@@ -141,18 +142,18 @@ func streamAnthropic(
 	ctx context.Context,
 	sdk *anthropic.Client,
 	params anthropic.MessageNewParams,
-	conn *connTracker,
+	conn *llm.ConnTracker,
 	startProbe func(),
 	label string,
-) <-chan Event {
-	if debugEnabled.Load() {
+) <-chan llm.Event {
+	if llm.DebugEnabled() {
 		if data, mErr := json.Marshal(params); mErr == nil {
-			fmt.Fprintf(debugLog(), "%s POST messages\nbody: %s\n", label, data)
+			llm.Debugf("%s POST messages\nbody: %s\n", label, data)
 		}
 	}
 
 	stream := sdk.Messages.NewStreaming(ctx, params)
-	eventCh := make(chan Event, 32)
+	eventCh := make(chan llm.Event, 32)
 
 	go func() {
 		defer close(eventCh)
@@ -170,8 +171,8 @@ func streamAnthropic(
 
 		for stream.Next() {
 			ev := stream.Current()
-			if debugEnabled.Load() {
-				fmt.Fprintf(debugLog(), "%s sse: %s\n", label, ev.RawJSON())
+			if llm.DebugEnabled() {
+				llm.Debugf("%s sse: %s\n", label, ev.RawJSON())
 			}
 
 			switch ev.Type {
@@ -188,11 +189,11 @@ func streamAnthropic(
 				switch delta.Type {
 				case "text_delta":
 					if t := delta.AsTextDelta(); t.Text != "" {
-						eventCh <- Event{Type: EventTextDelta, Text: t.Text}
+						eventCh <- llm.Event{Type: llm.EventTextDelta, Text: t.Text}
 					}
 				case "thinking_delta":
 					if t := delta.AsThinkingDelta(); t.Thinking != "" {
-						eventCh <- Event{Type: EventReasoningDelta, Text: t.Thinking}
+						eventCh <- llm.Event{Type: llm.EventReasoningDelta, Text: t.Thinking}
 					}
 				case "input_json_delta":
 					if acc, ok := inflight[cbd.Index]; ok {
@@ -210,13 +211,13 @@ func streamAnthropic(
 						// arguments with json.Unmarshal.
 						args = "{}"
 					}
-					call := ToolCall{
+					call := llm.ToolCall{
 						ID:   acc.id,
 						Type: "function",
 					}
 					call.Function.Name = acc.name
 					call.Function.Arguments = args
-					eventCh <- Event{Type: EventToolCallComplete, ToolCalls: []ToolCall{call}}
+					eventCh <- llm.Event{Type: llm.EventToolCallComplete, ToolCalls: []llm.ToolCall{call}}
 					delete(inflight, cbs.Index)
 				}
 
@@ -236,7 +237,7 @@ func streamAnthropic(
 					md.Usage.OutputTokens,
 					md.Usage.CacheReadInputTokens,
 					md.Usage.CacheCreationInputTokens)
-				eventCh <- Event{Type: EventUsage, Usage: anthropicUsageFrom(
+				eventCh <- llm.Event{Type: llm.EventUsage, Usage: anthropicUsageFrom(
 					md.Usage.InputTokens, md.Usage.OutputTokens,
 					md.Usage.CacheReadInputTokens, md.Usage.CacheCreationInputTokens,
 				)}
@@ -247,17 +248,17 @@ func streamAnthropic(
 		}
 
 		if err := stream.Err(); err != nil {
-			if classifyTransportError(err) != "" {
-				if conn.set(StateDisconnected) != StateDisconnected && startProbe != nil {
+			if llm.ClassifyTransportError(err) != "" {
+				if conn.Set(llm.StateDisconnected) != llm.StateDisconnected && startProbe != nil {
 					startProbe()
 				}
 			}
-			eventCh <- Event{Type: EventError, Error: friendlyHTTPError(label, err)}
+			eventCh <- llm.Event{Type: llm.EventError, Error: llm.FriendlyHTTPError(label, "", err)}
 			return
 		}
 
-		conn.set(StateConnected)
-		eventCh <- Event{Type: EventDone}
+		conn.Set(llm.StateConnected)
+		eventCh <- llm.Event{Type: llm.EventDone}
 	}()
 
 	return eventCh
@@ -268,14 +269,14 @@ func streamAnthropic(
 // endpoint answers (state flips to Connected) or some other code path
 // has already moved the tracker out of Disconnected.
 func (c *AnthropicClient) startRecoveryProbe() {
-	if !c.conn.claimProbe() {
+	if !c.conn.ClaimProbe() {
 		return
 	}
 	go c.probeLoop()
 }
 
 func (c *AnthropicClient) probeLoop() {
-	defer c.conn.releaseProbe()
+	defer c.conn.ReleaseProbe()
 	interval := probeInterval
 	if c.ProbeInterval > 0 {
 		interval = c.ProbeInterval
@@ -283,11 +284,11 @@ func (c *AnthropicClient) probeLoop() {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for range t.C {
-		if c.conn.get() != StateDisconnected {
+		if c.conn.Get() != llm.StateDisconnected {
 			return
 		}
 		if c.probeOnce() {
-			c.conn.set(StateConnected)
+			c.conn.Set(llm.StateConnected)
 			return
 		}
 	}
@@ -306,12 +307,12 @@ func (c *AnthropicClient) probeOnce() bool {
 	}
 	// Transport-class failures keep the tracker disconnected; anything
 	// else (API errors with a real HTTP response) means TLS+TCP worked.
-	return classifyTransportError(err) == ""
+	return llm.ClassifyTransportError(err) == ""
 }
 
 // buildParams is AnthropicClient's bound form of buildAnthropicParams,
 // kept for symmetry with the test surface.
-func (c *AnthropicClient) buildParams(req ChatRequest, maxTokens int64) (anthropic.MessageNewParams, error) {
+func (c *AnthropicClient) buildParams(req llm.ChatRequest, maxTokens int64) (anthropic.MessageNewParams, error) {
 	return buildAnthropicParams(req, c.Model, maxTokens, c.ExtendedThinking, c.ExtendedThinkingBudget, c.PromptCaching)
 }
 
@@ -319,7 +320,7 @@ func (c *AnthropicClient) buildParams(req ChatRequest, maxTokens int64) (anthrop
 // API, with the extended-thinking and prompt-caching layers applied if
 // requested. Shared between all three Anthropic adapters — the wire
 // protocol is identical; only the SDK construction differs.
-func buildAnthropicParams(req ChatRequest, model string, maxTokens int64, thinking bool, thinkingBudget int64, promptCaching bool) (anthropic.MessageNewParams, error) {
+func buildAnthropicParams(req llm.ChatRequest, model string, maxTokens int64, thinking bool, thinkingBudget int64, promptCaching bool) (anthropic.MessageNewParams, error) {
 	params, err := toAnthropicParams(req, model, maxTokens)
 	if err != nil {
 		return params, err
@@ -354,13 +355,13 @@ func buildAnthropicParams(req ChatRequest, model string, maxTokens int64, thinki
 
 // toAnthropicParams translates an OpenAI-shaped ChatRequest into the
 // Messages API's MessageNewParams.
-func toAnthropicParams(req ChatRequest, model string, maxTokens int64) (anthropic.MessageNewParams, error) {
+func toAnthropicParams(req llm.ChatRequest, model string, maxTokens int64) (anthropic.MessageNewParams, error) {
 	params := anthropic.MessageNewParams{
 		Model:     model,
 		MaxTokens: maxTokens,
 	}
 
-	system, msgs, err := splitSystem(FilterForRequest(req.Messages))
+	system, msgs, err := splitSystem(llm.FilterForRequest(req.Messages))
 	if err != nil {
 		return params, err
 	}
@@ -398,7 +399,7 @@ func toAnthropicParams(req ChatRequest, model string, maxTokens int64) (anthropi
 // When a Message has non-empty Parts, the multimodal path runs: text
 // parts plus image / document blocks. Empty Parts falls back to the
 // legacy single-string Content path so existing flows are untouched.
-func splitSystem(in []Message) ([]anthropic.TextBlockParam, []anthropic.MessageParam, error) {
+func splitSystem(in []llm.Message) ([]anthropic.TextBlockParam, []anthropic.MessageParam, error) {
 	var systemBlocks []anthropic.TextBlockParam
 	var out []anthropic.MessageParam
 
@@ -466,7 +467,7 @@ func splitSystem(in []Message) ([]anthropic.TextBlockParam, []anthropic.MessageP
 // userMessageBlocks builds the content slice for a user-role message,
 // honouring Parts when populated. A plain string Content with no Parts
 // reduces to one NewTextBlock — same wire shape as before.
-func userMessageBlocks(m Message) ([]anthropic.ContentBlockParamUnion, error) {
+func userMessageBlocks(m llm.Message) ([]anthropic.ContentBlockParamUnion, error) {
 	if len(m.Parts) == 0 {
 		if m.Content == "" {
 			return nil, nil
@@ -491,7 +492,7 @@ func userMessageBlocks(m Message) ([]anthropic.ContentBlockParamUnion, error) {
 	return blocks, nil
 }
 
-func assistantBlocks(m Message) ([]anthropic.ContentBlockParamUnion, error) {
+func assistantBlocks(m llm.Message) ([]anthropic.ContentBlockParamUnion, error) {
 	var blocks []anthropic.ContentBlockParamUnion
 	// Assistant messages from the model never carry inline media in
 	// today's flow (Claude can return images via tools, not directly).
@@ -523,7 +524,7 @@ func assistantBlocks(m Message) ([]anthropic.ContentBlockParamUnion, error) {
 // anthropicContentBlock translates one MessagePart onto the SDK's
 // ContentBlockParamUnion. Used by user + assistant paths. Tool-result
 // blocks need a different union (toolResultBlock handles that).
-func anthropicContentBlock(p MessagePart) (anthropic.ContentBlockParamUnion, error) {
+func anthropicContentBlock(p llm.MessagePart) (anthropic.ContentBlockParamUnion, error) {
 	switch p.Type {
 	case "text":
 		return anthropic.NewTextBlock(p.Text), nil
@@ -555,7 +556,7 @@ func anthropicContentBlock(p MessagePart) (anthropic.ContentBlockParamUnion, err
 // message. The block can carry text + image content when the tool
 // returned an image (e.g. read tool on a PNG); falls back to the
 // legacy single-text body when only Content is set.
-func toolResultBlock(m Message) (anthropic.ContentBlockParamUnion, error) {
+func toolResultBlock(m llm.Message) (anthropic.ContentBlockParamUnion, error) {
 	if len(m.Parts) == 0 {
 		return anthropic.NewToolResultBlock(m.ToolCallID, m.Content, false), nil
 	}
@@ -598,7 +599,7 @@ func toolResultBlock(m Message) (anthropic.ContentBlockParamUnion, error) {
 	}, nil
 }
 
-func toAnthropicTools(in []ToolDef) ([]anthropic.ToolUnionParam, error) {
+func toAnthropicTools(in []llm.ToolDef) ([]anthropic.ToolUnionParam, error) {
 	out := make([]anthropic.ToolUnionParam, 0, len(in))
 	for _, t := range in {
 		tp := anthropic.ToolParam{Name: t.Function.Name}
@@ -676,8 +677,8 @@ func toStringSlice(v any) ([]string, error) {
 // Anthropic semantics: InputTokens is fresh-only (cache reads and
 // writes are reported separately), so summing all four gives the
 // authoritative total for the turn.
-func anthropicUsageFrom(input, output, cacheRead, cacheWrite int64) MessageUsage {
-	u := MessageUsage{
+func anthropicUsageFrom(input, output, cacheRead, cacheWrite int64) llm.MessageUsage {
+	u := llm.MessageUsage{
 		InputTokens:      int(input),
 		OutputTokens:     int(output),
 		CacheReadTokens:  int(cacheRead),
@@ -695,8 +696,8 @@ func logAnthropicUsage(label string, in, out, cacheRead, cacheCreate int64) {
 	if in == 0 && out == 0 && cacheRead == 0 && cacheCreate == 0 {
 		return
 	}
-	if debugEnabled.Load() {
-		fmt.Fprintf(debugLog(), "%s usage: in=%d out=%d cache_read=%d cache_create=%d\n",
+	if llm.DebugEnabled() {
+		llm.Debugf("%s usage: in=%d out=%d cache_read=%d cache_create=%d\n",
 			label, in, out, cacheRead, cacheCreate)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/agents"
 	"github.com/TaraTheStar/enso/internal/backend"
@@ -17,10 +18,10 @@ import (
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/hooks"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/lsp"
 	"github.com/TaraTheStar/enso/internal/mcp"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
@@ -1000,7 +1001,7 @@ func decodeConfig(raw json.RawMessage) (*config.Config, error) {
 // pickProvider returns the named provider, or the alphabetically-first
 // one when name is empty or unknown — mirroring agent.New's default
 // selection so worker-side construction matches the host's.
-func pickProvider(providers map[string]*llm.Provider, name string) *llm.Provider {
+func pickProvider(providers map[string]*provider.Provider, name string) *provider.Provider {
 	if p, ok := providers[name]; ok {
 		return p
 	}
@@ -1013,13 +1014,13 @@ func pickProvider(providers map[string]*llm.Provider, name string) *llm.Provider
 	return providers[first]
 }
 
-func buildProviders(spec backend.TaskSpec, s *seam) (map[string]*llm.Provider, error) {
+func buildProviders(spec backend.TaskSpec, s *seam) (map[string]*provider.Provider, error) {
 	if len(spec.Providers) == 0 {
 		return nil, fmt.Errorf("no providers in task spec")
 	}
-	out := make(map[string]*llm.Provider, len(spec.Providers))
+	out := make(map[string]*provider.Provider, len(spec.Providers))
 	for _, p := range spec.Providers {
-		out[p.Name] = &llm.Provider{
+		out[p.Name] = &provider.Provider{
 			Name:  p.Name,
 			Model: p.Model,
 			// Inference is host-proxied; the real pool/rate gating lives

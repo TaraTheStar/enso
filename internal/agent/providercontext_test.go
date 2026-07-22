@@ -5,22 +5,22 @@ package agent
 import (
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
-func mkProv(name, model string, include bool) *llm.Provider {
-	return &llm.Provider{Name: name, Model: model, IncludeProviders: include}
+func mkProv(name, model string, include bool) *provider.Provider {
+	return &provider.Provider{Name: name, Model: model, IncludeProviders: include}
 }
 
 func TestProviderContext_SuppressedCases(t *testing.T) {
 	// Fewer than two providers → nil regardless of the flag.
-	one := map[string]*llm.Provider{"a": mkProv("a", "ma", true)}
+	one := map[string]*provider.Provider{"a": mkProv("a", "ma", true)}
 	if pc := providerContext(one, "a"); pc != nil {
 		t.Errorf("single provider should yield nil, got %+v", pc)
 	}
 
 	// Two providers but the active one opted out → nil.
-	off := map[string]*llm.Provider{
+	off := map[string]*provider.Provider{
 		"a": mkProv("a", "ma", false),
 		"b": mkProv("b", "mb", false),
 	}
@@ -30,7 +30,7 @@ func TestProviderContext_SuppressedCases(t *testing.T) {
 }
 
 func TestProviderContext_BuildsInfoSet(t *testing.T) {
-	provs := map[string]*llm.Provider{
+	provs := map[string]*provider.Provider{
 		"a": {Name: "a", Model: "ma", ContextWindow: 8000, Description: "fast", IncludeProviders: true},
 		"b": {Name: "b", Model: "mb", IncludeProviders: true},
 	}

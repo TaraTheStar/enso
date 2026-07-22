@@ -12,7 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // labelMaxLen caps the slugified session label. 30 chars keeps the

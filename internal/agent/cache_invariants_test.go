@@ -7,11 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -126,7 +127,7 @@ func TestCacheInvariant_CompactionPreservesSystemPrefix(t *testing.T) {
 	// Small window so recentTurnBudget pins only the freshest turn(s),
 	// leaving older turns to actually compact. budget = window/4, floored
 	// at 2000; large per-turn content keeps that to ~one recent turn.
-	prov := &llm.Provider{
+	prov := &provider.Provider{
 		Name:          "test",
 		Client:        mock,
 		Model:         "fake",
@@ -147,7 +148,7 @@ func TestCacheInvariant_CompactionPreservesSystemPrefix(t *testing.T) {
 	}
 
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": prov},
+		Providers:       map[string]*provider.Provider{"test": prov},
 		DefaultProvider: "test",
 		Bus:             bus.New(),
 		Registry:        tools.NewRegistry(),

@@ -15,8 +15,8 @@ import (
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/instructions"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
 // --- Overlay scrolling (picker / palette / sessions) ---
@@ -279,10 +279,10 @@ type fakeAgentControl struct {
 	budget int
 	cumIn  int64
 	cumOut int64
-	prov   *llm.Provider
+	prov   *provider.Provider
 }
 
-func (f *fakeAgentControl) Provider() *llm.Provider                    { return f.prov }
+func (f *fakeAgentControl) Provider() *provider.Provider               { return f.prov }
 func (f *fakeAgentControl) ProviderCtx() *instructions.ProviderContext { return nil }
 func (f *fakeAgentControl) SetProvider(string) error                   { return nil }
 func (f *fakeAgentControl) EstimateTokens() int                        { return f.est }
@@ -333,7 +333,7 @@ func TestCostIndicator(t *testing.T) {
 	priced := &model{slashCtx: &slashCtx{agt: &fakeAgentControl{
 		cumIn:  1_000_000,
 		cumOut: 500_000,
-		prov:   &llm.Provider{InputPrice: 3, OutputPrice: 6},
+		prov:   &provider.Provider{InputPrice: 3, OutputPrice: 6},
 	}}}
 	if got := ansi.Strip(priced.costIndicator()); got != "$6.00" {
 		t.Fatalf("priced session: want $6.00; got %q", got)
@@ -344,7 +344,7 @@ func TestCostIndicator(t *testing.T) {
 
 	// Sub-cent spend keeps enough digits to read as non-zero.
 	tiny := &model{slashCtx: &slashCtx{agt: &fakeAgentControl{
-		cumIn: 1000, prov: &llm.Provider{InputPrice: 3},
+		cumIn: 1000, prov: &provider.Provider{InputPrice: 3},
 	}}}
 	if got := ansi.Strip(tiny.costIndicator()); got != "$0.0030" {
 		t.Fatalf("sub-cent session: want $0.0030; got %q", got)
@@ -352,7 +352,7 @@ func TestCostIndicator(t *testing.T) {
 
 	// Free / local provider (no prices) → cumulative token badge, not $.
 	local := &model{slashCtx: &slashCtx{agt: &fakeAgentControl{
-		cumIn: 12_000, cumOut: 3_000, prov: &llm.Provider{},
+		cumIn: 12_000, cumOut: 3_000, prov: &provider.Provider{},
 	}}}
 	if got := ansi.Strip(local.costIndicator()); got != "Σ 15k" {
 		t.Fatalf("free provider: want Σ 15k; got %q", got)
@@ -366,7 +366,7 @@ func TestCostIndicator(t *testing.T) {
 
 	// Fresh session, nothing billed yet → no badge.
 	fresh := &model{slashCtx: &slashCtx{agt: &fakeAgentControl{
-		prov: &llm.Provider{InputPrice: 3},
+		prov: &provider.Provider{InputPrice: 3},
 	}}}
 	if got := fresh.costIndicator(); got != "" {
 		t.Fatalf("fresh session should produce no badge; got %q", got)

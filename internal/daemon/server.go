@@ -25,10 +25,10 @@ import (
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/TaraTheStar/enso/internal/hooks"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/mcp"
 	"github.com/TaraTheStar/enso/internal/paths"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
@@ -67,7 +67,7 @@ type Server struct {
 	cfg *config.Config
 	// provider is the default provider — used for new-session metadata
 	// (model/name recorded on the session row).
-	provider *llm.Provider
+	provider *provider.Provider
 	// providers is the full configured set, built once at startup and
 	// handed to every session's agent.New. Because the daemon runs all
 	// hosted agent loops in-process, sharing this one map (and thus the
@@ -79,7 +79,7 @@ type Server struct {
 	// documented gap; run the daemon if you need cross-process pool
 	// limits.) May be nil in tests that construct Server directly;
 	// sessionProviders falls back to {provider}.
-	providers  map[string]*llm.Provider
+	providers  map[string]*provider.Provider
 	registry   *tools.Registry
 	store      *session.Store
 	mcpMgr     *mcp.Manager
@@ -198,7 +198,7 @@ func Run(ctx context.Context, explicitConfig string) error {
 	// different default per session over the wire would need a protocol
 	// extension and is out of scope, but sub-agents can already route
 	// across the full set via spawn_agent's `model:` arg.
-	providers, err := llm.BuildProviders(cfg.Providers, cfg.ResolvePools())
+	providers, err := provider.BuildProviders(cfg.Providers, cfg.ResolvePools())
 	if err != nil {
 		return err
 	}
@@ -281,7 +281,7 @@ func Run(ctx context.Context, explicitConfig string) error {
 // pickDefaultProviderName mirrors agent.pickDefaultProvider for daemon
 // startup. Empty `requested` falls back to the alphabetically-first
 // configured key.
-func pickDefaultProviderName(providers map[string]*llm.Provider, requested string) (string, error) {
+func pickDefaultProviderName(providers map[string]*provider.Provider, requested string) (string, error) {
 	if len(providers) == 0 {
 		return "", fmt.Errorf("no providers configured")
 	}
@@ -416,11 +416,11 @@ func (s *Server) onListSessions(conn net.Conn) error {
 // entire cross-session pool-coordination mechanism (no IPC: the daemon
 // runs every hosted agent loop in-process). Falls back to a single-entry
 // map when only `provider` is set (Server constructed directly in tests).
-func (s *Server) sessionProviders() map[string]*llm.Provider {
+func (s *Server) sessionProviders() map[string]*provider.Provider {
 	if len(s.providers) > 0 {
 		return s.providers
 	}
-	return map[string]*llm.Provider{s.provider.Name: s.provider}
+	return map[string]*provider.Provider{s.provider.Name: s.provider}
 }
 
 func (s *Server) onCreateSession(ctx context.Context, conn net.Conn, req CreateSessionReq) error {

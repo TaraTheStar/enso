@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/wire"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 )
 
 // TestRunAgentWorkflowOverSeam proves CtrlRunWorkflow runs the whole

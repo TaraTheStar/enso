@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // BashCmdStat aggregates the recorded output of one normalised bash command

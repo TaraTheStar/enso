@@ -18,8 +18,8 @@ import (
 
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -28,7 +28,7 @@ type RunDeps struct {
 	// Providers is the full set of configured LLM endpoints, keyed by
 	// the user-facing label (e.g. "qwen-fast"). Per-role `model:` in
 	// the YAML names a key here. Must be non-empty.
-	Providers map[string]*llm.Provider
+	Providers map[string]*provider.Provider
 	// DefaultProvider is the provider name a role falls back to when
 	// its `model:` field is empty. Empty string = alphabetical-first.
 	DefaultProvider string
@@ -458,7 +458,7 @@ func trailingKeyValues(text string) map[string]string {
 
 // providerNames returns the configured provider keys in stable order
 // for inclusion in error messages.
-func providerNames(providers map[string]*llm.Provider) []string {
+func providerNames(providers map[string]*provider.Provider) []string {
 	out := make([]string, 0, len(providers))
 	for name := range providers {
 		out = append(out, name)

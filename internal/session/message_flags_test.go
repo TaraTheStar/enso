@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // TestMessageFlags_RoundTrip pins the Synthetic/Ignored contract:

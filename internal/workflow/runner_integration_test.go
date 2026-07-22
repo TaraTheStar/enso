@@ -8,18 +8,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
 // fakeProvider builds a Provider whose Chat is `mock`. Pool concurrency
 // controls whether sibling roles can actually run their Chat() calls in
 // parallel — the runner uses the Pool to gate inflight LLM requests.
-func fakeProvider(mock *llmtest.Mock, concurrency int) *llm.Provider {
-	return &llm.Provider{
+func fakeProvider(mock *llmtest.Mock, concurrency int) *provider.Provider {
+	return &provider.Provider{
 		Name:          "test",
 		Client:        mock,
 		Model:         "fake",
@@ -28,10 +29,10 @@ func fakeProvider(mock *llmtest.Mock, concurrency int) *llm.Provider {
 	}
 }
 
-func runDeps(t *testing.T, provider *llm.Provider, busInst *bus.Bus) RunDeps {
+func runDeps(t *testing.T, prov *provider.Provider, busInst *bus.Bus) RunDeps {
 	return RunDeps{
-		Providers:       map[string]*llm.Provider{provider.Name: provider},
-		DefaultProvider: provider.Name,
+		Providers:       map[string]*provider.Provider{prov.Name: prov},
+		DefaultProvider: prov.Name,
 		Bus:             busInst,
 		Registry:        tools.NewRegistry(),
 		Perms:           permissions.NewChecker(nil, nil, nil, "allow"),
@@ -347,14 +348,14 @@ A: {{ .Args }}
 	mockFast := llmtest.NewT(t)
 	mockDeep := llmtest.NewT(t)
 
-	pFast := &llm.Provider{Name: "fast", Client: mockFast, Model: "f", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
-	pDeep := &llm.Provider{Name: "deep", Client: mockDeep, Model: "d", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
+	pFast := &provider.Provider{Name: "fast", Client: mockFast, Model: "f", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
+	pDeep := &provider.Provider{Name: "deep", Client: mockDeep, Model: "d", ContextWindow: 1_000_000, Pool: llm.NewPool(1)}
 
 	mockDeep.Push(llmtest.Script{Text: "ALPHA-OUT"}) // alpha runs on deep
 	mockFast.Push(llmtest.Script{Text: "BETA-OUT"})  // beta inherits default fast
 
 	deps := RunDeps{
-		Providers:       map[string]*llm.Provider{"fast": pFast, "deep": pDeep},
+		Providers:       map[string]*provider.Provider{"fast": pFast, "deep": pDeep},
 		DefaultProvider: "fast",
 		Bus:             bus.New(),
 		Registry:        tools.NewRegistry(),

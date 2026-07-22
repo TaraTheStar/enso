@@ -7,10 +7,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -42,7 +43,7 @@ func TestRun_OnUserTurnFiresPerGenuineTurn(t *testing.T) {
 	gotSeqs := make(chan int, 8)
 
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		DefaultProvider: "test",
 		Bus:             busInst,
 		Registry:        tools.NewRegistry(),
@@ -88,7 +89,7 @@ func TestRunOneShot_DoesNotFireOnUserTurn(t *testing.T) {
 
 	fired := false
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		DefaultProvider: "test",
 		Bus:             bus.New(),
 		Registry:        tools.NewRegistry(),

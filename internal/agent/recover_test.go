@@ -8,27 +8,28 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
 // recoverProvider is fakeProvider with the auto-recovery policy enabled,
 // mirroring what provider.go wires for the OpenAI/llama.cpp path.
-func recoverProvider(mock *llmtest.Mock, attempts int) *llm.Provider {
+func recoverProvider(mock *llmtest.Mock, attempts int) *provider.Provider {
 	p := fakeProvider(mock)
 	p.AutoRecover = true
 	p.MaxRecoverAttempts = attempts
 	return p
 }
 
-func newRecoverAgent(t *testing.T, p *llm.Provider) (*Agent, *bus.Bus) {
+func newRecoverAgent(t *testing.T, p *provider.Provider) (*Agent, *bus.Bus) {
 	t.Helper()
 	b := bus.New()
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": p},
+		Providers:       map[string]*provider.Provider{"test": p},
 		DefaultProvider: "test",
 		Bus:             b,
 		Registry:        tools.NewRegistry(),

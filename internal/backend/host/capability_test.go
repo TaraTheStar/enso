@@ -9,14 +9,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/backend/wire"
 	"github.com/TaraTheStar/enso/internal/backend/worker"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
 // capAgent is a worker-side AgentFunc that issues two capability
@@ -75,7 +76,7 @@ func TestCapabilityBroker(t *testing.T) {
 		ResolvedConfig: rc,
 		Providers:      []backend.ProviderInfo{{Name: "x", Model: "m"}},
 	}
-	providers := map[string]*llm.Provider{"x": {Name: "x", Model: "m", Pool: llm.NewPool(1), Client: llmtest.New()}}
+	providers := map[string]*provider.Provider{"x": {Name: "x", Model: "m", Pool: llm.NewPool(1), Client: llmtest.New()}}
 
 	t.Run("granted+denied via broker", func(t *testing.T) {
 		got := make(chan [2]wire.CapabilityGrant, 1)

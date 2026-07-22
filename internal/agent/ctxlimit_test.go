@@ -5,7 +5,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
 // TestEffectiveContextWindow covers the learned-limit override: a limit
@@ -15,8 +15,8 @@ import (
 // /model swap doesn't carry one model's limit onto another.
 func TestEffectiveContextWindow(t *testing.T) {
 	a := &Agent{}
-	pA := &llm.Provider{Name: "qwen", ContextWindow: 0}      // unset config
-	pB := &llm.Provider{Name: "other", ContextWindow: 32768} // configured
+	pA := &provider.Provider{Name: "qwen", ContextWindow: 0}      // unset config
+	pB := &provider.Provider{Name: "other", ContextWindow: 32768} // configured
 
 	// Before learning anything: fall back to the configured value.
 	if got := a.effectiveContextWindow(pA); got != 0 {
@@ -45,7 +45,7 @@ func TestEffectiveContextWindow(t *testing.T) {
 
 	// Non-positive learned values are ignored.
 	a.learnContextLimit("zero", 0)
-	pZ := &llm.Provider{Name: "zero", ContextWindow: 4096}
+	pZ := &provider.Provider{Name: "zero", ContextWindow: 4096}
 	if got := a.effectiveContextWindow(pZ); got != 4096 {
 		t.Errorf("ignoring zero learn = %d, want 4096", got)
 	}
@@ -80,7 +80,7 @@ func TestInputBudget(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := &llm.Provider{Name: "p", ContextWindow: tc.window, MaxTokens: tc.maxTokens}
+			p := &provider.Provider{Name: "p", ContextWindow: tc.window, MaxTokens: tc.maxTokens}
 			if got := a.inputBudget(p, tc.window); got != tc.want {
 				t.Errorf("inputBudget(window=%d, maxTokens=%d) = %d, want %d", tc.window, tc.maxTokens, got, tc.want)
 			}

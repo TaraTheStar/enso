@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/tools"
 )
 
@@ -120,7 +121,7 @@ func TestUsage_ClearedOnCompaction(t *testing.T) {
 	a := &Agent{
 		History:         hist,
 		Bus:             bus.New(),
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		currentProvider: fakeProvider(mock),
 		messageUsage:    map[int]llm.MessageUsage{},
 	}
@@ -153,7 +154,7 @@ func TestUsage_ClearedOnCompaction(t *testing.T) {
 func newRunnableAgent(t *testing.T, mock *llmtest.Mock) *Agent {
 	t.Helper()
 	a, err := New(Config{
-		Providers:       map[string]*llm.Provider{"test": fakeProvider(mock)},
+		Providers:       map[string]*provider.Provider{"test": fakeProvider(mock)},
 		DefaultProvider: "test",
 		Bus:             bus.New(),
 		Registry:        tools.NewRegistry(),

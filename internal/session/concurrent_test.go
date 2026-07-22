@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/llm"
+	"github.com/TaraTheStar/azoth/llm"
 )
 
 // TestConcurrentStoreWriters mirrors the Backend-seam reality under

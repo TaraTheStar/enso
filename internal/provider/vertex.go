@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	llm "github.com/TaraTheStar/azoth/llm"
 	"iter"
 	"strings"
 	"sync"
@@ -74,7 +75,7 @@ type VertexClient struct {
 	// ProbeInterval is a test seam. Zero uses the package default.
 	ProbeInterval time.Duration
 
-	conn connTracker
+	conn llm.ConnTracker
 
 	sdkOnce sync.Once
 	sdk     vertexGenerateAPI
@@ -92,7 +93,7 @@ type vertexGenerateAPI interface {
 }
 
 // LLMConnState satisfies ConnStateReporter.
-func (c *VertexClient) LLMConnState() ConnState { return c.conn.get() }
+func (c *VertexClient) LLMConnState() llm.ConnState { return c.conn.Get() }
 
 func (c *VertexClient) client(ctx context.Context) (vertexGenerateAPI, error) {
 	c.sdkOnce.Do(func() {
@@ -132,7 +133,7 @@ func (a vertexModelsAdapter) GenerateContentStream(ctx context.Context, model st
 // Chat translates an OpenAI-shaped ChatRequest into Vertex generate-
 // content inputs, opens the streaming iterator, and forwards events
 // onto the adapter-agnostic Event channel.
-func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event, error) {
+func (c *VertexClient) Chat(ctx context.Context, req llm.ChatRequest) (<-chan llm.Event, error) {
 	model := c.Model
 	if model == "" {
 		model = req.Model
@@ -159,12 +160,12 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		return nil, fmt.Errorf("vertex: %w", err)
 	}
 
-	if debugEnabled.Load() {
-		fmt.Fprintf(debugLog(), "vertex: GenerateContentStream model=%s project=%s location=%s\n", model, c.Project, c.Location)
+	if llm.DebugEnabled() {
+		llm.Debugf("vertex: GenerateContentStream model=%s project=%s location=%s\n", model, c.Project, c.Location)
 	}
 
-	eventCh := make(chan Event, 32)
-	c.conn.set(StateConnected)
+	eventCh := make(chan llm.Event, 32)
+	c.conn.Set(llm.StateConnected)
 
 	go func() {
 		defer close(eventCh)
@@ -174,7 +175,7 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 		// Gemini reports a running UsageMetadata on each chunk; the
 		// final chunk carries the authoritative numbers. Keep the
 		// latest seen and emit once at end-of-stream.
-		var lastUsage MessageUsage
+		var lastUsage llm.MessageUsage
 		var sawUsage bool
 		// Monotonic index across the whole stream, used to disambiguate
 		// synthesised tool-call IDs. Gemini omits ids and two parallel
@@ -203,8 +204,8 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 				// Gemini 2.5+ reports CachedContentTokenCount when
 				// implicit caching hits; log for the debug stream and
 				// stash for emission below.
-				if debugEnabled.Load() {
-					fmt.Fprintf(debugLog(), "vertex usage: prompt=%d candidates=%d cached=%d total=%d\n",
+				if llm.DebugEnabled() {
+					llm.Debugf("vertex usage: prompt=%d candidates=%d cached=%d total=%d\n",
 						u.PromptTokenCount, u.CandidatesTokenCount,
 						u.CachedContentTokenCount, u.TotalTokenCount)
 				}
@@ -233,7 +234,7 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 						fc := part.FunctionCall
 						args, mErr := json.Marshal(fc.Args)
 						if mErr != nil {
-							eventCh <- Event{Type: EventError, Error: fmt.Errorf("vertex: marshal function call args: %w", mErr)}
+							eventCh <- llm.Event{Type: llm.EventError, Error: fmt.Errorf("vertex: marshal function call args: %w", mErr)}
 							return false
 						}
 						// Gemini omits an explicit id for most calls;
@@ -243,16 +244,16 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 						// toolCallIdx above).
 						id := synthVertexToolCallID(fc.ID, fc.Name, toolCallIdx)
 						toolCallIdx++
-						tc := ToolCall{ID: id, Type: "function"}
+						tc := llm.ToolCall{ID: id, Type: "function"}
 						tc.Function.Name = fc.Name
 						tc.Function.Arguments = string(args)
-						eventCh <- Event{Type: EventToolCallComplete, ToolCalls: []ToolCall{tc}}
+						eventCh <- llm.Event{Type: llm.EventToolCallComplete, ToolCalls: []llm.ToolCall{tc}}
 
 					case part.Text != "":
 						if part.Thought {
-							eventCh <- Event{Type: EventReasoningDelta, Text: part.Text}
+							eventCh <- llm.Event{Type: llm.EventReasoningDelta, Text: part.Text}
 						} else {
-							eventCh <- Event{Type: EventTextDelta, Text: part.Text}
+							eventCh <- llm.Event{Type: llm.EventTextDelta, Text: part.Text}
 						}
 					}
 				}
@@ -264,26 +265,26 @@ func (c *VertexClient) Chat(ctx context.Context, req ChatRequest) (<-chan Event,
 			// First-call transport failures flip the indicator. Errors
 			// surfaced mid-stream (quota, content-block, etc.) leave it
 			// alone — TCP+TLS were already healthy.
-			if classifyTransportError(streamErr) != "" {
-				if c.conn.set(StateDisconnected) != StateDisconnected {
+			if llm.ClassifyTransportError(streamErr) != "" {
+				if c.conn.Set(llm.StateDisconnected) != llm.StateDisconnected {
 					c.startRecoveryProbe()
 				}
 			}
-			eventCh <- Event{Type: EventError, Error: fmt.Errorf("vertex: %w", streamErr)}
+			eventCh <- llm.Event{Type: llm.EventError, Error: fmt.Errorf("vertex: %w", streamErr)}
 			return
 		}
 		if sawUsage {
-			eventCh <- Event{Type: EventUsage, Usage: lastUsage}
+			eventCh <- llm.Event{Type: llm.EventUsage, Usage: lastUsage}
 		}
 		// A prompt-level block (no candidate) or a content-block finish
 		// reason (SAFETY/RECITATION/…) must surface as an error — otherwise
 		// the turn ends as a clean but empty EventDone and the agent loops
 		// on an assistant message it can't explain.
 		if msg := vertexBlockMessage(finishReason, blockReason); msg != "" {
-			eventCh <- Event{Type: EventError, Error: fmt.Errorf("vertex: %s", msg)}
+			eventCh <- llm.Event{Type: llm.EventError, Error: fmt.Errorf("vertex: %s", msg)}
 			return
 		}
-		eventCh <- Event{Type: EventDone, FinishReason: mapVertexFinishReason(finishReason)}
+		eventCh <- llm.Event{Type: llm.EventDone, FinishReason: mapVertexFinishReason(finishReason)}
 	}()
 
 	return eventCh, nil
@@ -328,7 +329,7 @@ func vertexBlockMessage(fr genai.FinishReason, br genai.BlockedReason) string {
 // here. Anything else maps to the empty string ("normal stop").
 func mapVertexFinishReason(fr genai.FinishReason) string {
 	if fr == genai.FinishReasonMaxTokens {
-		return FinishLength
+		return llm.FinishLength
 	}
 	return ""
 }
@@ -352,11 +353,11 @@ func synthVertexToolCallID(provided, name string, idx int) string {
 // GenerateContent. Hold the claim for one interval, then release; the
 // next user-driven Chat decides recovery.
 func (c *VertexClient) startRecoveryProbe() {
-	if !c.conn.claimProbe() {
+	if !c.conn.ClaimProbe() {
 		return
 	}
 	go func() {
-		defer c.conn.releaseProbe()
+		defer c.conn.ReleaseProbe()
 		interval := probeInterval
 		if c.ProbeInterval > 0 {
 			interval = c.ProbeInterval
@@ -382,11 +383,11 @@ func (c *VertexClient) startRecoveryProbe() {
 //     parameters pass through verbatim via ParametersJsonSchema so the
 //     OpenAI schema's nuances (oneOf, additionalProperties, etc.) reach
 //     the model unchanged.
-func buildVertexRequest(req ChatRequest, maxTokens int64) ([]*genai.Content, *genai.GenerateContentConfig, error) {
+func buildVertexRequest(req llm.ChatRequest, maxTokens int64) ([]*genai.Content, *genai.GenerateContentConfig, error) {
 	if maxTokens == 0 {
 		maxTokens = defaultVertexMaxTokens
 	}
-	req.Messages = FilterForRequest(req.Messages)
+	req.Messages = llm.FilterForRequest(req.Messages)
 
 	// First pass: index tool_call IDs → function names so role="tool"
 	// messages can recover the name Gemini needs.
@@ -561,7 +562,7 @@ func buildVertexRequest(req ChatRequest, maxTokens int64) ([]*genai.Content, *ge
 // vertexUserParts builds the Part slice for a user-role message.
 // Empty Parts collapses to the legacy single-text-part path so the
 // wire shape stays identical when no multimodal content is involved.
-func vertexUserParts(m Message) ([]*genai.Part, error) {
+func vertexUserParts(m llm.Message) ([]*genai.Part, error) {
 	if len(m.Parts) == 0 {
 		if m.Content == "" {
 			return nil, nil
@@ -587,7 +588,7 @@ func vertexUserParts(m Message) ([]*genai.Part, error) {
 // resolves server-side, including gs:// paths). Documents share the
 // same shape since Gemini doesn't separate image/document at the
 // part level — just by MIME type.
-func vertexPart(p MessagePart) (*genai.Part, error) {
+func vertexPart(p llm.MessagePart) (*genai.Part, error) {
 	switch p.Type {
 	case "text":
 		return genai.NewPartFromText(p.Text), nil
@@ -613,7 +614,7 @@ func vertexPart(p MessagePart) (*genai.Part, error) {
 // included here — they remain in the FunctionResponse.Response map
 // via the existing payload path. Returns nil when no media parts are
 // present (the common case), so the caller can skip the assignment.
-func vertexFunctionResponseImageParts(m Message) ([]*genai.FunctionResponsePart, error) {
+func vertexFunctionResponseImageParts(m llm.Message) ([]*genai.FunctionResponsePart, error) {
 	if len(m.Parts) == 0 {
 		return nil, nil
 	}
@@ -711,8 +712,8 @@ func applyVertexSafety(cfg *genai.GenerateContentConfig, settings map[string]str
 // recompute). CachedContentTokenCount is a sub-line of
 // PromptTokenCount, not additive — same shape as OpenAI's
 // prompt_tokens_details.cached_tokens.
-func vertexUsageFrom(prompt, candidates, cached, total int32) MessageUsage {
-	return MessageUsage{
+func vertexUsageFrom(prompt, candidates, cached, total int32) llm.MessageUsage {
+	return llm.MessageUsage{
 		InputTokens:     int(prompt),
 		OutputTokens:    int(candidates),
 		CacheReadTokens: int(cached),

@@ -12,13 +12,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/backend/local"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm"
 	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/enso/internal/provider"
 )
 
 // buildEnso compiles the real enso binary once per test run. The
@@ -67,7 +68,7 @@ func TestLocalBackendConformance(t *testing.T) {
 	mock := llmtest.New()
 	mock.Push(llmtest.Script{Text: "pong"})
 
-	providers := map[string]*llm.Provider{
+	providers := map[string]*provider.Provider{
 		// ContextWindow is host-only: if Telemetry() reports it the
 		// host augmentation is wired through a real subprocess.
 		"test": {Name: "test", Model: "m", ContextWindow: 32000, Pool: llm.NewPool(4), Client: mock},

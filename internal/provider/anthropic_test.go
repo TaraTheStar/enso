@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package llm
+package provider
 
 import (
 	"encoding/json"
 	"strconv"
 	"strings"
 	"testing"
+
+	llm "github.com/TaraTheStar/azoth/llm"
 
 	"github.com/TaraTheStar/enso/internal/config"
 	"github.com/anthropics/anthropic-sdk-go"
@@ -49,8 +51,8 @@ func TestProviderFactory_AnthropicType(t *testing.T) {
 // the conversation and into the top-level System field. Sending system
 // turns as message-array entries makes Anthropic 400 the request.
 func TestToAnthropicParams_System(t *testing.T) {
-	req := ChatRequest{
-		Messages: []Message{
+	req := llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "system", Content: "you are helpful"},
 			{Role: "system", Content: "be concise"},
 			{Role: "user", Content: "hi"},
@@ -76,12 +78,12 @@ func TestToAnthropicParams_System(t *testing.T) {
 // message carrying a tool_result block, which is how Anthropic models
 // tool outputs.
 func TestToAnthropicParams_ToolResultRoundtrip(t *testing.T) {
-	req := ChatRequest{
-		Messages: []Message{
+	req := llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "user", Content: "list files"},
 			{
 				Role: "assistant",
-				ToolCalls: []ToolCall{{
+				ToolCalls: []llm.ToolCall{{
 					ID:   "call_1",
 					Type: "function",
 					Function: struct {
@@ -156,8 +158,8 @@ func TestAnthropicBuildParams_ExtendedThinking(t *testing.T) {
 		ExtendedThinking:       true,
 		ExtendedThinkingBudget: 8000,
 	}
-	params, err := c.buildParams(ChatRequest{
-		Messages:    []Message{{Role: "user", Content: "hi"}},
+	params, err := c.buildParams(llm.ChatRequest{
+		Messages:    []llm.Message{{Role: "user", Content: "hi"}},
 		Temperature: 0.7,
 		TopP:        0.95,
 	}, 16000)
@@ -204,8 +206,8 @@ func TestAnthropicBuildParams_ThinkingBudgetClamps(t *testing.T) {
 				ExtendedThinking:       true,
 				ExtendedThinkingBudget: tc.budget,
 			}
-			params, err := c.buildParams(ChatRequest{
-				Messages: []Message{{Role: "user", Content: "hi"}},
+			params, err := c.buildParams(llm.ChatRequest{
+				Messages: []llm.Message{{Role: "user", Content: "hi"}},
 			}, tc.maxTokens)
 			if err != nil {
 				t.Fatalf("buildParams: %v", err)
@@ -224,7 +226,7 @@ func TestAnthropicBuildParams_ThinkingBudgetClamps(t *testing.T) {
 // the translator must fill in "{}", and the assistant block must still
 // carry the tool_use block.
 func TestAssistantBlocks_EmptyArgs(t *testing.T) {
-	m := Message{Role: "assistant", ToolCalls: []ToolCall{{ID: "x", Type: "function"}}}
+	m := llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "x", Type: "function"}}}
 	m.ToolCalls[0].Function.Name = "now"
 	blocks, err := assistantBlocks(m)
 	if err != nil {
@@ -248,11 +250,11 @@ func TestAssistantBlocks_EmptyArgs(t *testing.T) {
 // pre-encoded string, not raw bytes).
 func TestSplitSystem_UserImagePart(t *testing.T) {
 	imgBytes := []byte{0x89, 0x50, 0x4e, 0x47}
-	_, msgs, err := splitSystem([]Message{
+	_, msgs, err := splitSystem([]llm.Message{
 		{
 			Role:    "user",
 			Content: "what is this?",
-			Parts:   []MessagePart{NewImagePart("image/png", imgBytes)},
+			Parts:   []llm.MessagePart{llm.NewImagePart("image/png", imgBytes)},
 		},
 	})
 	if err != nil {
@@ -286,11 +288,11 @@ func TestSplitSystem_UserImagePart(t *testing.T) {
 // one to actually round-trip.
 func TestToolResultBlock_WithImage(t *testing.T) {
 	imgBytes := []byte("gifdata")
-	blk, err := toolResultBlock(Message{
+	blk, err := toolResultBlock(llm.Message{
 		Role:       "tool",
 		ToolCallID: "call_42",
 		Content:    "[image: foo.gif]",
-		Parts:      []MessagePart{NewImagePart("image/gif", imgBytes)},
+		Parts:      []llm.MessagePart{llm.NewImagePart("image/gif", imgBytes)},
 	})
 	if err != nil {
 		t.Fatalf("toolResultBlock: %v", err)
@@ -319,7 +321,7 @@ func TestToolResultBlock_WithImage(t *testing.T) {
 // contract: an assistant message with no Parts behaves exactly as
 // before this refactor.
 func TestAssistantBlocks_LegacyPathUnchanged(t *testing.T) {
-	blocks, err := assistantBlocks(Message{Role: "assistant", Content: "hello"})
+	blocks, err := assistantBlocks(llm.Message{Role: "assistant", Content: "hello"})
 	if err != nil {
 		t.Fatalf("assistantBlocks: %v", err)
 	}
@@ -336,7 +338,7 @@ func TestAssistantBlocks_LegacyPathUnchanged(t *testing.T) {
 // contract: an image part with no Data and no URI is a caller bug, not
 // a silent drop.
 func TestAnthropicContentBlock_ImageWithoutDataErrors(t *testing.T) {
-	_, err := anthropicContentBlock(MessagePart{Type: "image", MIMEType: "image/png"})
+	_, err := anthropicContentBlock(llm.MessagePart{Type: "image", MIMEType: "image/png"})
 	if err == nil {
 		t.Fatal("want error for image part with no data/uri")
 	}
@@ -349,14 +351,14 @@ func TestAnthropicContentBlock_ImageWithoutDataErrors(t *testing.T) {
 // wouldn't reach the wire.
 func TestAnthropicBuildParams_PromptCaching(t *testing.T) {
 	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: true}
-	params, err := c.buildParams(ChatRequest{
-		Messages: []Message{
+	params, err := c.buildParams(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "system", Content: "you are concise"},
 			{Role: "user", Content: "hi"},
 		},
-		Tools: []ToolDef{{
+		Tools: []llm.ToolDef{{
 			Type: "function",
-			Function: ToolFunctionDef{
+			Function: llm.ToolFunctionDef{
 				Name:        "read",
 				Description: "read a file",
 				Parameters:  map[string]any{"type": "object"},
@@ -388,8 +390,8 @@ func TestAnthropicBuildParams_PromptCaching(t *testing.T) {
 // never exceed it even when there are plenty of messages to mark.
 func TestAnthropicBuildParams_PromptCachingCapsAtFour(t *testing.T) {
 	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: true}
-	params, err := c.buildParams(ChatRequest{
-		Messages: []Message{
+	params, err := c.buildParams(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "system", Content: "be brief"},
 			{Role: "user", Content: "one"},
 			{Role: "assistant", Content: "two"},
@@ -397,9 +399,9 @@ func TestAnthropicBuildParams_PromptCachingCapsAtFour(t *testing.T) {
 			{Role: "assistant", Content: "four"},
 			{Role: "user", Content: "five"},
 		},
-		Tools: []ToolDef{{
+		Tools: []llm.ToolDef{{
 			Type: "function",
-			Function: ToolFunctionDef{
+			Function: llm.ToolFunctionDef{
 				Name: "read", Description: "x", Parameters: map[string]any{"type": "object"},
 			},
 		}},
@@ -419,12 +421,12 @@ func TestAnthropicBuildParams_PromptCachingCapsAtFour(t *testing.T) {
 // the byte-identical legacy shape every existing user gets.
 func TestAnthropicBuildParams_PromptCachingDisabled(t *testing.T) {
 	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: false}
-	params, err := c.buildParams(ChatRequest{
-		Messages: []Message{
+	params, err := c.buildParams(llm.ChatRequest{
+		Messages: []llm.Message{
 			{Role: "system", Content: "you are concise"},
 			{Role: "user", Content: "hi"},
 		},
-		Tools: []ToolDef{{Type: "function", Function: ToolFunctionDef{Name: "read", Description: "x", Parameters: map[string]any{"type": "object"}}}},
+		Tools: []llm.ToolDef{{Type: "function", Function: llm.ToolFunctionDef{Name: "read", Description: "x", Parameters: map[string]any{"type": "object"}}}},
 	}, 8192)
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
@@ -441,8 +443,8 @@ func TestAnthropicBuildParams_PromptCachingDisabled(t *testing.T) {
 // tools doesn't panic on slice access.
 func TestAnthropicPromptCaching_NoSystemNoTools(t *testing.T) {
 	c := &AnthropicClient{Model: "claude-sonnet-4-5", PromptCaching: true}
-	params, err := c.buildParams(ChatRequest{
-		Messages: []Message{{Role: "user", Content: "hi"}},
+	params, err := c.buildParams(llm.ChatRequest{
+		Messages: []llm.Message{{Role: "user", Content: "hi"}},
 	}, 8192)
 	if err != nil {
 		t.Fatalf("buildParams: %v", err)
