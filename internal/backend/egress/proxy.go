@@ -29,7 +29,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/netsec"
+	"github.com/TaraTheStar/azoth/netsec"
 )
 
 // tunnelIdleTimeout caps how long a CONNECT tunnel may sit with NO bytes
@@ -88,7 +88,7 @@ type Proxy struct {
 // denyIP is the SSRF address-class check, package-level so tests can swap
 // it (e.g. permit loopback to point a denied target at an httptest
 // server while keeping the other classes denied). Production uses the
-// shared denylist in internal/netsec.
+// shared denylist in azoth/netsec.
 var denyIP = netsec.IsDeniedIP
 
 // New creates an unstarted proxy with an empty (deny-all) allowlist.

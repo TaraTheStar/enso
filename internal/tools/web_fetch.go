@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/netsec"
+	"github.com/TaraTheStar/azoth/netsec"
 )
 
 // WebFetchTool fetches a URL and returns text content. It refuses to
@@ -265,8 +265,8 @@ func validateAndResolve(ctx context.Context, raw string, allow map[string]bool) 
 var denyHostFn = isDeniedIP
 
 // isDeniedIP returns true for any address class the SSRF guard refuses.
-// The classification lives in internal/netsec so the host-side egress
-// proxy denies the same ranges from one source of truth; see that
+// The classification lives in the shared azoth/netsec so the host-side
+// egress proxy denies the same ranges from one source of truth; see that
 // package for the covered classes.
 func isDeniedIP(ip net.IP) bool { return netsec.IsDeniedIP(ip) }
 

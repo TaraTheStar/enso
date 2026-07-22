@@ -6,6 +6,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.7
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.4
+	github.com/TaraTheStar/azoth v0.4.0
 	github.com/adrg/frontmatter v0.2.0
 	github.com/anthropics/anthropic-sdk-go v1.50.2
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
