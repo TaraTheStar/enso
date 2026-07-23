@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,9 +25,9 @@ import (
 // servers and the enso daemon), or RFC1918 LAN hosts. Specific local
 // services can be opted back in via [web_fetch] allow_hosts in config.
 //
-// DNS-rebind defence: the resolved IP from validation is pinned for the
-// actual TCP dial, so a hostname that resolves "public" at validation
-// time can't switch to 127.0.0.1 between resolve and connect.
+// DNS-rebind defence: the direct-dial path resolves and pins in one step
+// (azoth/netsec.Dialer), dialing the vetted IP literal so a hostname can't
+// switch to 127.0.0.1 between the address-class check and the connect.
 type WebFetchTool struct{}
 
 func (t WebFetchTool) Name() string { return "web_fetch" }
@@ -80,11 +81,7 @@ func (t WebFetchTool) Run(ctx context.Context, args map[string]any, ac *AgentCon
 	if egressProxyForURL(u) != nil {
 		client = newProxiedClient()
 	} else {
-		pinned, err := validateAndResolve(ctx, raw, allow)
-		if err != nil {
-			return Result{LLMOutput: fmt.Sprintf("refused: %v", err)}, nil
-		}
-		client = newGuardedClient(pinned, allow)
+		client = newGuardedClient(allow)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, "GET", raw, nil)
@@ -95,6 +92,15 @@ func (t WebFetchTool) Run(ctx context.Context, args map[string]any, ac *AgentCon
 
 	resp, err := client.Do(req)
 	if err != nil {
+		// A denied address now surfaces here (at dial time) rather than from
+		// a pre-dial resolve, so reword the shared dialer's DeniedError into
+		// the same model-facing "refused: …" the pre-resolve path returned,
+		// keeping the allow_hosts remediation. The bare host is a valid
+		// wildcard-port allow entry, so it is what we suggest.
+		var denied *netsec.DeniedError
+		if errors.As(err, &denied) {
+			return Result{LLMOutput: fmt.Sprintf("refused: %s resolves to disallowed address %s (add %q to [web_fetch] allow_hosts to permit)", denied.Host, denied.IP, denied.Host)}, nil
+		}
 		return Result{}, fmt.Errorf("web_fetch: %w", err)
 	}
 	defer resp.Body.Close()
@@ -189,20 +195,10 @@ func stripHTML(s string) string {
 	return strings.TrimSpace(result)
 }
 
-// pinnedHost records the original hostname plus the IPs that survived the
-// SSRF check. The custom transport dials one of these addresses rather
-// than re-resolving at TCP time (which is what makes DNS-rebind defeats
-// fail). Port is the URL's port (default 80/443 by scheme).
-type pinnedHost struct {
-	host string
-	port string
-	ips  []net.IP
-}
-
 // checkURL enforces the scheme / credential / host rules that hold no
-// matter how the request is dialed — direct (in-guest, with the SSRF pin
-// below) or through the egress proxy. Returns an error suitable for
-// surfacing to the model.
+// matter how the request is dialed — direct (in-guest, where netsec.Dialer
+// adds the address-class check on the dial) or through the egress proxy.
+// Returns an error suitable for surfacing to the model.
 func checkURL(u *url.URL) error {
 	switch strings.ToLower(u.Scheme) {
 	case "http", "https":
@@ -216,48 +212,6 @@ func checkURL(u *url.URL) error {
 		return fmt.Errorf("url is missing host")
 	}
 	return nil
-}
-
-// validateAndResolve parses raw, enforces the static URL rules, resolves
-// the host, and returns the pinned destination if every resolved IP is
-// allowed (or the host:port is in allow). This is the DIRECT-dial path
-// (local backend); the proxied path skips resolution entirely since the
-// guest cannot resolve and the host egress proxy is the egress gate.
-func validateAndResolve(ctx context.Context, raw string, allow map[string]bool) (*pinnedHost, error) {
-	u, err := url.Parse(raw)
-	if err != nil {
-		return nil, fmt.Errorf("malformed url")
-	}
-	if err := checkURL(u); err != nil {
-		return nil, err
-	}
-	host := u.Hostname()
-	port := u.Port()
-	if port == "" {
-		if strings.EqualFold(u.Scheme, "https") {
-			port = "443"
-		} else {
-			port = "80"
-		}
-	}
-
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-	if err != nil {
-		return nil, fmt.Errorf("resolve %s: %w", host, err)
-	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("resolve %s: no addresses", host)
-	}
-
-	if !allowedHostPort(allow, host, port) {
-		for _, ip := range ips {
-			if denyHostFn(ip) {
-				return nil, fmt.Errorf("%s resolves to disallowed address %s (add %q to [web_fetch] allow_hosts to permit)", host, ip, hostPortKey(host, port))
-			}
-		}
-	}
-
-	return &pinnedHost{host: host, port: port, ips: ips}, nil
 }
 
 // denyHostFn is package-level so tests can swap it (e.g. allow loopback to
@@ -309,39 +263,51 @@ func allowedHostPort(allow map[string]bool, host, port string) bool {
 	return false
 }
 
-func hostPortKey(host, port string) string {
-	h := strings.ToLower(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]"))
-	return h + ":" + port
+// webFetchRedirect caps redirects and re-runs the static URL rules (scheme /
+// credentials / host) on each hop. It does NOT re-check the address class: the
+// SSRF guard rides on the dial itself — the guarded client's netsec.Dialer
+// refuses a denied hop when it dials it, and the proxied client's host egress
+// proxy is the gate — so a redirect to a private address is stopped without a
+// separate resolve here.
+func webFetchRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= webFetchMaxRedirs {
+		return fmt.Errorf("stopped after %d redirects", webFetchMaxRedirs)
+	}
+	if err := checkURL(req.URL); err != nil {
+		return fmt.Errorf("redirect to %s refused: %w", req.URL.Host, err)
+	}
+	return nil
 }
 
-// newGuardedClient builds an *http.Client whose transport dials the
-// pinned IP for the original host, and whose redirect handler re-runs
-// validateAndResolve on every Location.
-func newGuardedClient(pinned *pinnedHost, allow map[string]bool) *http.Client {
-	dial := pinnedDialContext(pinned)
+// newGuardedClient builds the direct-dial client for the local backend: an
+// *http.Client whose transport resolves and pins through azoth/netsec.Dialer,
+// refusing any host that resolves to a denied class unless the host:port is in
+// allow (the operator's [web_fetch] allow_hosts). The Dialer re-checks every
+// TCP dial, so redirects are guarded automatically; DeniedError surfaces the
+// refusal to Run.
+func newGuardedClient(allow map[string]bool) *http.Client {
+	dialer := &netsec.Dialer{
+		// Deny reads the package var so tests can swap the class check
+		// (allowLoopback). Exempt is the allow_hosts opt-out, reproducing
+		// allowedHostPort's wildcard-port semantics on the dial target.
+		Deny: func(ip net.IP) bool { return denyHostFn(ip) },
+		Exempt: func(hostport string) bool {
+			host, port, err := net.SplitHostPort(hostport)
+			if err != nil {
+				return false
+			}
+			return allowedHostPort(allow, host, port)
+		},
+	}
 	tr := &http.Transport{
-		DialContext:           dial,
+		DialContext:           dialer.DialContext,
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ResponseHeaderTimeout: 20 * time.Second,
 		MaxIdleConns:          1,
 		IdleConnTimeout:       30 * time.Second,
 	}
-	return &http.Client{
-		Transport: tr,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= webFetchMaxRedirs {
-				return fmt.Errorf("stopped after %d redirects", webFetchMaxRedirs)
-			}
-			next, err := validateAndResolve(req.Context(), req.URL.String(), allow)
-			if err != nil {
-				return fmt.Errorf("redirect to %s refused: %w", req.URL.Host, err)
-			}
-			// Swap dialer onto the new pinned host for the next hop.
-			tr.DialContext = pinnedDialContext(next)
-			return nil
-		},
-	}
+	return &http.Client{Transport: tr, CheckRedirect: webFetchRedirect}
 }
 
 // newProxiedClient builds the client for the sealed/proxied backend. It
@@ -354,39 +320,5 @@ func newGuardedClient(pinned *pinnedHost, allow map[string]bool) *http.Client {
 func newProxiedClient() *http.Client {
 	tr := http.DefaultTransport.(*http.Transport).Clone()
 	tr.Proxy = envProxyFunc
-	return &http.Client{
-		Transport: tr,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= webFetchMaxRedirs {
-				return fmt.Errorf("stopped after %d redirects", webFetchMaxRedirs)
-			}
-			if err := checkURL(req.URL); err != nil {
-				return fmt.Errorf("redirect to %s refused: %w", req.URL.Host, err)
-			}
-			return nil
-		},
-	}
-}
-
-// pinnedDialContext returns a DialContext that ignores the address
-// supplied by the http stack and dials one of the pre-validated IPs on
-// the pre-validated port. The Go http.Client uses the original URL.Host
-// for SNI / TLS verification, so vhost / cert validation still work
-// correctly against the original hostname.
-func pinnedDialContext(pinned *pinnedHost) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		var lastErr error
-		d := net.Dialer{Timeout: 10 * time.Second}
-		for _, ip := range pinned.ips {
-			conn, err := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), pinned.port))
-			if err == nil {
-				return conn, nil
-			}
-			lastErr = err
-		}
-		if lastErr == nil {
-			lastErr = fmt.Errorf("no addresses to dial")
-		}
-		return nil, lastErr
-	}
+	return &http.Client{Transport: tr, CheckRedirect: webFetchRedirect}
 }
