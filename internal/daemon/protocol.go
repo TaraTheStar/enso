@@ -3,11 +3,11 @@
 package daemon
 
 import (
-	"encoding/binary"
 	"encoding/json"
-	"fmt"
 	"io"
 	"time"
+
+	"github.com/TaraTheStar/azoth/ipc"
 )
 
 // SocketName is the unix socket filename under $XDG_RUNTIME_DIR/enso.
@@ -150,48 +150,26 @@ type ErrorResp struct {
 	Message string `json:"message"`
 }
 
-// WriteMessage encodes a Message as 4-byte length prefix + JSON.
+// WriteMessage encodes a Message as 4-byte length prefix + JSON. The framing
+// lives in azoth/ipc; this package owns only the MessageKind vocabulary and the
+// typed payloads, converting at the seam so callers keep the typed kind. A nil
+// body is carried through as an empty envelope body (the `omitempty` shape older
+// clients expect).
 func WriteMessage(w io.Writer, kind MessageKind, body any) error {
-	var raw json.RawMessage
-	if body != nil {
-		b, err := json.Marshal(body)
-		if err != nil {
-			return fmt.Errorf("marshal body: %w", err)
-		}
-		raw = b
-	}
-	buf, err := json.Marshal(Message{Kind: kind, Body: raw})
+	e, err := ipc.Pack(string(kind), body)
 	if err != nil {
-		return fmt.Errorf("marshal envelope: %w", err)
+		return err
 	}
-	var prefix [4]byte
-	binary.BigEndian.PutUint32(prefix[:], uint32(len(buf)))
-	if _, err := w.Write(prefix[:]); err != nil {
-		return fmt.Errorf("write prefix: %w", err)
-	}
-	if _, err := w.Write(buf); err != nil {
-		return fmt.Errorf("write body: %w", err)
-	}
-	return nil
+	return ipc.Write(w, e)
 }
 
-// ReadMessage decodes one length-prefixed message from r.
+// ReadMessage decodes one length-prefixed message from r through the shared ipc
+// framing. A clean EOF at a frame boundary passes through verbatim so the serve
+// and drain loops break on it as before.
 func ReadMessage(r io.Reader) (Message, error) {
-	var prefix [4]byte
-	if _, err := io.ReadFull(r, prefix[:]); err != nil {
+	e, err := ipc.Read(r)
+	if err != nil {
 		return Message{}, err
 	}
-	n := binary.BigEndian.Uint32(prefix[:])
-	if n == 0 || n > 8*1024*1024 {
-		return Message{}, fmt.Errorf("framing: bad length %d", n)
-	}
-	buf := make([]byte, n)
-	if _, err := io.ReadFull(r, buf); err != nil {
-		return Message{}, fmt.Errorf("read body: %w", err)
-	}
-	var m Message
-	if err := json.Unmarshal(buf, &m); err != nil {
-		return Message{}, fmt.Errorf("unmarshal: %w", err)
-	}
-	return m, nil
+	return Message{Kind: MessageKind(e.Kind), Body: e.Body}, nil
 }
