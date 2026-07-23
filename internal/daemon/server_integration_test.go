@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/azoth/llm"
+	"github.com/TaraTheStar/azoth/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/provider"
 	"github.com/TaraTheStar/enso/internal/session"
 	"github.com/TaraTheStar/enso/internal/tools"

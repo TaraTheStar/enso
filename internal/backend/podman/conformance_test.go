@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/azoth/llm"
+	"github.com/TaraTheStar/azoth/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/backend"
 	"github.com/TaraTheStar/enso/internal/backend/host"
 	"github.com/TaraTheStar/enso/internal/backend/podman"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/provider"
 )
 
