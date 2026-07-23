@@ -21,6 +21,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/TaraTheStar/azoth/ipc"
 	"github.com/TaraTheStar/enso/internal/agent"
 	"github.com/TaraTheStar/enso/internal/bus"
 	"github.com/TaraTheStar/enso/internal/config"
@@ -341,7 +342,7 @@ func (s *Server) acceptLoop(ctx context.Context) {
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	if err := checkPeer(conn); err != nil {
+	if err := ipc.CheckPeerUID(conn); err != nil {
 		slog.Warn("daemon: rejecting connection", "err", err)
 		return
 	}
