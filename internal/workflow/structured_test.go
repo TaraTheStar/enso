@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/TaraTheStar/azoth/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 )
 
 func TestParseStructured_JSONBlock(t *testing.T) {

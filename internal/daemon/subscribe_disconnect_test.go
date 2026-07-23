@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/llm/llmtest"
+	"github.com/TaraTheStar/azoth/llm/llmtest"
 )
 
 // subCount reads the subscriber-slot count for a session under its lock.

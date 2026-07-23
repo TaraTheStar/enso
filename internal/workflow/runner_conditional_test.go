@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/TaraTheStar/azoth/llm/llmtest"
 	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/llm/llmtest"
 )
 
 // gatedShipSrc is a ship-vs-escalate router: review runs once and exactly
