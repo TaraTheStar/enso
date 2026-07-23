@@ -83,6 +83,11 @@ type Proxy struct {
 	ln  net.Listener
 	srv *http.Server
 	tr  *http.Transport // plain-HTTP forward, dialing through safeDial
+	// dialer is azoth/netsec's resolve-and-pin DialContext: refuse if any
+	// resolved IP is denied (unless the target is operator-configured exempt),
+	// then dial the vetted literals in order. Both safeDial and the plain-HTTP
+	// transport dial through it. Built in New so it is never nil.
+	dialer *netsec.Dialer
 }
 
 // denyIP is the SSRF address-class check, package-level so tests can swap
@@ -93,7 +98,16 @@ var denyIP = netsec.IsDeniedIP
 
 // New creates an unstarted proxy with an empty (deny-all) allowlist.
 func New() *Proxy {
-	return &Proxy{allowed: map[string]bool{}, configAllowed: map[string]bool{}}
+	p := &Proxy{allowed: map[string]bool{}, configAllowed: map[string]bool{}}
+	// Only OPERATOR-configured entries (AllowConfigured) opt out of the
+	// denylist; runtime Allow grants and --yolo AllowAll never do, which is
+	// exactly what denylistExempt encodes. Deny reads the package var at dial
+	// time so a test can swap the class check (SetDenyIP).
+	p.dialer = &netsec.Dialer{
+		Exempt: p.denylistExempt,
+		Deny:   func(ip net.IP) bool { return denyIP(ip) },
+	}
+	return p
 }
 
 // addEntry normalizes hostport into m. A bare host (no ":port") allows
@@ -225,55 +239,23 @@ func (p *Proxy) Start() error {
 	return nil
 }
 
-// safeDial resolves addr's host once, refuses the connection if ANY
-// resolved IP is a denied class (loopback / RFC1918 / link-local /
-// metadata / CGNAT / …), and then dials a surviving IP literal directly
-// rather than letting the stack re-resolve. This is the DNS-rebind
-// defence and, equally, what stops a sealed worker from using the proxy
-// as an open relay into host-loopback or cloud-metadata services under
-// --yolo (AllowAll), where the allowlist gate is off.
+// safeDial is the proxy's resolve-and-pin dialer — azoth/netsec.Dialer with the
+// config-only exemption. It refuses the connection if ANY resolved IP is a
+// denied class (loopback / RFC1918 / link-local / metadata / CGNAT / …) unless
+// the OPERATOR put the target on the configured allowlist (AllowConfigured),
+// then dials a surviving IP literal directly rather than letting the stack
+// re-resolve. That pinning is the DNS-rebind defence and, equally, what stops a
+// sealed worker from using the proxy as an open relay into host-loopback or
+// cloud-metadata services under --yolo (AllowAll), where the allowlist gate is
+// off. Runtime grants (broker/interactive Allow) and AllowAll do NOT exempt —
+// only AllowConfigured, mirroring web_fetch's allow_hosts. The "refuse if ANY IP
+// is denied" stance (rather than "dial the first allowed IP") stops a name that
+// resolves to a mix of public and loopback addresses from being used at all.
 //
-// The denylist runs on every dial EXCEPT for a target the OPERATOR put on
-// the configured allowlist (AllowConfigured) — that is the opt-out for the
-// legitimate "reach my host-loopback model server" case, mirroring
-// web_fetch's allow_hosts exemption. Runtime grants (broker/interactive
-// Allow) do NOT exempt: those names are worker-chosen, so they stay
-// filtered. AllowAll does NOT exempt either, so yolo traffic is still
-// filtered. The "refuse if ANY IP is denied" stance (rather than "dial the
-// first allowed IP") stops a name that resolves to a mix of public and
-// loopback addresses from being used at all.
+// It stays a method (rather than assigning p.dialer.DialContext directly) so
+// handleConnect can call it by name and the plain-HTTP transport can wire it.
 func (p *Proxy) safeDial(ctx context.Context, network, addr string) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(addr)
-	if err != nil {
-		return nil, fmt.Errorf("egress: bad target %q: %w", addr, err)
-	}
-	ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-	if err != nil {
-		return nil, fmt.Errorf("egress: resolve %s: %w", host, err)
-	}
-	if len(ips) == 0 {
-		return nil, fmt.Errorf("egress: resolve %s: no addresses", host)
-	}
-	if !p.denylistExempt(addr) {
-		for _, ip := range ips {
-			if denyIP(ip) {
-				return nil, fmt.Errorf("egress: refusing %s: resolves to denied address %s", host, ip)
-			}
-		}
-	}
-	var lastErr error
-	d := net.Dialer{Timeout: 10 * time.Second}
-	for _, ip := range ips {
-		conn, derr := d.DialContext(ctx, network, net.JoinHostPort(ip.String(), port))
-		if derr == nil {
-			return conn, nil
-		}
-		lastErr = derr
-	}
-	if lastErr == nil {
-		lastErr = fmt.Errorf("egress: no addresses to dial for %s", host)
-	}
-	return nil, lastErr
+	return p.dialer.DialContext(ctx, network, addr)
 }
 
 // Addr is the host:port the proxy listens on (loopback).

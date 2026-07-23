@@ -21,9 +21,10 @@ func SetDenyIP(f func(net.IP) bool) (restore func()) {
 
 // DialForTest exposes safeDial so the dialer's address-class refusals can
 // be exercised without the HTTP plumbing. The conn is closed if a dial
-// unexpectedly succeeds.
+// unexpectedly succeeds. Constructs via New so the netsec.Dialer (built there)
+// is wired — a bare &Proxy{} would have a nil dialer.
 func DialForTest(ctx context.Context, target string) (net.Conn, error) {
-	p := &Proxy{}
+	p := New()
 	c, err := p.safeDial(ctx, "tcp", target)
 	if err == nil && c != nil {
 		_ = c.Close()
