@@ -16,8 +16,8 @@ cloud.google.com/go/compute/metadata v0.9.0/go.mod h1:E0bWwX5wTnLPedCKqk3pJmVgCB
 github.com/BurntSushi/toml v0.3.1/go.mod h1:xHWCNGjB5oqiDr8zfno3MHue2Ht5sIBksp03qcyfWMU=
 github.com/BurntSushi/toml v1.6.0 h1:dRaEfpa2VI55EwlIW72hMRHdWouJeRF7TPYhI+AUQjk=
 github.com/BurntSushi/toml v1.6.0/go.mod h1:ukJfTF/6rtPPRCnwkur4qwRxa8vTRFBF0uk2lLoLwho=
-github.com/TaraTheStar/azoth v1.1.0 h1:Ac32f4ooOZ+Pl+9Epg/5srSFaXvEc7bGnYDtQTW1QTQ=
-github.com/TaraTheStar/azoth v1.1.0/go.mod h1:WVeUlyUcB3thLLIdqpw1XTVR8vIvvAb6LuySHkfBZgk=
+github.com/TaraTheStar/azoth v1.1.1 h1:0FqazrJldqtg7nKLwWdK1jGmc73oYWENV/ux+Ia1q54=
+github.com/TaraTheStar/azoth v1.1.1/go.mod h1:WVeUlyUcB3thLLIdqpw1XTVR8vIvvAb6LuySHkfBZgk=
 github.com/adrg/frontmatter v0.2.0 h1:/DgnNe82o03riBd1S+ZDjd43wAmC6W35q67NHeLkPd4=
 github.com/adrg/frontmatter v0.2.0/go.mod h1:93rQCj3z3ZlwyxxpQioRKC1wDLto4aXHrbqIsnH9wmE=
 github.com/alecthomas/assert/v2 v2.11.0 h1:2Q9r3ki8+JYXvGsDyBXwH3LcJ+WK5D0gc5E8vS6K3D0=
