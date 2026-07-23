@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -261,7 +262,7 @@ func TestIsDeniedIP(t *testing.T) {
 	}
 }
 
-func TestValidateAndResolve_BadScheme(t *testing.T) {
+func TestCheckURL_BadScheme(t *testing.T) {
 	cases := []string{
 		"file:///etc/passwd",
 		"gopher://x",
@@ -271,19 +272,33 @@ func TestValidateAndResolve_BadScheme(t *testing.T) {
 		"not a url",
 	}
 	for _, c := range cases {
-		if _, err := validateAndResolve(context.Background(), c, nil); err == nil {
+		u, err := url.Parse(c)
+		if err == nil {
+			err = checkURL(u)
+		}
+		if err == nil {
 			t.Errorf("scheme %q: want error, got nil", c)
 		}
 	}
 }
 
-func TestValidateAndResolve_RejectsCredentials(t *testing.T) {
-	if _, err := validateAndResolve(context.Background(), "http://user:pass@example.com/x", nil); err == nil {
+func TestCheckURL_RejectsCredentials(t *testing.T) {
+	u, err := url.Parse("http://user:pass@example.com/x")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if err := checkURL(u); err == nil {
 		t.Errorf("want error for embedded credentials")
 	}
 }
 
-func TestValidateAndResolve_RejectsPrivateLiteralHost(t *testing.T) {
+// The SSRF refusal now happens at dial time inside netsec.Dialer and surfaces
+// as a "refused" LLMOutput, so a private literal host is exercised through the
+// tool (no proxy = the guarded, in-guest path) rather than a pre-resolve unit.
+func TestWebFetch_RejectsPrivateLiteralHost(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NO_PROXY", "")
 	cases := []string{
 		"http://127.0.0.1/",
 		"http://127.0.0.1:8080/",
@@ -292,28 +307,60 @@ func TestValidateAndResolve_RejectsPrivateLiteralHost(t *testing.T) {
 		"http://[::1]/",
 	}
 	for _, c := range cases {
-		if _, err := validateAndResolve(context.Background(), c, nil); err == nil {
-			t.Errorf("%s: expected refusal, got nil", c)
+		res, err := WebFetchTool{}.Run(context.Background(),
+			map[string]any{"url": c}, newToolAC(t.TempDir()))
+		if err != nil {
+			t.Errorf("%s: unexpected tool error: %v", c, err)
+			continue
+		}
+		if !strings.Contains(res.LLMOutput, "refused") {
+			t.Errorf("%s: expected refusal, got %q", c, res.LLMOutput)
 		}
 	}
 }
 
-func TestValidateAndResolve_AllowHostExactMatch(t *testing.T) {
+func TestAllowedHostPort_ExactMatch(t *testing.T) {
 	allow := normaliseAllowHosts([]string{"127.0.0.1:8080"})
-	if _, err := validateAndResolve(context.Background(), "http://127.0.0.1:8080/x", allow); err != nil {
-		t.Errorf("allowed exact match failed: %v", err)
+	if !allowedHostPort(allow, "127.0.0.1", "8080") {
+		t.Error("exact host:port should match its allow entry")
 	}
-	if _, err := validateAndResolve(context.Background(), "http://127.0.0.1:9090/x", allow); err == nil {
-		t.Errorf("different port should not match exact entry")
+	if allowedHostPort(allow, "127.0.0.1", "9090") {
+		t.Error("different port should not match an exact entry")
 	}
 }
 
-func TestValidateAndResolve_AllowHostWildcardPort(t *testing.T) {
+func TestAllowedHostPort_WildcardPort(t *testing.T) {
 	allow := normaliseAllowHosts([]string{"127.0.0.1"})
-	for _, raw := range []string{"http://127.0.0.1/", "http://127.0.0.1:9999/y"} {
-		if _, err := validateAndResolve(context.Background(), raw, allow); err != nil {
-			t.Errorf("%s: wildcard-port allow should permit, got %v", raw, err)
+	for _, port := range []string{"80", "9999"} {
+		if !allowedHostPort(allow, "127.0.0.1", port) {
+			t.Errorf("wildcard-port allow should permit port %s", port)
 		}
+	}
+}
+
+// End-to-end: a host:port in allow_hosts is reached even though it resolves to
+// loopback (otherwise denied) — exercising the Exempt path on netsec.Dialer,
+// without swapping denyHostFn.
+func TestWebFetch_AllowHostsReachesServer(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "")
+	t.Setenv("HTTPS_PROXY", "")
+	t.Setenv("NO_PROXY", "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("allowed body"))
+	}))
+	defer srv.Close()
+
+	ac := newToolAC(t.TempDir())
+	ac.WebFetchAllowHosts = []string{strings.TrimPrefix(srv.URL, "http://")} // 127.0.0.1:PORT
+
+	res, err := WebFetchTool{}.Run(context.Background(),
+		map[string]any{"url": srv.URL}, ac)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !strings.Contains(res.LLMOutput, "allowed body") {
+		t.Errorf("allow_hosts host was not reached: %q", res.LLMOutput)
 	}
 }
 
