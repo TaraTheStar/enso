@@ -17,7 +17,18 @@ CGO_ENABLED ?= 0
 GO ?= go
 export CGO_ENABLED
 
-.PHONY: all build install run tui daemon test test-race vet fmt fmt-check tidy clean help
+# These tests depend on state the build cache cannot see — a live
+# container runtime, a registry pull — so a cached PASS means the source
+# did not change, not that the contract still holds. Always re-run.
+ENV_PKGS ?= ./internal/backend/podman
+
+# Same unsoundness, different cost: lima boots real VMs, so it runs for
+# minutes where limactl is installed and skips instantly where it is
+# not. CI has none, so forcing it there buys nothing and would only slow
+# local commits. On demand instead, via `make test-lima`.
+LIMA_PKGS ?= ./internal/backend/lima
+
+.PHONY: all build install run tui daemon test test-env test-lima test-race vet fmt fmt-check tidy clean help
 
 all: build
 
@@ -39,9 +50,18 @@ tui: build
 daemon: build
 	$(BIN) daemon
 
-## test: run the unit tests
+## test: run the unit tests (container-backed packages always re-run)
 test:
 	$(GO) test ./...
+	$(GO) test -count=1 $(ENV_PKGS)
+
+## test-env: re-run only the container-backed packages, never from cache
+test-env:
+	$(GO) test -count=1 $(ENV_PKGS)
+
+## test-lima: re-run the lima VM tests (minutes; needs limactl installed)
+test-lima:
+	$(GO) test -count=1 $(LIMA_PKGS)
 
 ## test-race: run the unit tests with the race detector (requires CGO)
 test-race:
