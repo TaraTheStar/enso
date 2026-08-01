@@ -4,6 +4,25 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.13.1] - 2026-08-01
+
+### Security
+
+- **azoth v1.1.3**, which moves `golang.org/x/text` past **GO-2026-5970**
+  (infinite loop on invalid input). `govulncheck` found the symbol
+  *callable* in azoth — the trace runs through its OpenAI client's chat
+  request, which is the path ensō drives every turn. ensō itself never
+  resolved the vulnerable version: its own `x/text` was already at v0.40.0
+  and minimal version selection takes the maximum, so this raises azoth's
+  floor to match rather than fixing an exposure here. GitHub's advisory
+  database did not flag it; the callable-symbol scanner did.
+
+### Changed
+
+- Dependencies: `mcp-go` 0.57.0, `lipgloss/v2` 2.0.5, azoth 1.1.1 → 1.1.3,
+  and the transitive bumps azoth had already taken (`sts` 1.45.1,
+  `smithy-go` 1.27.5, `sqlite` 1.55.0).
+
 ## [v2.13.0] - 2026-06-11
 
 ### Added
@@ -770,6 +789,7 @@ First public release.
 - **Private vulnerability reporting** via GitHub Security Advisories (see
   [`SECURITY.md`](SECURITY.md)).
 
+[v2.13.1]: https://github.com/TaraTheStar/enso/compare/v2.13.0...v2.13.1
 [v2.13.0]: https://github.com/TaraTheStar/enso/compare/v2.12.0...v2.13.0
 [v2.12.0]: https://github.com/TaraTheStar/enso/compare/v2.11.0...v2.12.0
 [v2.11.0]: https://github.com/TaraTheStar/enso/compare/v2.10.1...v2.11.0
