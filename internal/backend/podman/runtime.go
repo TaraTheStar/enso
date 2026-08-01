@@ -18,8 +18,8 @@ func ResolveRuntime(sel string) (string, error) { return resolveRuntimeBinary(se
 // configured [backend.podman] runtime selector. "auto" (or "") prefers
 // podman (rootless, no daemon) and falls back to docker; "podman" /
 // "docker" pin one. Errors if the requested binary is not on PATH.
-// (Previously lived in internal/sandbox; inlined here when that legacy
-// package was removed so the podman backend owns its own resolution.)
+// Lives here rather than in a shared package so the podman backend owns
+// its own runtime resolution.
 func resolveRuntimeBinary(sel string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(sel)) {
 	case "podman":

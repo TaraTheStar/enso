@@ -22,7 +22,7 @@ const (
 	// queueNormalCap bounds the data-plane lane. Sized to match the bus
 	// subscriber buffer (internal/bus) so a streamed-output burst is
 	// absorbed by the queue rather than overflowing the bus and dropping
-	// events (see finding #2). When it does fill, enqueue blocks — lossless
+	// events. When it does fill, enqueue blocks — lossless
 	// back-pressure for ordered persistence and streamed inference.
 	queueNormalCap = 8192
 )

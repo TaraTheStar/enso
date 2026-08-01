@@ -37,9 +37,8 @@ var configInitCmd = &cobra.Command{
 			// --wizard generates provider config (api_key etc.) into
 			// the user-scoped file; --project generates backend-env
 			// (image, init, egress) into the repo-scoped file. They
-			// target different layers, so combining them would be a
-			// silent ignore today. Reject explicitly until we wire a
-			// merged flow.
+			// target different layers, so combining them could only
+			// silently ignore one. Reject explicitly instead.
 			if flagInitWizard {
 				return errors.New("--project and --wizard cannot be combined: --wizard generates provider config (user-scoped), --project generates backend env (project-scoped)")
 			}
