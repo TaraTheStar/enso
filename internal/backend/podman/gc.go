@@ -18,9 +18,9 @@ import (
 //	enso.task=<id>      marks the per-task Worker container
 //	enso.created=<unix> creation time, for age-thresholded pruning
 //
-// Every enso podman container is a per-task `--rm` Worker (the legacy
-// persistent per-project sandbox was removed); GC reclaims terminal
-// orphans left when a SIGKILLed run's `--rm` never fired.
+// Every enso podman container is a per-task `--rm` Worker, so GC exists
+// only to reclaim terminal orphans — the ones left when a SIGKILLed
+// run's `--rm` never fired.
 
 var sweepOnce sync.Once
 

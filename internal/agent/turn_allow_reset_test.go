@@ -15,9 +15,10 @@ import (
 )
 
 // TestRun_ResetsTurnAllowsBetweenUserMessages locks in the load-bearing
-// security property of P2 #13: a turn-scoped permission grant must
-// expire when the next *real* user message arrives. Sub-agent fan-out
-// inside one turn keeps the grant live; new user input clears it.
+// security property of turn-scoped grants: one must expire when the next
+// *real* user message arrives. Sub-agent fan-out inside one turn keeps
+// the grant live; new user input clears it. The reasoning is on
+// Checker.turnAllow in internal/permissions/prompt.go.
 func TestRun_ResetsTurnAllowsBetweenUserMessages(t *testing.T) {
 	mock := llmtest.NewT(t)
 	// One trivial turn, no tool calls — we're verifying the reset

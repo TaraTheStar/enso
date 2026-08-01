@@ -254,10 +254,10 @@ type Bus struct {
 	subscribers []chan Event
 
 	// dropped counts events discarded because a subscriber's buffer was
-	// full. Before, such drops were only per-event log lines — invisible
-	// in aggregate and untestable (finding #2). The seam's QueueWriter now
-	// drains its subscriber fast enough that drops are rare, but when the
-	// host genuinely can't keep up this is the honest running total.
+	// full. A per-event log line alone leaves loss invisible in aggregate
+	// and untestable, which is what this counter exists to fix. The seam's
+	// QueueWriter drains its subscriber fast enough that drops are rare,
+	// but when the host genuinely can't keep up this is the honest total.
 	dropped atomic.Uint64
 }
 

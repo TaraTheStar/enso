@@ -87,10 +87,9 @@ func TestPublish_ContinuesToOtherSubscribersWhenOneIsFull(t *testing.T) {
 	}
 }
 
-// TestPublish_CountsDroppedEvents covers finding #2: drops used to be
-// only per-event log lines, invisible in aggregate and untestable. The
-// Dropped() counter makes residual loss (after the seam's QueueWriter
-// absorbs bursts) observable.
+// TestPublish_CountsDroppedEvents covers what a per-event log line cannot:
+// the Dropped() counter makes residual loss — what survives the seam's
+// QueueWriter absorbing bursts — observable in aggregate, and testable.
 func TestPublish_CountsDroppedEvents(t *testing.T) {
 	b := New()
 	b.Subscribe(0) // zero-cap → every Publish drops
