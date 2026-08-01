@@ -6,7 +6,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/glamour/v2 v2.0.1
 	charm.land/lipgloss/v2 v2.0.5
-	github.com/TaraTheStar/azoth v1.1.2
+	github.com/TaraTheStar/azoth v1.1.3
 	github.com/adrg/frontmatter v0.2.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/charmbracelet/x/ansi v0.11.7
@@ -26,23 +26,23 @@ require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	github.com/BurntSushi/toml v1.6.0 // indirect
 	github.com/alecthomas/chroma/v2 v2.24.1 // indirect
-	github.com/anthropics/anthropic-sdk-go v1.59.0 // indirect
-	github.com/aws/aws-sdk-go-v2 v1.43.0 // indirect
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.14 // indirect
-	github.com/aws/aws-sdk-go-v2/config v1.32.31 // indirect
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.30 // indirect
-	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.31 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.31 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.31 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.32 // indirect
-	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.56.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.13 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.31 // indirect
-	github.com/aws/aws-sdk-go-v2/service/signin v1.5.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sso v1.33.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.0 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.45.0 // indirect
-	github.com/aws/smithy-go v1.27.3 // indirect
+	github.com/anthropics/anthropic-sdk-go v1.61.0 // indirect
+	github.com/aws/aws-sdk-go-v2 v1.43.2 // indirect
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.15 // indirect
+	github.com/aws/aws-sdk-go-v2/config v1.32.32 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.31 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.32 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.33 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.33 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.33 // indirect
+	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.56.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.14 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.32 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.5.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.33.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.45.1 // indirect
+	github.com/aws/smithy-go v1.27.5 // indirect
 	github.com/aymerick/douceur v0.2.0 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.1.2 // indirect
@@ -112,5 +112,5 @@ require (
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.54.0 // indirect
+	modernc.org/sqlite v1.55.0 // indirect
 )
