@@ -124,6 +124,22 @@ When a permission prompt fires, the modal offers four decisions:
   about to chain several similar tool calls and you don't want to
   either prompt for every one or commit to a permanent rule.
 
+**What `t` actually covers.** A turn is bounded by *your next
+message*, not by a number of tool calls — and a single message can
+fan out into sub-agents and long chains, all of which run inside that
+one turn and all of which the grant covers. So `t` is coarser than
+"a few more calls like this one": it is "anything matching this
+pattern until I speak again". Prefer `y` when you only meant to wave
+one call through.
+
+The boundary is where it is because the alternatives are worse. The
+grant resets on a real user message and nowhere else: resetting on
+tool-call boundaries would expire it mid-chain (defeating the point),
+and resetting only when the agent goes idle would let it survive into
+your next message, which is the one place it must not. There is no
+tighter honest boundary available today — a turn is the smallest unit
+ensō can prove you authorised.
+
 **`a` (allow + remember)** writes the pattern to
 `<cwd>/.enso/config.local.toml` (project-scoped, gitignored). The
 pattern derivation:

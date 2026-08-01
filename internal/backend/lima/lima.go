@@ -17,7 +17,8 @@
 // per-task workspace overlay copy) is mounted into the VM at its REAL
 // host path and the worker's cwd is that same path — never /work.
 //
-// Substrate model (locked, see repo TODO.md §8): a PERSISTENT
+// Substrate model (locked, see docs/content/docs/sandbox.md,
+// "Substrate model — persistent per-project VM"): a PERSISTENT
 // PER-PROJECT VM (enso-<base>-<projecthash>), not a fresh VM per task —
 // a cold per-task VM boot is impractical. Per-task *workspace*
 // isolation is still total: the host-side workspace overlay copy is
