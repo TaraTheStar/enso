@@ -82,10 +82,18 @@ type Checker struct {
 	// "Allow Turn" button — auto-allow matching calls until the next
 	// real user message resets it. Lazily allocated so an unused
 	// checker keeps zero overhead. Reset via ResetTurnAllows from
-	// the agent's Run loop right before EventUserMessage publish; see
-	// the security caveat on TODO P2 #13 for why turn boundary alone
-	// is wrong (chained sub-agent calls would extend the grant
-	// indefinitely).
+	// the agent's Run loop right before EventUserMessage publish.
+	//
+	// Know what the turn boundary does and does not buy: a turn is
+	// bounded by the next real user message, not by a call count, so
+	// sub-agent fan-out and long tool chains all run inside one turn
+	// and all inherit the grant. That makes it a coarse grant, and it
+	// is deliberately the coarsest thing we reset on — resetting per
+	// tool call would expire it mid-chain and resetting on agent-idle
+	// would leak it into the next user message. Documented for
+	// operators under "What `t` actually covers" in
+	// docs/content/docs/permissions.md; the reset site itself is
+	// commented in internal/agent/agent.go's Run loop.
 	turnAllow *Allowlist
 }
 
