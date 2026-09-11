@@ -4,6 +4,33 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.13.2] - 2026-09-10
+
+### Security
+
+- **azoth v1.1.5**, which raises `golang.org/x/crypto` to v0.56.0 and closes
+  **GO-2026-6303**, **GO-2026-6354** and **GO-2026-6355**, all carried
+  indirectly through the cloud SDKs. GO-2026-5932 remains with no fixed
+  version published upstream. `govulncheck` reports none of the four as
+  callable from ensō; this is graph hygiene, not a live exposure.
+- `google.golang.org/grpc` 1.82.1 → 1.83.2 via Dependabot's security group,
+  and `golang.org/x/net` 0.58.0.
+- Six standard-library advisories reachable from ensō (TLS post-handshake
+  limits, `net/http` header timeout, `net/url`, `encoding/xml`,
+  `encoding/asn1`, `html/template`) are fixed in the toolchain, not here:
+  build with Go 1.26.6 or later.
+
+### Changed
+
+- **`mcp-go` 0.57.0 → 1.0.0.** The library's first stable release; no
+  changes were needed on ensō's side.
+- Dependencies: `bubbletea/v2` 2.0.9, `lipgloss/v2` 2.0.6, `x/ansi` 0.11.8,
+  `x/sys` 0.48.0, and the transitive bumps azoth had already taken.
+- CI declares the container stack it needs and no longer caches the tests
+  that depend on it.
+- Docs: three dead citations re-pointed, and code comments no longer carry
+  internal tracking references.
+
 ## [v2.13.1] - 2026-08-01
 
 ### Security
