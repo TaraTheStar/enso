@@ -8,7 +8,7 @@ require (
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/TaraTheStar/azoth v1.1.5
 	github.com/adrg/frontmatter v0.2.0
-	github.com/bmatcuk/doublestar/v4 v4.10.0
+	github.com/bmatcuk/doublestar/v4 v4.10.2
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/google/uuid v1.6.0
 	github.com/mark3labs/mcp-go v1.0.0
