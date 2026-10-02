@@ -97,7 +97,7 @@ never emits EOS.
 [providers.local.generation]
 stall_timeout        = "60s"   # abort a stream that emits no token for this long; "0s" disables
 loop_guard           = true    # detect mid-stream degeneration loops and abort early
-auto_recover         = true    # on length-truncation / tripped loop guard / stall, retry the turn with a nudge
+auto_recover         = true    # on length-truncation / tripped loop guard / stall / empty turn, retry the turn with a nudge
 max_recover_attempts = 2       # cap auto-recovery retries per turn
 # reasoning_budget   = 8000    # opt-in: cap chain-of-thought before the model must act; 0 disables
 ```
@@ -106,7 +106,7 @@ max_recover_attempts = 2       # cap auto-recovery retries per turn
 | ---------------------- | ------- | ----------- |
 | `stall_timeout`        | `"60s"` | Aborts a stream that produces **no token** for the window — it fires on silence, not slowness, so prompt-processing pauses and speculative/MTP bursts are tolerated. `"0s"` disables the watchdog. |
 | `loop_guard`           | `true`  | Detects mid-stream degeneration loops — a short unit repeated back to back ("the the the", a duplicated line, a JSON fragment) — and aborts before the stream reaches the `max_tokens` cap. Cheap, rate-independent, tuned to ignore legitimately repetitive code. |
-| `auto_recover`         | `true`  | On a length-truncation, a tripped loop guard, or a stall, retries the turn with a nudge instead of dropping it. |
+| `auto_recover`         | `true`  | On a length-truncation, a tripped loop guard, a stall, or a turn that ends after thinking with no answer or tool call, retries the turn with a nudge instead of dropping it. |
 | `max_recover_attempts` | `2`     | Upper bound on auto-recovery retries within a single turn. |
 | `reasoning_budget`     | `0` (off) | Caps the chain-of-thought runes a model may stream before it must start acting (answer text or a tool call); exceeding it aborts and recovers with a nudge to commit. Targets reasoning models that deliberate for minutes without deciding. The `loop_guard` novelty check is the primary defense — this is an opt-in hard backstop. A sane value is well below `max_tokens`, e.g. `8000`. |
 

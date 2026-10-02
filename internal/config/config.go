@@ -856,9 +856,9 @@ type GenerationConfig struct {
 	// "0s" disables the watchdog.
 	StallTimeout string `toml:"stall_timeout"`
 
-	// AutoRecover toggles agent-side recovery: on a length-truncation or a
-	// tripped loop guard, discard/continue and retry with a nudge instead
-	// of surfacing a dead turn. nil/unset = enabled.
+	// AutoRecover toggles agent-side recovery: on a length-truncation, a
+	// tripped loop guard, or an empty turn, discard/continue and retry with
+	// a nudge instead of surfacing a dead turn. nil/unset = enabled.
 	AutoRecover *bool `toml:"auto_recover"`
 
 	// MaxRecoverAttempts bounds those automatic retries per turn so a
