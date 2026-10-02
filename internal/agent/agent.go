@@ -1369,6 +1369,7 @@ func (a *Agent) maybeRecover(p *provider.Provider, finishReason, content string,
 	// continued, whatever the provider called the finish — typically a
 	// reasoning model that thought and then stopped, or thought its way
 	// through the whole output budget.
+	reported := finishReason
 	if content == "" {
 		switch finishReason {
 		case llm.FinishRepetition, llm.FinishStall, llm.FinishReasoningBudget:
@@ -1383,8 +1384,17 @@ func (a *Agent) maybeRecover(p *provider.Provider, finishReason, content string,
 		if a.recoverAttempts >= p.MaxRecoverAttempts {
 			a.recoverAttempts = 0
 			if finishReason == finishEmpty {
-				// The caller's empty-turn error says more than "kept …".
-				return false, false, nil
+				// The empty-turn explanation says more than "kept …".
+				err := emptyTurnError(reported, asst.Reasoning)
+				if p.MaxRecoverAttempts > 0 {
+					err = fmt.Errorf("%w (after %d recovery attempt(s))", err, p.MaxRecoverAttempts)
+				}
+				if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
+					a.AgentCtx.Logger.Warn("empty turn",
+						"provider", p.Name, "finish_reason", reported, "reasoning_chars", len(asst.Reasoning))
+				}
+				a.Bus.Publish(bus.Event{Type: bus.EventError, Payload: err})
+				return true, false, nil
 			}
 			a.Bus.Publish(bus.Event{
 				Type: bus.EventError,
@@ -1397,6 +1407,7 @@ func (a *Agent) maybeRecover(p *provider.Provider, finishReason, content string,
 		}
 		a.recoverAttempts++
 		a.appendUserMessage(recoveryNudge(finishReason), nil)
+		a.publishRecovery(recoveryReason(finishReason)+" — retrying", p)
 		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
 			a.AgentCtx.Logger.Warn("auto-recovering turn",
 				"reason", finishReason, "attempt", a.recoverAttempts, "max", p.MaxRecoverAttempts)
@@ -1415,6 +1426,7 @@ func (a *Agent) maybeRecover(p *provider.Provider, finishReason, content string,
 		a.stampUsage(idx, seq, usage)
 		a.Bus.Publish(bus.Event{Type: bus.EventAssistantDone})
 		a.appendUserMessage(recoveryContinueNudge, nil)
+		a.publishRecovery("response hit the output limit — continuing", p)
 		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
 			a.AgentCtx.Logger.Warn("auto-continuing truncated turn",
 				"attempt", a.recoverAttempts, "max", p.MaxRecoverAttempts)
@@ -1462,6 +1474,30 @@ func recoveryNudge(finishReason string) string {
 	default:
 		return "Your previous response began repeating itself and was stopped. Stop repeating, take a different approach, and answer concisely."
 	}
+}
+
+// recoveryReason is the user-facing half of a recovery notice: what went
+// wrong with the turn being retried.
+func recoveryReason(finishReason string) string {
+	switch finishReason {
+	case llm.FinishStall:
+		return "response stalled"
+	case finishEmpty:
+		return "model stopped without an answer or a tool call"
+	case llm.FinishReasoningBudget:
+		return "model spent its reasoning budget without acting"
+	default:
+		return "model began repeating itself"
+	}
+}
+
+// publishRecovery tells the user a turn is being rescued. Without it a
+// retry is indistinguishable from the model simply thinking again.
+func (a *Agent) publishRecovery(what string, p *provider.Provider) {
+	a.Bus.Publish(bus.Event{
+		Type:    bus.EventNotice,
+		Payload: fmt.Sprintf("%s (attempt %d of %d)", what, a.recoverAttempts, p.MaxRecoverAttempts),
+	})
 }
 
 func recoverWord(finishReason string) string {

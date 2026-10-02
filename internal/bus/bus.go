@@ -56,11 +56,10 @@ const (
 
 	// EventNotice is a neutral, informational inline message (Payload is
 	// a string) surfaced in scrollback — e.g. "📎 attached shot.png" when
-	// a user image attaches. Distinct from EventError (which renders as a
-	// failure): a notice is just FYI. HOST-LOCAL — published host-side and
-	// rendered by the TUI subscriber, so it never crosses the worker
-	// Channel (deliberately absent from WireForm/FromWire, like
-	// EventEgressRequest).
+	// a user image attaches, or the agent saying it is retrying a turn.
+	// Distinct from EventError (which renders as a failure): a notice is
+	// just FYI. It crosses the wire so the worker's agent can explain
+	// itself to the host's renderer.
 	EventNotice
 
 	// EventCompacting fires repeatedly while a tier-2 (LLM) compaction
@@ -128,6 +127,8 @@ func (e Event) WireForm() (typ string, payload json.RawMessage, ok bool) {
 		typ = "AgentIdle"
 	case EventInputDiscarded:
 		typ = "InputDiscarded"
+	case EventNotice:
+		typ = "Notice"
 	case EventPermissionRequest:
 		// Not wire-serializable. The payload (*permissions.PromptRequest)
 		// carries a live Respond channel that can't cross the wire, and
@@ -227,6 +228,8 @@ func FromWire(typ string, payload json.RawMessage) (Event, bool) {
 		var n float64
 		_ = json.Unmarshal(payload, &n)
 		return Event{Type: EventInputDiscarded, Payload: int(n)}, true
+	case "Notice":
+		return Event{Type: EventNotice, Payload: str()}, true
 	case "PermissionRequest":
 		// Asymmetric on purpose: WireForm emits this for external
 		// observers reading raw daemon.Event records, but FromWire
