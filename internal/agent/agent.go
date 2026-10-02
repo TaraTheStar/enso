@@ -1321,12 +1321,12 @@ func (a *Agent) turn(ctx context.Context, registry *tools.Registry) (bool, error
 	// Surface a friendly note instead, and end the turn cleanly so the user
 	// can try again.
 	if asst.Content == "" && len(asst.ToolCalls) == 0 {
-		a.Bus.Publish(bus.Event{
-			Type: bus.EventError,
-			Payload: fmt.Errorf(
-				"model produced no visible response (the chat template may be emitting tool calls as inline text — try the Unsloth Qwen3.6 GGUFs and a recent llama.cpp build)",
-			),
-		})
+		err := emptyTurnError(finishReason, asst.Reasoning)
+		if a.AgentCtx != nil && a.AgentCtx.Logger != nil {
+			a.AgentCtx.Logger.Warn("empty turn",
+				"provider", p.Name, "finish_reason", finishReason, "reasoning_chars", len(asst.Reasoning))
+		}
+		a.Bus.Publish(bus.Event{Type: bus.EventError, Payload: err})
 		return false, nil
 	}
 
@@ -1365,12 +1365,27 @@ func (a *Agent) maybeRecover(p *provider.Provider, finishReason, content string,
 	if !p.AutoRecover {
 		return false, false, nil
 	}
+	// A turn with neither text nor a tool call cannot be persisted or
+	// continued, whatever the provider called the finish — typically a
+	// reasoning model that thought and then stopped, or thought its way
+	// through the whole output budget.
+	if content == "" {
+		switch finishReason {
+		case llm.FinishRepetition, llm.FinishStall, llm.FinishReasoningBudget:
+		default:
+			finishReason = finishEmpty
+		}
+	}
 	switch finishReason {
-	case llm.FinishRepetition, llm.FinishStall, llm.FinishReasoningBudget:
-		// Degenerate, hung, or over-deliberating output: discard the partial
-		// (it would poison context) and retry with a corrective nudge.
+	case llm.FinishRepetition, llm.FinishStall, llm.FinishReasoningBudget, finishEmpty:
+		// Degenerate, hung, over-deliberating, or empty output: discard the
+		// partial (it would poison context) and retry with a corrective nudge.
 		if a.recoverAttempts >= p.MaxRecoverAttempts {
 			a.recoverAttempts = 0
+			if finishReason == finishEmpty {
+				// The caller's empty-turn error says more than "kept …".
+				return false, false, nil
+			}
 			a.Bus.Publish(bus.Event{
 				Type: bus.EventError,
 				Payload: fmt.Errorf(
@@ -1390,9 +1405,8 @@ func (a *Agent) maybeRecover(p *provider.Provider, finishReason, content string,
 
 	case llm.FinishLength:
 		// Clean length truncation: the partial is real work. Out of
-		// retries (or nothing to continue) → keep it via the normal path
-		// and stop cleanly.
-		if content == "" || a.recoverAttempts >= p.MaxRecoverAttempts {
+		// retries → keep it via the normal path and stop cleanly.
+		if a.recoverAttempts >= p.MaxRecoverAttempts {
 			a.recoverAttempts = 0
 			return false, false, nil
 		}
@@ -1414,6 +1428,25 @@ func (a *Agent) maybeRecover(p *provider.Provider, finishReason, content string,
 	}
 }
 
+// finishEmpty is the agent's own finish reason for a turn that carried no
+// text and no tool call; no provider reports it.
+const finishEmpty = "empty"
+
+// emptyTurnError explains a turn that ended with nothing to show, from the
+// evidence available: how the stream finished and what the model thought.
+func emptyTurnError(finishReason, reasoning string) error {
+	switch {
+	case finishReason == llm.FinishLength:
+		return fmt.Errorf("model hit the output limit while still thinking (%d chars of reasoning, no answer) — raise max_tokens or set generation.reasoning_budget", len(reasoning))
+	case strings.Contains(reasoning, "<tool_call") || strings.Contains(reasoning, "<function="):
+		return fmt.Errorf("model wrote a tool call inside its reasoning in a shape that could not be parsed — the chat template is emitting tool calls as text; rerun with --debug to capture the raw stream")
+	case reasoning != "":
+		return fmt.Errorf("model finished thinking without an answer or a tool call (finish_reason=%q, %d chars of reasoning)", finishReason, len(reasoning))
+	default:
+		return fmt.Errorf("model returned an empty response (finish_reason=%q) — check the server log, or rerun with --debug to capture the raw stream", finishReason)
+	}
+}
+
 const recoveryContinueNudge = "Your previous response was cut off at the output length limit. Continue exactly where you left off — do not repeat anything you already wrote."
 
 // recoveryNudge is the corrective injected before retrying a degenerate or
@@ -1422,6 +1455,8 @@ func recoveryNudge(finishReason string) string {
 	switch finishReason {
 	case llm.FinishStall:
 		return "Your previous response stalled and was stopped before completing. Please answer the request directly and concisely."
+	case finishEmpty:
+		return "Your previous response ended after thinking, without an answer or a tool call. Keep the thinking brief, then emit your answer or the tool call."
 	case llm.FinishReasoningBudget:
 		return "Your previous response spent too long thinking without producing an answer or taking an action, and was stopped. Stop deliberating now: commit to the next concrete step — emit your answer or the tool call — without further planning or review."
 	default:

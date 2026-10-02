@@ -190,3 +190,83 @@ func TestRecover_DisabledSurfacesNormally(t *testing.T) {
 		t.Fatalf("expected exactly 1 model call (no recovery), got %d", mock.CallCount())
 	}
 }
+
+// TestRecover_EmptyTurnRetriesWithNudge: a turn that ends with reasoning
+// only — whether the model stopped or ran out of output budget — is
+// retried rather than surfaced as a dead turn.
+func TestRecover_EmptyTurnRetriesWithNudge(t *testing.T) {
+	for _, finish := range []string{"stop", llm.FinishLength} {
+		t.Run(finish, func(t *testing.T) {
+			mock := llmtest.NewT(t)
+			mock.Push(llmtest.Script{Reasoning: "hmm, let me think", FinishReason: finish})
+			mock.Push(llmtest.Script{Text: "the answer"})
+
+			a, b := newRecoverAgent(t, recoverProvider(mock, 2))
+			events := driveOnce(t, a, b, "do the thing")
+
+			if mock.CallCount() != 2 {
+				t.Fatalf("expected 2 model calls (empty + retry), got %d", mock.CallCount())
+			}
+			for _, ev := range events {
+				if ev.Type == bus.EventError {
+					t.Errorf("recovered turn must not surface an error, got %v", ev.Payload)
+				}
+			}
+			var nudged bool
+			for _, m := range a.History {
+				if m.Role == "assistant" && m.Content == "" {
+					t.Error("empty assistant message must not be persisted")
+				}
+				if m.Role == "user" && strings.Contains(m.Content, "without an answer") {
+					nudged = true
+				}
+			}
+			if !nudged {
+				t.Error("expected an empty-turn nudge in history")
+			}
+		})
+	}
+}
+
+// TestRecover_EmptyTurnExhaustedExplainsItself: once retries run out, the
+// surfaced error names what actually happened.
+func TestRecover_EmptyTurnExhaustedExplainsItself(t *testing.T) {
+	mock := llmtest.NewT(t)
+	for range 2 {
+		mock.Push(llmtest.Script{Reasoning: "still thinking", FinishReason: llm.FinishLength})
+	}
+
+	a, b := newRecoverAgent(t, recoverProvider(mock, 1))
+	events := driveOnce(t, a, b, "do the thing")
+
+	if mock.CallCount() != 2 {
+		t.Fatalf("expected 2 model calls (1 + 1 retry), got %d", mock.CallCount())
+	}
+	var got string
+	for _, ev := range events {
+		if ev.Type == bus.EventError {
+			got = ev.Payload.(error).Error()
+		}
+	}
+	if !strings.Contains(got, "output limit") {
+		t.Errorf("expected an output-limit explanation, got %q", got)
+	}
+}
+
+func TestEmptyTurnError(t *testing.T) {
+	cases := []struct {
+		name, finish, reasoning, want string
+	}{
+		{"length", llm.FinishLength, "thinking", "output limit"},
+		{"unparsed tool call", "stop", "ok\n<tool_call>{broken", "could not be parsed"},
+		{"reasoning only", "stop", "thinking", "finished thinking"},
+		{"nothing", "stop", "", "empty response"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := emptyTurnError(c.finish, c.reasoning).Error(); !strings.Contains(got, c.want) {
+				t.Errorf("got %q, want it to contain %q", got, c.want)
+			}
+		})
+	}
+}
