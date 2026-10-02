@@ -91,9 +91,10 @@ var wireProtocolTable = []struct {
 	// EgressRequest is HOST-LOCAL (live Respond channel) — named in
 	// eventTypeString for slow-consumer logs, never wire-safe.
 	{EventEgressRequest, "EventEgressRequest", "EgressRequest", false, false, ""},
-	// Notice is HOST-LOCAL (published and rendered host-side) — named
-	// in eventTypeString for slow-consumer logs, never wire-safe.
-	{EventNotice, "EventNotice", "Notice", false, false, ""},
+	// Notice crosses the wire (worker Channel → host) so the agent's
+	// own notices reach the renderer, but it is absent from
+	// json-events.md and --format json.
+	{EventNotice, "EventNotice", "Notice", true, true, ""},
 	// Compacting crosses the wire (worker Channel → host) so isolated
 	// backends animate the progress bar, but it is a transient TUI-only
 	// status tick — absent from json-events.md and --format json.
@@ -209,7 +210,7 @@ func TestFromWireRecognizesFrozenStrings(t *testing.T) {
 	// the bus wire) and the eventTypeString default.
 	for _, bogus := range []string{
 		"", "Unknown", "SessionStart", "session_start", "user_message",
-		"tool_call_start", "assistant_delta", "Notice", "EgressRequest",
+		"tool_call_start", "assistant_delta", "EgressRequest",
 		"PermissionResponse", "PermissionAuto",
 	} {
 		if _, ok := FromWire(bogus, json.RawMessage(`null`)); ok {
@@ -370,6 +371,13 @@ func TestWireRoundTripPayloads(t *testing.T) {
 			wantType: "InputDiscarded",
 			wantJSON: `3`,
 			wantBack: 3,
+		},
+		{
+			name:     "notice text as string",
+			evt:      Event{Type: EventNotice, Payload: "retrying"},
+			wantType: "Notice",
+			wantJSON: `"retrying"`,
+			wantBack: "retrying",
 		},
 	}
 

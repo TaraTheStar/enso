@@ -207,10 +207,17 @@ func TestRecover_EmptyTurnRetriesWithNudge(t *testing.T) {
 			if mock.CallCount() != 2 {
 				t.Fatalf("expected 2 model calls (empty + retry), got %d", mock.CallCount())
 			}
+			var notice string
 			for _, ev := range events {
-				if ev.Type == bus.EventError {
+				switch ev.Type {
+				case bus.EventError:
 					t.Errorf("recovered turn must not surface an error, got %v", ev.Payload)
+				case bus.EventNotice:
+					notice, _ = ev.Payload.(string)
 				}
+			}
+			if !strings.Contains(notice, "retrying (attempt 1 of 2)") {
+				t.Errorf("expected a visible retry notice, got %q", notice)
 			}
 			var nudged bool
 			for _, m := range a.History {
@@ -250,6 +257,9 @@ func TestRecover_EmptyTurnExhaustedExplainsItself(t *testing.T) {
 	}
 	if !strings.Contains(got, "output limit") {
 		t.Errorf("expected an output-limit explanation, got %q", got)
+	}
+	if !strings.Contains(got, "after 1 recovery attempt(s)") {
+		t.Errorf("expected the retry count in the error, got %q", got)
 	}
 }
 
