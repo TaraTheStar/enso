@@ -1,0 +1,26 @@
+name: dependabot auto-merge
+
+on: pull_request
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable:
+    # The PR author, not the actor: anyone can re-trigger a run on a
+    # Dependabot PR, but only Dependabot can open one.
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@v3
+
+      # Auto-merge waits for the required checks, so nothing lands red.
+      # Majors are left for a person: they are where API breaks live, and
+      # passing tests are weaker evidence there.
+      - if: steps.meta.outputs.update-type != 'version-update:semver-major'
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
