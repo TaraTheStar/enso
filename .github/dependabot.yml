@@ -8,6 +8,13 @@ updates:
     # fixed by bumping it here, and by default Dependabot never does.
     allow:
       - dependency-type: all
+    # One PR per week rather than one per module: separate PRs all edit
+    # go.sum, so each merge leaves the rest conflicting. Majors stay
+    # separate so they still get a person's review.
+    groups:
+      gomod:
+        patterns: ["*"]
+        update-types: [minor, patch]
 
   - package-ecosystem: github-actions
     directory: "/"
