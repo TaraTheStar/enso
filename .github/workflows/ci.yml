@@ -24,7 +24,8 @@ jobs:
 
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26.2'
+          go-version: '1.26.x'
+          check-latest: true
           cache: true
 
       # The podman-backed tests need a working rootless container stack,
