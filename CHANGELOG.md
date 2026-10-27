@@ -4,6 +4,37 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.13.3] - 2026-10-27
+
+### Security
+
+- **Release binaries are built with Go 1.26.10**, up from 1.26.2. That
+  closes 22 standard-library advisories `govulncheck` reports as called
+  from ensō, the newest of them fixed in 1.26.9. CI and releases now
+  follow the newest 1.26 patch rather than a pinned one.
+
+### Fixed
+
+- **Empty turns are retried.** A turn that ends after thinking with no
+  answer or tool call, including one cut off by the output limit
+  mid-thought, is now retried with a nudge under `auto_recover`. When
+  retries run out, the error reports the finish reason and how many
+  attempts were made.
+- Recovery retries are announced in the UI instead of only logged.
+- **azoth v1.1.7**: host-proxied inference no longer fails to decode a
+  request once an image or document is in the history.
+
+### Changed
+
+- Dependencies: azoth 1.1.5 → 1.1.7, `mcp-go` 1.0.0 → 1.4.0,
+  `bubbletea/v2` 2.1.0, `x/ansi` 0.11.9, `x/net` 0.61.0, `x/sys` 0.49.0,
+  `doublestar/v4` 4.10.4, and the cloud SDK and other transitive bumps
+  collected by Dependabot.
+- CI: Dependabot patch and minor updates merge automatically once checks
+  pass, Go module updates arrive as one grouped PR, and a daily
+  `govulncheck` job opens a fix PR for called vulnerabilities Dependabot
+  misses.
+
 ## [v2.13.2] - 2026-09-10
 
 ### Security
@@ -816,6 +847,8 @@ First public release.
 - **Private vulnerability reporting** via GitHub Security Advisories (see
   [`SECURITY.md`](SECURITY.md)).
 
+[v2.13.3]: https://github.com/TaraTheStar/enso/compare/v2.13.2...v2.13.3
+[v2.13.2]: https://github.com/TaraTheStar/enso/compare/v2.13.1...v2.13.2
 [v2.13.1]: https://github.com/TaraTheStar/enso/compare/v2.13.0...v2.13.1
 [v2.13.0]: https://github.com/TaraTheStar/enso/compare/v2.12.0...v2.13.0
 [v2.12.0]: https://github.com/TaraTheStar/enso/compare/v2.11.0...v2.12.0
