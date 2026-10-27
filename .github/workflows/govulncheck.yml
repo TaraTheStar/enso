@@ -23,7 +23,7 @@ concurrency:
 env:
   # Keep GO_VERSION in step with release.yml: the binaries ship with this
   # toolchain, so a called stdlib finding is a vulnerable release.
-  GO_VERSION: '1.26.2'
+  GO_VERSION: '1.26.x'
   STDLIB_FAILS: 'true'
   BRANCH: govulncheck/fixes
 

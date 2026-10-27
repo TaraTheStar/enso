@@ -29,9 +29,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The newest patch, not a pin: binaries carry the stdlib, and a pinned
+      # patch goes stale silently until govulncheck flags it.
       - uses: actions/setup-go@v7
         with:
-          go-version: '1.26.2'
+          go-version: '1.26.x'
+          check-latest: true
           cache: true
 
       - name: Build
