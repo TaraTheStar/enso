@@ -1,0 +1,109 @@
+name: govulncheck
+
+# Dependabot and govulncheck disagree: Dependabot's version updates skip
+# indirect requirements, and its security updates only know advisories that
+# reached GitHub's database. This scans main against the Go vulnerability
+# database, bumps every module with a *called* finding to its fixed version,
+# and opens one PR for the lot.
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write       # push the fix branch
+  pull-requests: write  # open its PR
+  actions: write        # dispatch ci on it
+
+concurrency:
+  group: govulncheck
+  cancel-in-progress: false
+
+env:
+  # Keep GO_VERSION in step with release.yml: the binaries ship with this
+  # toolchain, so a called stdlib finding is a vulnerable release.
+  GO_VERSION: '1.26.2'
+  STDLIB_FAILS: 'true'
+  BRANCH: govulncheck/fixes
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          check-latest: true
+          cache: true
+
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: scan and fix
+        run: |
+          set -euo pipefail
+          called='[.[] | .finding? // empty | select(.trace[0].function != null)]'
+
+          govulncheck -format json ./... > before.json
+
+          # Highest fixed version per non-stdlib module, with what it clears.
+          jq -rs "$called"' | map(select(.trace[0].module != "stdlib" and (.fixed_version // "") != ""))
+            | group_by(.trace[0].module)
+            | .[] | "\(.[0].trace[0].module) \(map(.fixed_version) | unique | join(" ")) \(map(.osv) | unique | join(","))"' before.json |
+          while read -r mod versions ids; do
+            top=$(printf '%s\n' $versions | sort -V | tail -1)
+            echo "$mod@$top $ids"
+          done > fixes.txt
+
+          while read -r spec _; do go get "$spec"; done < fixes.txt
+          go mod tidy
+
+          govulncheck -format json ./... > after.json
+          jq -rs "$called"' | map("\(.osv) \(.trace[0].module)@\(.trace[0].version) fixed:\(.fixed_version // "none")") | unique | .[]' after.json > remaining.txt
+
+      - name: open the fix PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ ! -s fixes.txt ] || git diff --quiet -- go.mod go.sum; then exit 0; fi
+          {
+            echo 'Bumps each module with a called vulnerability to its fixed version:'
+            echo
+            while read -r spec ids; do echo "- \`$spec\` — $ids"; done < fixes.txt
+          } > body.md
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -C "$BRANCH"
+          git commit -q -a -m 'deps: bump modules with called vulnerabilities' -m "$(cat body.md)"
+          git push -q -f origin "$BRANCH"
+          if [ "$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null)" != OPEN ]; then
+            gh pr create --base main --head "$BRANCH" \
+              --title 'deps: bump modules with called vulnerabilities' --body-file body.md
+          else
+            gh pr edit "$BRANCH" --body-file body.md
+          fi
+          # A push made with the workflow token starts no workflow, so the
+          # required check has to be asked for.
+          gh workflow run ci.yml --ref "$BRANCH"
+
+      - name: report
+        if: always()
+        run: |
+          set -euo pipefail
+          touch fixes.txt remaining.txt
+          {
+            echo '## govulncheck'
+            if [ -s fixes.txt ]; then echo '### Fixed in the PR'; sed 's/^/- /' fixes.txt; fi
+            if [ -s remaining.txt ]; then echo '### Still called'; sed 's/^/- /' remaining.txt; fi
+            if [ ! -s fixes.txt ] && [ ! -s remaining.txt ]; then echo 'No called vulnerabilities.'; fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          # A finding the bumps could not clear needs a person. stdlib counts
+          # only where this repo ships binaries built with GO_VERSION.
+          grep -v ' stdlib@' remaining.txt > blocking.txt || true
+          if [ "$STDLIB_FAILS" = true ]; then cp remaining.txt blocking.txt; fi
+          if [ -s blocking.txt ]; then
+            echo "::error::called vulnerabilities with no automatic fix:"; cat blocking.txt; exit 1
+          fi
