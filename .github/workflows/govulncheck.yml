@@ -68,7 +68,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ ! -s fixes.txt ] || git diff --quiet -- go.mod go.sum; then exit 0; fi
+          if [ ! -s fixes.txt ] || git diff --quiet -- go.mod go.sum; then
+            # Nothing left to bump — main was fixed another way, usually by
+            # Dependabot getting there first — so an open fix PR is stale.
+            if [ "$(gh pr view "$BRANCH" --json state -q .state 2>/dev/null)" = OPEN ]; then
+              gh pr close "$BRANCH" --delete-branch \
+                --comment 'main no longer has a called vulnerability these bumps would fix.'
+            fi
+            exit 0
+          fi
           {
             echo 'Bumps each module with a called vulnerability to its fixed version:'
             echo
