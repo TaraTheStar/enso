@@ -4,6 +4,10 @@ updates:
     directory: "/"
     schedule:
       interval: weekly
+    # Indirect requirements too: a vulnerable transitive module is only
+    # fixed by bumping it here, and by default Dependabot never does.
+    allow:
+      - dependency-type: all
 
   - package-ecosystem: github-actions
     directory: "/"
