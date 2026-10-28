@@ -12,9 +12,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write       # push the fix branch
-  pull-requests: write  # open its PR
-  actions: write        # dispatch ci on it
+  contents: read
 
 concurrency:
   group: govulncheck
@@ -31,7 +29,20 @@ jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
+      # A PR opened with the workflow token has its pull_request runs held for
+      # a maintainer's approval, so its required check never runs. Pushing and
+      # opening it as a GitHub App starts them like any other PR's.
+      - id: app
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.APP_CLIENT_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
       - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app.outputs.token }}
 
       - uses: actions/setup-go@v7
         with:
@@ -65,7 +76,8 @@ jobs:
 
       - name: open the fix PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          APP_SLUG: ${{ steps.app.outputs.app-slug }}
         run: |
           set -euo pipefail
           if [ ! -s fixes.txt ] || git diff --quiet -- go.mod go.sum; then
@@ -82,8 +94,9 @@ jobs:
             echo
             while read -r spec ids; do echo "- \`$spec\` — $ids"; done < fixes.txt
           } > body.md
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          bot="$APP_SLUG[bot]"
+          git config user.name "$bot"
+          git config user.email "$(gh api "users/$bot" -q .id)+$bot@users.noreply.github.com"
           git switch -C "$BRANCH"
           git commit -q -a -m 'deps: bump modules with called vulnerabilities' -m "$(cat body.md)"
           git push -q -f origin "$BRANCH"
@@ -93,9 +106,6 @@ jobs:
           else
             gh pr edit "$BRANCH" --body-file body.md
           fi
-          # A push made with the workflow token starts no workflow, so the
-          # required check has to be asked for.
-          gh workflow run ci.yml --ref "$BRANCH"
 
       - name: report
         if: always()
