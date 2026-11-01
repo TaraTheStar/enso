@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 	"golang.org/x/net/html"
 )
 

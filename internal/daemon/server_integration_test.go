@@ -16,10 +16,10 @@ import (
 
 	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/azoth/llm/llmtest"
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/provider"
-	"github.com/TaraTheStar/enso/internal/session"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // startTestServer constructs a minimally-configured Server, listens on a

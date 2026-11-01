@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/azoth/llm"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/ui/blocks"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/ui/blocks"
 )
 
 // conversation is the bubble-side state machine that owns the most

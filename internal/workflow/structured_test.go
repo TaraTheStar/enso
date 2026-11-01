@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/TaraTheStar/azoth/llm/llmtest"
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 func TestParseStructured_JSONBlock(t *testing.T) {

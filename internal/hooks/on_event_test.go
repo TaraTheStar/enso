@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 // TestOnEvent_PipesJSONOnStdin is the headline contract: the hook

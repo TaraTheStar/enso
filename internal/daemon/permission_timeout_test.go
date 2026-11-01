@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 func TestServer_PermissionTimeoutDefault(t *testing.T) {

@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/session"
 )
 
 // TestNewCheckpointFn_SnapshotsRecordsAndPrunes exercises the full

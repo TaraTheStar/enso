@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 // searxngBackend talks to a single configured SearXNG instance via the

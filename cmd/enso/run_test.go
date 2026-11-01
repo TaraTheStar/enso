@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 // TestRenderJSON drives renderJSONTo with a synthetic event stream and checks

@@ -8,7 +8,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/TaraTheStar/enso/internal/slash"
+	"github.com/TaraTheStar/enso/v2/internal/slash"
 )
 
 // slashPaletteData backs the `/`-trigger command palette overlay. It's

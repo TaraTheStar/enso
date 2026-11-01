@@ -9,10 +9,10 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/session"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // overlayData is the snapshot the alt-screen session-inspector overlay

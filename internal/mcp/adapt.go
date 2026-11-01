@@ -11,7 +11,7 @@ import (
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	mcpproto "github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // Naming rules. OpenAI's function-call schema requires

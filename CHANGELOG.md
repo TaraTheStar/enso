@@ -4,6 +4,19 @@ All notable changes to ensō are documented here. The format is based
 on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.13.4] - 2026-10-31
+
+### Changed
+
+- **Module path is now `github.com/TaraTheStar/enso/v2`.** The tags have
+  been v2.x since v2.0.0 but the path never carried the suffix, so the
+  module proxy ignored every v2 release and `go get …@latest` resolved to
+  v1.2.0. Binaries and the `enso` command are unaffected; only the import
+  path changes, and nothing outside this repository imports it.
+- Dependencies: `x/net` 0.61.0 → 0.62.0, which clears GO-2026-6860 (called
+  via `x/net/html.Parse` in the web search tool), plus the weekly
+  Dependabot group.
+
 ## [v2.13.3] - 2026-10-27
 
 ### Security
@@ -847,6 +860,7 @@ First public release.
 - **Private vulnerability reporting** via GitHub Security Advisories (see
   [`SECURITY.md`](SECURITY.md)).
 
+[v2.13.4]: https://github.com/TaraTheStar/enso/compare/v2.13.3...v2.13.4
 [v2.13.3]: https://github.com/TaraTheStar/enso/compare/v2.13.2...v2.13.3
 [v2.13.2]: https://github.com/TaraTheStar/enso/compare/v2.13.1...v2.13.2
 [v2.13.1]: https://github.com/TaraTheStar/enso/compare/v2.13.0...v2.13.1

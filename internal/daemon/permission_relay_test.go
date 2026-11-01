@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
 )
 
 // These tests cover the daemon leg of the permission relay

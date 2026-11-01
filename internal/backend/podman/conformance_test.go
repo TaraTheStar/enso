@@ -14,12 +14,12 @@ import (
 
 	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/azoth/llm/llmtest"
-	"github.com/TaraTheStar/enso/internal/backend"
-	"github.com/TaraTheStar/enso/internal/backend/host"
-	"github.com/TaraTheStar/enso/internal/backend/podman"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend/host"
+	"github.com/TaraTheStar/enso/v2/internal/backend/podman"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
 )
 
 const testImage = "docker.io/library/alpine:latest"
@@ -61,7 +61,7 @@ func TestPodmanBackendConformance_GVisor(t *testing.T) {
 		t.Fatalf("wrapper: %v", err)
 	}
 	probe := filepath.Join(tdir, "probe")
-	pg := exec.Command("go", "build", "-o", probe, "github.com/TaraTheStar/enso/cmd/enso")
+	pg := exec.Command("go", "build", "-o", probe, "github.com/TaraTheStar/enso/v2/cmd/enso")
 	pg.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := pg.CombinedOutput(); err != nil {
 		t.Fatalf("probe build: %v\n%s", err, out)
@@ -95,7 +95,7 @@ func runConformance(t *testing.T, ociRuntime string) {
 	// Static, CGO-free enso so it runs on alpine/musl.
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "enso")
-	build := exec.Command("go", "build", "-o", bin, "github.com/TaraTheStar/enso/cmd/enso")
+	build := exec.Command("go", "build", "-o", bin, "github.com/TaraTheStar/enso/v2/cmd/enso")
 	build.Env = append(os.Environ(), "CGO_ENABLED=0")
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("static build: %v\n%s", err, out)

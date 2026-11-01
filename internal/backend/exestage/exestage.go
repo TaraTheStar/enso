@@ -43,7 +43,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // dirName is the stable parent under $XDG_STATE_HOME/enso.

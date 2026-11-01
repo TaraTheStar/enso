@@ -5,7 +5,7 @@ package bubble
 import (
 	"charm.land/glamour/v2/ansi"
 
-	"github.com/TaraTheStar/enso/internal/ui/theme"
+	"github.com/TaraTheStar/enso/v2/internal/ui/theme"
 )
 
 // buildMarkdownTheme returns a glamour StyleConfig built from the

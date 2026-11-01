@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 // Manager owns a pool of LSP server processes — one per `[lsp.<name>]`

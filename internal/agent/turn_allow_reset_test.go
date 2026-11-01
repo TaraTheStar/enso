@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/azoth/llm/llmtest"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/provider"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // TestRun_ResetsTurnAllowsBetweenUserMessages locks in the load-bearing

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/backend/egress"
+	"github.com/TaraTheStar/enso/v2/internal/backend/egress"
 )
 
 // fakeDecider records how many times it was consulted and answers with

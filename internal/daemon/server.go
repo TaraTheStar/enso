@@ -22,16 +22,16 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/TaraTheStar/azoth/ipc"
-	"github.com/TaraTheStar/enso/internal/agent"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/hooks"
-	"github.com/TaraTheStar/enso/internal/mcp"
-	"github.com/TaraTheStar/enso/internal/paths"
-	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/provider"
-	"github.com/TaraTheStar/enso/internal/session"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/agent"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/hooks"
+	"github.com/TaraTheStar/enso/v2/internal/mcp"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // SocketPath returns the absolute path to the daemon's unix socket. The

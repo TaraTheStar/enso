@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/azoth/llm/llmtest"
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 // TestRun_LargeFanOut covers AGENTS.md's "workflow sibling parallelism

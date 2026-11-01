@@ -8,7 +8,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/TaraTheStar/enso/internal/ui/theme"
+	"github.com/TaraTheStar/enso/v2/internal/ui/theme"
 )
 
 // styles are the Lipgloss styles the model and run.go use to render

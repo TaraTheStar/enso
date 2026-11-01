@@ -9,15 +9,15 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/TaraTheStar/enso/internal/backend/host"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/lsp"
-	"github.com/TaraTheStar/enso/internal/mcp"
-	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/provider"
-	"github.com/TaraTheStar/enso/internal/session"
-	"github.com/TaraTheStar/enso/internal/slash"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/backend/host"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/lsp"
+	"github.com/TaraTheStar/enso/v2/internal/mcp"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/slash"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // slashCtx is the state slash command handlers see. Handlers print

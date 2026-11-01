@@ -35,7 +35,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TaraTheStar/enso/eval/pkg/score"
+	"github.com/TaraTheStar/enso/v2/eval/pkg/score"
 )
 
 // Task is the on-disk schema for tasks/<id>/task.json.

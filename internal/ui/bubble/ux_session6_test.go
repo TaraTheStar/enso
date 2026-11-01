@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/TaraTheStar/azoth/llm"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/ui/blocks"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/ui/blocks"
 )
 
 // mkToolCall builds an llm.ToolCall — the nested Function struct is

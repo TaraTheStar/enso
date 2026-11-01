@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 func TestManager_RecordsInvalidNameAsFailed(t *testing.T) {

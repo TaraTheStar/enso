@@ -14,12 +14,12 @@ import (
 
 	"github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/azoth/llm/llmtest"
-	"github.com/TaraTheStar/enso/internal/backend"
-	"github.com/TaraTheStar/enso/internal/backend/host"
-	"github.com/TaraTheStar/enso/internal/backend/local"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend/host"
+	"github.com/TaraTheStar/enso/v2/internal/backend/local"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
 )
 
 // buildEnso compiles the real enso binary once per test run. The
@@ -42,7 +42,7 @@ func ensoBinary(t *testing.T) string {
 			return
 		}
 		ensoBin = filepath.Join(dir, "enso")
-		cmd := exec.Command("go", "build", "-o", ensoBin, "github.com/TaraTheStar/enso/cmd/enso")
+		cmd := exec.Command("go", "build", "-o", ensoBin, "github.com/TaraTheStar/enso/v2/cmd/enso")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			ensoBinErr = err

@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/backend"
-	"github.com/TaraTheStar/enso/internal/backend/wire"
-	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend/wire"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
 )
 
 // These tests cover the worker leg of the cross-seam permission relay

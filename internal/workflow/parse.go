@@ -14,7 +14,7 @@ import (
 
 	"github.com/adrg/frontmatter"
 
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // Workflow is a parsed declarative agent workflow.

@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/backend/egress"
-	"github.com/TaraTheStar/enso/internal/backend/seal"
+	"github.com/TaraTheStar/enso/v2/internal/backend/egress"
+	"github.com/TaraTheStar/enso/v2/internal/backend/seal"
 )
 
 // TestEgressDataPath_RealContainer closes the egress data-path gap: that

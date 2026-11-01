@@ -15,7 +15,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/TaraTheStar/enso/internal/daemon"
+	"github.com/TaraTheStar/enso/v2/internal/daemon"
 )
 
 // spawnDetachedDaemon re-execs `enso daemon` (without `--detach`) as a

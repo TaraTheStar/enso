@@ -7,7 +7,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/TaraTheStar/enso/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/session"
 )
 
 // runExport reads a session by id from $XDG_DATA_HOME/enso/enso.db and

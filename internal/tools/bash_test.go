@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 // TestBashTool_PublishesProgress runs a tiny shell command and asserts that

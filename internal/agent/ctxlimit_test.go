@@ -5,7 +5,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
 )
 
 // TestEffectiveContextWindow covers the learned-limit override: a limit

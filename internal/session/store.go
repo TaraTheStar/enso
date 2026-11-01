@@ -8,7 +8,7 @@ import (
 
 	"github.com/TaraTheStar/azoth/store"
 
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // Store wraps the SQLite database for sessions.

@@ -1,4 +1,4 @@
-module github.com/TaraTheStar/enso
+module github.com/TaraTheStar/enso/v2
 
 go 1.26.2
 

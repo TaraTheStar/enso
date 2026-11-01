@@ -7,8 +7,8 @@ import (
 	"testing"
 
 	"github.com/TaraTheStar/azoth/llm"
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // newPruneAgent constructs a minimal Agent suitable for prune-logic

@@ -5,7 +5,7 @@ package agent
 import (
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
 )
 
 func mkProv(name, model string, include bool) *provider.Provider {

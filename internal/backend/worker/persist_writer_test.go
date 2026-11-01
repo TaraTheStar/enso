@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/TaraTheStar/azoth/llm"
-	"github.com/TaraTheStar/enso/internal/backend"
-	"github.com/TaraTheStar/enso/internal/backend/wire"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend/wire"
 )
 
 // These tests cover the worker leg of isolated-mode session persistence:

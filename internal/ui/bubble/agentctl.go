@@ -6,10 +6,10 @@ import (
 	"context"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/agent"
-	"github.com/TaraTheStar/enso/internal/backend/host"
-	"github.com/TaraTheStar/enso/internal/instructions"
-	"github.com/TaraTheStar/enso/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/agent"
+	"github.com/TaraTheStar/enso/v2/internal/backend/host"
+	"github.com/TaraTheStar/enso/v2/internal/instructions"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
 )
 
 // agentControl is the surface the slash commands and the Ctrl-Space

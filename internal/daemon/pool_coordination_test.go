@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/TaraTheStar/azoth/llm"
-	"github.com/TaraTheStar/enso/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
 )
 
 // The daemon hosts every agent loop in-process, so cross-session pool

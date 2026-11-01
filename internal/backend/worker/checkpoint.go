@@ -6,8 +6,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/TaraTheStar/enso/internal/backend/workspace"
-	"github.com/TaraTheStar/enso/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/backend/workspace"
+	"github.com/TaraTheStar/enso/v2/internal/session"
 )
 
 // newCheckpointFn builds the OnUserTurn callback that snapshots the

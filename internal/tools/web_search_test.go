@@ -15,7 +15,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 func TestWebSearch_SearXNG_HappyPath(t *testing.T) {

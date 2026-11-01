@@ -9,7 +9,7 @@
 // codebase.
 package ui
 
-import "github.com/TaraTheStar/enso/internal/ui/bubble"
+import "github.com/TaraTheStar/enso/v2/internal/ui/bubble"
 
 // Options configures a UI run. Mirrors today's bubble.Options. Adding
 // fields here means adding them to the backend; keep it small.

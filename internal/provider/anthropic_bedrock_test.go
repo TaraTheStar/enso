@@ -7,7 +7,7 @@ import (
 
 	"github.com/TaraTheStar/azoth/llm/anthropic"
 	"github.com/TaraTheStar/azoth/llm/bedrock"
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 func TestProviderFactory_AnthropicBedrockType(t *testing.T) {
