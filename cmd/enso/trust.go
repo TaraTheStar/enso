@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 	"github.com/spf13/cobra"
 )
 

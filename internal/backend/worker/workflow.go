@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"sync/atomic"
 
-	"github.com/TaraTheStar/enso/internal/backend"
-	"github.com/TaraTheStar/enso/internal/backend/wire"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/provider"
-	"github.com/TaraTheStar/enso/internal/tools"
-	"github.com/TaraTheStar/enso/internal/workflow"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend/wire"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/workflow"
 )
 
 // workflowEnv is the slice of the worker's agent construction that the

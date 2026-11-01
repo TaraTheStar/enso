@@ -10,7 +10,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
 )
 
 // printlnMsgText extracts the plain (ANSI-stripped) text from an already

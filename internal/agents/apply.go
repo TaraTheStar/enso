@@ -3,8 +3,8 @@
 package agents
 
 import (
-	"github.com/TaraTheStar/enso/internal/provider"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // Applied is the trio of runtime values a Spec produces: a possibly-cloned

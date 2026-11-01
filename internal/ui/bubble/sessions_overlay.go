@@ -9,7 +9,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/TaraTheStar/enso/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/session"
 )
 
 // sessionsOverlayData is the state for the Ctrl-R recent-sessions

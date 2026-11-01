@@ -12,8 +12,8 @@ import (
 
 	"github.com/adrg/frontmatter"
 
-	"github.com/TaraTheStar/enso/internal/embed"
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/embed"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // Layer is one slice of the assembled system prompt. Surfaced (rather than

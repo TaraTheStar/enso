@@ -11,7 +11,7 @@ import (
 	"github.com/TaraTheStar/azoth/llm/bedrock"
 	"github.com/TaraTheStar/azoth/llm/vertex"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 // Defaults for the OpenAI/llama.cpp generation guards. Token counts and

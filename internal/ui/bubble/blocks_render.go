@@ -14,8 +14,8 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/TaraTheStar/enso/internal/ui/blocks"
-	"github.com/TaraTheStar/enso/internal/ui/theme"
+	"github.com/TaraTheStar/enso/v2/internal/ui/blocks"
+	"github.com/TaraTheStar/enso/v2/internal/ui/theme"
 )
 
 // mdTrailingPadRE matches glamour's per-line trailing padding in

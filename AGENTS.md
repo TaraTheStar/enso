@@ -35,7 +35,7 @@ go test ./...
 ## Project conventions
 
 - **Go version**: target `1.26+` (matches the current `go.mod`). Keep `go.mod` aligned.
-- **Module path**: `github.com/TaraTheStar/enso`.
+- **Module path**: `github.com/TaraTheStar/enso/v2`.
 - **No CGO**: every dependency must build with `CGO_ENABLED=0`. SQLite uses `modernc.org/sqlite` (pure Go), not `mattn/go-sqlite3`.
 - **Package layout**: one package per directory. The UI lives behind `internal/ui/`; nothing outside `internal/ui/bubble/` should import the Bubble Tea / Lipgloss libraries directly. Domain code talks to `internal/ui` (or `internal/bus` for events) only.
 - **Imports**: stdlib first, then third-party, then internal — separated by blank lines. `gofmt` sorts.

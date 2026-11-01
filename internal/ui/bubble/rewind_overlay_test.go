@@ -13,8 +13,8 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/TaraTheStar/azoth/llm"
-	"github.com/TaraTheStar/enso/internal/backend/workspace"
-	"github.com/TaraTheStar/enso/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/backend/workspace"
+	"github.com/TaraTheStar/enso/v2/internal/session"
 )
 
 func rewindModel() *model {

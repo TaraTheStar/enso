@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
 )
 
 func joinArgs(a []string) string { return strings.Join(a, " ") }

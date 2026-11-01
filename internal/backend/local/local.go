@@ -19,7 +19,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
 )
 
 // Backend is the no-isolation Backend. The zero value is usable; Exe

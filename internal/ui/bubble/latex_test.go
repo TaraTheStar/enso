@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/ui/blocks"
+	"github.com/TaraTheStar/enso/v2/internal/ui/blocks"
 )
 
 func TestDelatex(t *testing.T) {

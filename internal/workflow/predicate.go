@@ -9,7 +9,7 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 // funcMap is the shared template helper set for both role bodies and edge

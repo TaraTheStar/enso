@@ -16,11 +16,11 @@ import (
 	"sync/atomic"
 	"text/template"
 
-	"github.com/TaraTheStar/enso/internal/agent"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/provider"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/agent"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // RunDeps is what the runner needs from the surrounding agent stack.

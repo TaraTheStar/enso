@@ -13,7 +13,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // Trust gates loading of project-tier config files. The threat model is

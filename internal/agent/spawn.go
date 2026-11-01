@@ -10,9 +10,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/TaraTheStar/azoth/llm"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/provider"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // SpawnTool implements the `spawn_agent` tool. It constructs a child Agent

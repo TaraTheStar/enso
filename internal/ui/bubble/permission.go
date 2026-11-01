@@ -10,9 +10,9 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/TaraTheStar/enso/internal/backend/host"
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/backend/host"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
 )
 
 // permPending is the bubble-side state for an in-flight permission

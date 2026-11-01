@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/session"
 )
 
 // runStats prints a per-store summary of activity. With --days N, only

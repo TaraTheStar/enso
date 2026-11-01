@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // CheckpointStoreDir returns the on-disk root for a session's per-turn

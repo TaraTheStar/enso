@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/backend/egress"
+	"github.com/TaraTheStar/enso/v2/internal/backend/egress"
 )
 
 // TestSealedGuestEgress_RealVM closes the data-path gap item 1b left to

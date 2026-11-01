@@ -8,7 +8,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/TaraTheStar/enso/internal/ui/blocks"
+	"github.com/TaraTheStar/enso/v2/internal/ui/blocks"
 )
 
 // liveRenderCache memoizes the expensive part of rendering the

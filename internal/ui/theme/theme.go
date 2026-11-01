@@ -16,7 +16,7 @@ import (
 
 	"github.com/pelletier/go-toml/v2"
 
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // Color is an RGB triple. Backends render via Hex().

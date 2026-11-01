@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 // errFirstRunWelcome is a sentinel returned by loadOrWelcome the first time

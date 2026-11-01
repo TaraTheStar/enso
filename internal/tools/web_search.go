@@ -8,7 +8,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 // SearchBackend is the swap-in implementation behind WebSearchTool.

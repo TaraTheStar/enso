@@ -8,7 +8,7 @@ import (
 
 	llm "github.com/TaraTheStar/azoth/llm"
 	"github.com/TaraTheStar/azoth/llm/bedrock"
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 func TestProviderFactory_BedrockType(t *testing.T) {

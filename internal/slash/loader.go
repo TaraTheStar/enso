@@ -13,7 +13,7 @@ import (
 
 	"github.com/adrg/frontmatter"
 
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // Skill is a user-defined slash command loaded from disk. Frontmatter fields

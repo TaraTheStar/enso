@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/TaraTheStar/enso/internal/lsp"
+	"github.com/TaraTheStar/enso/v2/internal/lsp"
 )
 
 // RegisterLSP adds the lsp_* tools to a registry, but only if the manager

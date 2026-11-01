@@ -13,7 +13,7 @@ import (
 	"testing"
 
 	"github.com/TaraTheStar/azoth/netsec"
-	"github.com/TaraTheStar/enso/internal/backend/egress"
+	"github.com/TaraTheStar/enso/v2/internal/backend/egress"
 )
 
 // allowLoopback permits 127.0.0.0/8 and ::1 while keeping every other

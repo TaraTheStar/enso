@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/session"
 )
 
 // TestSessionCaptureCheckpoint covers the host-side isolated-backend

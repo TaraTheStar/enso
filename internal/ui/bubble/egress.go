@@ -8,7 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
 )
 
 // egressPending is the bubble-side state for an in-flight interactive

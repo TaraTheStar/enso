@@ -25,7 +25,7 @@ import (
 
 	"github.com/adrg/frontmatter"
 
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // Spec is a declarative agent profile. Zero values mean "leave the host's

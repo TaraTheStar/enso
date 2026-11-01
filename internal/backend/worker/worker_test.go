@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
 )
 
 type noopCloser struct{}

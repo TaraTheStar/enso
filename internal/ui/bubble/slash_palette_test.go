@@ -9,7 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/TaraTheStar/enso/internal/slash"
+	"github.com/TaraTheStar/enso/v2/internal/slash"
 )
 
 // fakeCmd is a minimal slash.Command for palette tests.

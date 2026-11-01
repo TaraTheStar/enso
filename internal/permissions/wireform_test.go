@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 // TestPromptRequest_WireFormSafe is the integration check for bus.WireForm

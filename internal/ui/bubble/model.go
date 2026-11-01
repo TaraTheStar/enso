@@ -8,11 +8,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/TaraTheStar/enso/internal/backend/host"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/slash"
-	"github.com/TaraTheStar/enso/internal/ui/blocks"
+	"github.com/TaraTheStar/enso/v2/internal/backend/host"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/slash"
+	"github.com/TaraTheStar/enso/v2/internal/ui/blocks"
 )
 
 // busEventMsg wraps a bus.Event so it can flow through tea.Update.

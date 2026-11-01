@@ -7,9 +7,9 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/TaraTheStar/enso/internal/backend/wire"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/backend/wire"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
 )
 
 // InteractiveBroker makes a sealed-by-default box usable for

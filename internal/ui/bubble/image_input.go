@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/TaraTheStar/enso/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
 )
 
 // imageAttachMaxBytes caps a single attached image. Mirrors the read

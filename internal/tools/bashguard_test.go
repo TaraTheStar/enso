@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 func TestLooksNonTerminating(t *testing.T) {

@@ -40,7 +40,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 // DefaultTimeout caps how long a single hook command may run before

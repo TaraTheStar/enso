@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 // TestGoplsHoverIntegration is an opt-in smoke test that drives a real

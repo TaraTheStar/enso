@@ -16,11 +16,11 @@ import (
 	"syscall"
 
 	"github.com/TaraTheStar/azoth/llm"
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/daemon"
-	"github.com/TaraTheStar/enso/internal/paths"
-	"github.com/TaraTheStar/enso/internal/session"
-	"github.com/TaraTheStar/enso/internal/ui"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/daemon"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/ui"
 	"github.com/spf13/cobra"
 )
 

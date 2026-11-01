@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/TaraTheStar/azoth/llm"
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // toolMessageMeta is the per-tool-message bookkeeping the prune

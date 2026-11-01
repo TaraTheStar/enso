@@ -8,7 +8,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/TaraTheStar/enso/internal/picker"
+	"github.com/TaraTheStar/enso/v2/internal/picker"
 )
 
 // pickerData is the @-trigger file picker overlay's state. Fields

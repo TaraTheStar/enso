@@ -46,11 +46,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/backend"
-	"github.com/TaraTheStar/enso/internal/backend/exestage"
-	"github.com/TaraTheStar/enso/internal/backend/seal"
-	"github.com/TaraTheStar/enso/internal/backend/workspace"
-	"github.com/TaraTheStar/enso/internal/paths"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend/exestage"
+	"github.com/TaraTheStar/enso/v2/internal/backend/seal"
+	"github.com/TaraTheStar/enso/v2/internal/backend/workspace"
+	"github.com/TaraTheStar/enso/v2/internal/paths"
 )
 
 // Backend launches each task's Worker inside a persistent per-project

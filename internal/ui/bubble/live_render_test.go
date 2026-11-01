@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/ui/blocks"
+	"github.com/TaraTheStar/enso/v2/internal/ui/blocks"
 )
 
 // liveRenderChunks simulates a streaming delta sequence with the shapes

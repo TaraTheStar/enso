@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/backend/egress"
-	"github.com/TaraTheStar/enso/internal/backend/wire"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/config"
-	"github.com/TaraTheStar/enso/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/backend/egress"
+	"github.com/TaraTheStar/enso/v2/internal/backend/wire"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
 )
 
 func TestAllowlistBroker(t *testing.T) {

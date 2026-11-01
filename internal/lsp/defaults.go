@@ -5,7 +5,7 @@ package lsp
 import (
 	"os/exec"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 // builtinLSPs is the table of "if the binary is on PATH, just use it"

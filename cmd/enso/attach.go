@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/daemon"
-	"github.com/TaraTheStar/enso/internal/provider"
-	"github.com/TaraTheStar/enso/internal/ui"
+	"github.com/TaraTheStar/enso/v2/internal/daemon"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/ui"
 )
 
 // pickDefaultProviderName mirrors agent.pickDefaultProvider so call

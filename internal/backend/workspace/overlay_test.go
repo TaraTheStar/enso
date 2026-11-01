@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/backend/workspace"
+	"github.com/TaraTheStar/enso/v2/internal/backend/workspace"
 )
 
 func needTool(t *testing.T, name string) {

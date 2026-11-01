@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
 )
 
 // joinArgs renders argv as a single space-joined string for substring

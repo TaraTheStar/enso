@@ -7,7 +7,7 @@ import (
 
 	mcpclient "github.com/mark3labs/mcp-go/client"
 
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 // openStdio spawns a subprocess and speaks MCP over its stdio pipes.

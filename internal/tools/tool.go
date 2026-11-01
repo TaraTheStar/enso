@@ -10,9 +10,9 @@ import (
 
 	"github.com/TaraTheStar/azoth/llm"
 	aztools "github.com/TaraTheStar/azoth/tools"
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/permissions"
-	"github.com/TaraTheStar/enso/internal/provider"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/permissions"
+	"github.com/TaraTheStar/enso/v2/internal/provider"
 )
 
 // Tool is the interface for all built-in and MCP-adapted tools: the shared

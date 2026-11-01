@@ -12,7 +12,7 @@ import (
 	mcpproto "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
-	"github.com/TaraTheStar/enso/internal/tools"
+	"github.com/TaraTheStar/enso/v2/internal/tools"
 )
 
 // newSlowServer returns an in-process MCP client wired to a server whose

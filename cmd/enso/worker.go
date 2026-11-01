@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/TaraTheStar/enso/internal/backend"
-	"github.com/TaraTheStar/enso/internal/backend/worker"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend/worker"
 	"github.com/spf13/cobra"
 )
 

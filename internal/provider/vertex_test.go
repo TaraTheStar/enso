@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"github.com/TaraTheStar/azoth/llm/vertex"
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 func TestProviderFactory_VertexType(t *testing.T) {

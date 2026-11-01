@@ -11,10 +11,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/TaraTheStar/enso/internal/backend/exestage"
-	"github.com/TaraTheStar/enso/internal/backend/lima"
-	"github.com/TaraTheStar/enso/internal/backend/podman"
-	"github.com/TaraTheStar/enso/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/backend/exestage"
+	"github.com/TaraTheStar/enso/v2/internal/backend/lima"
+	"github.com/TaraTheStar/enso/v2/internal/backend/podman"
+	"github.com/TaraTheStar/enso/v2/internal/session"
 )
 
 // flagPruneOlderThan restricts `enso prune` to instances at least this

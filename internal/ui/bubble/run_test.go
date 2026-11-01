@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/TaraTheStar/enso/internal/bus"
-	"github.com/TaraTheStar/enso/internal/session"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/session"
 )
 
 // TestCoalesceDeltas pins forwardBus's per-flush merge: runs of

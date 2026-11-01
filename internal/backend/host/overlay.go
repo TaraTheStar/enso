@@ -7,11 +7,11 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/TaraTheStar/enso/internal/backend"
-	"github.com/TaraTheStar/enso/internal/backend/lima"
-	"github.com/TaraTheStar/enso/internal/backend/podman"
-	"github.com/TaraTheStar/enso/internal/backend/workspace"
-	"github.com/TaraTheStar/enso/internal/config"
+	"github.com/TaraTheStar/enso/v2/internal/backend"
+	"github.com/TaraTheStar/enso/v2/internal/backend/lima"
+	"github.com/TaraTheStar/enso/v2/internal/backend/podman"
+	"github.com/TaraTheStar/enso/v2/internal/backend/workspace"
+	"github.com/TaraTheStar/enso/v2/internal/config"
 )
 
 // SetupWorkspaceOverlay wires the throwaway workspace overlay for the

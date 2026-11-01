@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/TaraTheStar/enso/internal/bus"
+	"github.com/TaraTheStar/enso/v2/internal/bus"
 )
 
 // Decision is the result of a permission check.
