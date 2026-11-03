@@ -6,7 +6,8 @@ on:
   pull_request:
     branches: [main]
   # A merge made with the workflow token starts no push run, so without this
-  # an auto-merged main would never be tested as it actually stands.
+  # an auto-merged main would never be tested as it actually stands. The gate
+  # job below keeps it from re-testing a commit that already passed.
   schedule:
     - cron: '17 6 * * *'
 
@@ -14,7 +15,31 @@ permissions:
   contents: read
 
 jobs:
+  # On a scheduled fire, decide whether there is anything to test: main's head
+  # has no completed run yet (an auto-merge), or its latest one failed (a
+  # retry). A head whose latest run passed is skipped, so the nightly costs
+  # nothing while nothing changes. Push and pull_request fires skip the gate
+  # and always run.
+  gate:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=10" \
+            --jq '[.workflow_runs[] | select(.status == "completed")] | first | .conclusion // "none"')
+          echo "latest completed run of $GITHUB_SHA: $last"
+          if [ "$last" = success ]; then echo run=false; else echo run=true; fi >> "$GITHUB_OUTPUT"
+
   check:
+    needs: gate
+    if: ${{ !cancelled() && (needs.gate.result == 'skipped' || needs.gate.outputs.run == 'true') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
